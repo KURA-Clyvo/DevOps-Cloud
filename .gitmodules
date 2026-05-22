@@ -1,0 +1,9 @@
+[submodule "dotnet-backend"]
+	path = dotnet-backend
+	url = https://github.com/KURA-Clyvo/backend-clinica-dotnet.git
+[submodule "java-backend"]
+	path = java-backend
+	url = https://github.com/KURA-Clyvo/backend-tutor-java.git
+[submodule "luna-ia"]
+	path = luna-ia
+	url = https://github.com/KURA-Clyvo/kura-luna-ai.git
