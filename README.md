@@ -476,10 +476,10 @@ az group delete \
 
 | Recurso | URL |
 |---|---|
-| Repositório Infra | `https://github.com/FelipeFerrete/kura-infra` |
-| Repositório .NET | `https://github.com/FelipeFerrete/kura-backend-clinica` |
-| Repositório Java | `https://github.com/FelipeFerrete/kura-backend-tutor` |
-| Repositório Luna IA | `https://github.com/FelipeFerrete/kura-luna-ia` |
+| Repositório Infra | `https://github.com/KURA-Clyvo/DevOps-Cloud` |
+| Repositório .NET | `https://github.com/KURA-Clyvo/backend-clinica-dotnet` |
+| Repositório Java | `https://github.com/KURA-Clyvo/backend-tutor-java` |
+| Repositório Luna IA | `https://github.com/KURA-Clyvo/kura-luna-ai` |
 | Vídeo YouTube | *(inserir link após gravação)* |
 
 ---
