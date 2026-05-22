@@ -144,7 +144,7 @@ services:
   # ───────────────────────────────────────────────────────────────────────────
   luna-ai:
     build:
-      context: ./luna-ia
+      context: ./luna-ia/luna
       dockerfile: Dockerfile
     image: kura-luna-ai:latest
     container_name: kura_luna_ai
