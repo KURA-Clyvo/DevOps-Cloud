@@ -22,7 +22,7 @@ set -euo pipefail   # Aborta em qualquer erro, variável não definida ou pipe f
 
 # ─── CONFIGURAÇÕES ────────────────────────────────────────────────────────────
 RESOURCE_GROUP="kura-rg-fiap2026"
-LOCATION="brazilsouth"
+LOCATION="eastus"
 VM_NAME="kura-vm-fiap2026"
 VM_SIZE="Standard_B2s"          # 2 vCPUs, 4 GB RAM — suficiente para a stack
 VM_IMAGE="Ubuntu2204"
