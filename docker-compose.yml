@@ -8,9 +8,6 @@
 #   docker compose logs -f
 #   docker compose down -v   (remove containers + volume)
 # =============================================================================
-
-version: "3.9"
-
 # ─── Named Volume (RUBRICA 2.3) ──────────────────────────────────────────────
 # Dado do banco persiste entre reinicializações do container.
 volumes:
@@ -33,6 +30,7 @@ services:
   # ───────────────────────────────────────────────────────────────────────────
   oracle-db:
     image: gvenzl/oracle-xe:21-slim
+    shm_size: '1g' 
     container_name: kura_oracle_db
     restart: unless-stopped
     ports:
@@ -50,11 +48,11 @@ services:
       - kura-net
     healthcheck:
       # Aguarda Oracle estar aceitando conexões antes de subir as APIs
-      test: ["CMD-SHELL", "echo 'SELECT 1 FROM DUAL;' | sqlplus -s ${ORACLE_APP_USER:-RM562999}/${ORACLE_APP_PASSWORD:-fiap2026}@localhost:1521/XEPDB1 || exit 1"]
+      test: ["CMD-SHELL", "lsnrctl status | grep -qi 'xepdb1' || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 10
-      start_period: 120s
+      retries: 30
+      start_period: 180s
 
   # ───────────────────────────────────────────────────────────────────────────
   # 2. .NET API — Backend Clínica (ASP.NET Core 10)
@@ -75,10 +73,7 @@ services:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       ASPNETCORE_URLS: http://+:8080
       # Aponta para o container oracle-db (nome do serviço = hostname na rede)
-      ConnectionStrings__DefaultConnection: >-
-        User Id=${ORACLE_APP_USER:-RM562999};
-        Password=${ORACLE_APP_PASSWORD:-fiap2026};
-        Data Source=oracle-db:1521/XEPDB1
+      ConnectionStrings__DefaultConnection: "User Id=${ORACLE_APP_USER:-RM562999};Password=${ORACLE_APP_PASSWORD:-fiap2026};Data Source=oracle-db:1521/XEPDB1"
       Jwt__Key: ${DOTNET_JWT_KEY:-kura-api-secret-key-fiap-2026-clyvovet}
       Jwt__Issuer: kura-api
       Jwt__Audience: kura-client
@@ -92,7 +87,7 @@ services:
     networks:
       - kura-net
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
