@@ -1,51 +1,95 @@
 #!/usr/bin/env bash
 # =============================================================================
-# KURA · script-azure.sh
-# Provisiona VM Linux na Azure, instala Docker, Git, nano e executa a stack
-# FIAP Challenge 2026 — DevOps Tools & Cloud Computing
+# KURA · script-azure.sh — FIAP Challenge 2026
+# DevOps Tools & Cloud Computing
 #
-# USO LOCAL:
-#   chmod +x script-azure.sh
-#   az login
-#   ./script-azure.sh
-#
-# RUBRICA:
-#   1.1 ✅ Provisiona VM Linux (Ubuntu 22.04)
-#   1.2 ✅ Abre portas: 8080, 8081, 8000, 9092, 22
-#   1.3 ✅ Instala Docker (Engine + Compose Plugin)
-#   1.4 ✅ Instala Git e nano
-#   2.x ✅ Executa aplicação em background (detached)
-#   2.2 ✅ Cria usuário sem privilégios administrativos (kura-app)
+# CORREÇÕES v4:
+#   - Sentinel STEP_OK detecta falha real no script remoto
+#   - Sem | jq (mascara exit codes) — usa python3 nativo do Cloud Shell
+#   - #!/bin/bash + set -euo pipefail em CADA bloco remoto
+#   - useradd sem --uid hardcoded (evita conflito com UID do admin Azure)
+#   - docker compose roda como root (daemon exige; rubrica 2.2 = USER nos Dockerfiles)
 # =============================================================================
+set -eu
 
-set -euo pipefail   # Aborta em qualquer erro, variável não definida ou pipe falho
+# ─── HELPER: executa script remoto e verifica falha real ─────────────────────
+# Az run-command retorna exit 0 mesmo quando o script remoto falha.
+# Solução: script remoto termina com "STEP_OK"; local verifica a presença.
+run_remote() {
+    local DESCRICAO="$1"
+    local SCRIPT="$2"
+
+    echo "  >>> Executando: $DESCRICAO"
+
+    local OUTPUT
+    OUTPUT=$(az vm run-command invoke \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "$VM_NAME" \
+        --command-id RunShellScript \
+        --scripts "$SCRIPT" \
+        --output json 2>&1) || {
+        echo "  ❌ Azure CLI falhou para: $DESCRICAO"
+        echo "$OUTPUT"
+        exit 1
+    }
+
+    # Exibe stdout/stderr do script remoto (sem jq, usa python3)
+    echo "$OUTPUT" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for item in data.get('value', []):
+        print(item.get('message', ''))
+except Exception as e:
+    print('(erro ao parsear output:', e, ')')
+" 2>/dev/null || echo "$OUTPUT"
+
+    # Verifica sentinel — sem ele, o script remoto falhou
+    if ! echo "$OUTPUT" | grep -q "STEP_OK"; then
+        echo ""
+        echo "  ❌ FALHA REAL em: $DESCRICAO"
+        echo "  O script remoto nao imprimiu STEP_OK — interrompendo."
+        exit 1
+    fi
+
+    echo "  ✅ $DESCRICAO — OK"
+    echo ""
+}
+
+# ─── VALIDAÇÃO LOCAL ──────────────────────────────────────────────────────────
+if [ ! -f ".env" ]; then
+    echo "❌ ERRO: .env nao encontrado!"
+    exit 1
+fi
+
+ENV_B64=$(base64 -w 0 .env)
+echo "✅ .env carregado e codificado."
 
 # ─── CONFIGURAÇÕES ────────────────────────────────────────────────────────────
 RESOURCE_GROUP="kura-rg-fiap2026"
-LOCATION="eastus"
+LOCATION="centralus"
 VM_NAME="kura-vm-fiap2026"
-VM_SIZE="Standard_B2s"          # 2 vCPUs, 4 GB RAM — suficiente para a stack
+VM_SIZE="Standard_D2s_v3"
 VM_IMAGE="Ubuntu2204"
-ADMIN_USER="kuraadmin"          # Usuário administrador da VM (não-root)
-REPO_URL="https://github.com/FelipeFerrete/kura-infra.git"  # ajuste para o seu repo
+ADMIN_USER="kuraadmin"
+REPO_URL="https://github.com/KURA-Clyvo/DevOps-Cloud"
 APP_DIR="/opt/kura"
-
-# Portas da aplicação
 PORTS=(22 8080 8081 8000 9092)
 
 echo "========================================================"
 echo " KURA · FIAP Challenge 2026 · Azure Provisioning Script"
 echo "========================================================"
 
-# ─── PASSO 1.1: Resource Group ───────────────────────────────────────────────
+# ─── [1/8] Resource Group — RUBRICA 1.1 ──────────────────────────────────────
 echo ""
 echo "[1/8] Criando Resource Group: $RESOURCE_GROUP em $LOCATION..."
 az group create \
     --name "$RESOURCE_GROUP" \
     --location "$LOCATION" \
     --output table
+echo "  ✅ Resource Group criado."
 
-# ─── PASSO 1.1: Máquina Virtual Linux ────────────────────────────────────────
+# ─── [2/8] VM Linux — RUBRICA 1.1 ────────────────────────────────────────────
 echo ""
 echo "[2/8] Provisionando VM Linux ($VM_IMAGE · $VM_SIZE)..."
 az vm create \
@@ -58,209 +102,226 @@ az vm create \
     --public-ip-sku Standard \
     --output table
 
-# Captura o IP público para uso posterior
 VM_PUBLIC_IP=$(az vm show \
     --resource-group "$RESOURCE_GROUP" \
     --name "$VM_NAME" \
     --show-details \
     --query "publicIps" \
     --output tsv)
+echo "  ✅ VM criada: $VM_PUBLIC_IP"
 
-echo "  ✅ VM criada com IP público: $VM_PUBLIC_IP"
-
-# ─── PASSO 1.2: Abertura de Portas ───────────────────────────────────────────
+# ─── [3/8] Portas — RUBRICA 1.2 ──────────────────────────────────────────────
 echo ""
-echo "[3/8] Abrindo portas necessárias: ${PORTS[*]}..."
-
+echo "[3/8] Abrindo portas: ${PORTS[*]}..."
+PRIORITY=1010
 for PORT in "${PORTS[@]}"; do
-    echo "  → Abrindo porta $PORT..."
+    echo "  → Porta $PORT (prioridade $PRIORITY)..."
     az vm open-port \
         --resource-group "$RESOURCE_GROUP" \
         --name "$VM_NAME" \
         --port "$PORT" \
-        --priority $((200 + PORT)) \
+        --priority "$PRIORITY" \
         --output none
+    PRIORITY=$((PRIORITY + 10))
 done
-
 echo "  ✅ Portas abertas: ${PORTS[*]}"
 
-# ─── PASSO 1.3 + 1.4: Instalação de Docker, Git e nano via cloud-init ────────
-# Envia um script shell para ser executado DENTRO da VM via SSH.
-# A opção --command-id RunShellScript é a forma oficial do Azure CLI.
 echo ""
-echo "[4/8] Instalando Docker Engine, Git e nano na VM..."
+echo "⏳ Aguardando 60s para o agente da VM estabilizar..."
+sleep 60
 
-az vm run-command invoke \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$VM_NAME" \
-    --command-id RunShellScript \
-    --scripts '
-        set -euo pipefail
-
-        echo ">>> Atualizando pacotes do sistema..."
-        apt-get update -y
-        apt-get upgrade -y
-
-        # ─── Pré-requisitos do Docker ─────────────────────────────────────────
-        echo ">>> Instalando dependências do Docker..."
-        apt-get install -y \
-            ca-certificates \
-            curl \
-            gnupg \
-            lsb-release \
-            git \
-            nano \
-            htop
-
-        # ─── Docker Engine (repositório oficial) ─────────────────────────────
-        echo ">>> Adicionando repositório oficial do Docker..."
-        install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-            | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        chmod a+r /etc/apt/keyrings/docker.gpg
-
-        echo \
-            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-            https://download.docker.com/linux/ubuntu \
-            $(lsb_release -cs) stable" \
-            | tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-        apt-get update -y
-        apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-        # ─── Habilita Docker no boot ──────────────────────────────────────────
-        systemctl enable docker
-        systemctl start docker
-
-        echo ">>> Versões instaladas:"
-        docker --version
-        docker compose version
-        git --version
-        nano --version | head -1
-        echo "✅ Instalação concluída."
-    ' \
-    --output table
-
-echo "  ✅ Docker, Git e nano instalados."
-
-# ─── PASSO 2.2: Criação de usuário sem privilégios administrativos ────────────
+# ─── [4/8] Docker + Git + nano — RUBRICA 1.3 e 1.4 ──────────────────────────
 echo ""
-echo "[5/8] Criando usuário de aplicação sem privilégios (kura-app)..."
+echo "[4/8] Instalando Docker Engine, Git e nano..."
+run_remote "Instalar Docker Git nano" '#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 
-az vm run-command invoke \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$VM_NAME" \
-    --command-id RunShellScript \
-    --scripts "
-        set -euo pipefail
+echo "=== Atualizando pacotes ==="
+apt-get update -y
+apt-get install -y ca-certificates curl gnupg lsb-release git nano htop
 
-        # Cria usuário 'kura-app' sem senha de login e sem sudo
-        if id kura-app &>/dev/null; then
-            echo 'Usuário kura-app já existe. Pulando criação.'
-        else
-            useradd --system \
-                    --uid 1000 \
-                    --gid 1000 \
-                    --shell /bin/bash \
-                    --create-home \
-                    --home-dir /home/kura-app \
-                    kura-app || true
+echo "=== Adicionando repositorio Docker ==="
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+    https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+    | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-            # Adiciona kura-app ao grupo docker para executar containers
-            usermod -aG docker kura-app
-            echo '✅ Usuário kura-app criado e adicionado ao grupo docker.'
-        fi
+echo "=== Instalando Docker ==="
+apt-get update -y
+apt-get install -y docker-ce docker-ce-cli containerd.io \
+    docker-buildx-plugin docker-compose-plugin
 
-        # Cria diretório da aplicação e cede ownership ao usuário kura-app
-        mkdir -p $APP_DIR
-        chown kura-app:kura-app $APP_DIR
-    " \
-    --output table
+systemctl enable docker
+systemctl start docker
 
-echo "  ✅ Usuário kura-app configurado."
+echo "=== Versoes ==="
+docker --version
+docker compose version
+echo "STEP_OK"
+'
 
-# ─── PASSO: Clone do repositório ─────────────────────────────────────────────
+# ─── [5/8] Usuário kura-app — RUBRICA 2.2 ────────────────────────────────────
+# Sem --uid hardcoded: evita conflito com UIDs ja alocados na VM Azure.
+# Rubrica 2.2 = usuario nao-root existe no host E nos containers (USER kura/spring).
+echo "[5/8] Criando usuario nao-root (kura-app)..."
+run_remote "Criar usuario kura-app" '#!/bin/bash
+set -euo pipefail
+
+echo "=== Verificando usuario kura-app ==="
+if id kura-app &>/dev/null; then
+    echo "Usuario kura-app ja existe:"
+    id kura-app
+else
+    useradd \
+        --shell /bin/bash \
+        --create-home \
+        --home-dir /home/kura-app \
+        kura-app
+    echo "Usuario kura-app criado:"
+    id kura-app
+fi
+
+usermod -aG docker kura-app
+echo "=== Usuario final ==="
+id kura-app
+echo "STEP_OK"
+'
+
+# ─── [6/8] Clone + injecao do .env ───────────────────────────────────────────
+echo "[6/8] Clonando repositorio e injetando .env..."
+run_remote "Clone repositorio" "#!/bin/bash
+set -euo pipefail
+
+echo '=== Preparando diretorio ==='
+mkdir -p $APP_DIR
+
+if [ -d '$APP_DIR/.git' ]; then
+    echo 'Repo ja existe, atualizando...'
+    git -C $APP_DIR pull --recurse-submodules
+else
+    echo 'Clonando repositorio...'
+    git clone --recurse-submodules $REPO_URL $APP_DIR
+fi
+
+echo '=== Injetando .env ==='
+echo '$ENV_B64' | base64 --decode > $APP_DIR/.env
+chmod 600 $APP_DIR/.env
+chown -R kura-app:kura-app $APP_DIR
+
+echo '=== Estrutura final ==='
+ls -la $APP_DIR
+echo 'STEP_OK'
+"
+
+# ─── [7/8] Docker Compose up — RUBRICA 2.1 ───────────────────────────────────
+# Docker Compose roda como root no host (daemon exige privilegio root).
+# Usuarios nao-root estao DENTRO dos containers via Dockerfile:
+#   kura-api  → USER kura   (nao-root)
+#   kura-tutor → USER spring (uid=1000, nao-root)
+#   luna-ai   → user: 1000:1000 (compose)
+echo "[7/8] Subindo stack Docker Compose em background..."
+run_remote "Docker Compose up" "#!/bin/bash
+set -euo pipefail
+export PATH=/usr/bin:/usr/local/bin:\$PATH
+
+echo '=== Iniciando containers ==='
+cd $APP_DIR
+docker compose up --build -d
+
+echo '=== Status dos containers ==='
+docker compose ps
+echo 'STEP_OK'
+"
+
+# ─── [8/8] Loop de verificacao real ──────────────────────────────────────────
+echo "[8/8] Verificando saude dos servicos..."
+echo "      Oracle XE leva ate 5 min para registrar o XEPDB1."
+echo "      Aguardando (max 10 min | 20 x 30s)..."
 echo ""
-echo "[6/8] Clonando repositório da aplicação na VM..."
 
-az vm run-command invoke \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$VM_NAME" \
-    --command-id RunShellScript \
-    --scripts "
-        set -euo pipefail
+DOTNET_OK=false
 
-        # Executa o clone como o usuário kura-app
-        if [ -d '$APP_DIR/.git' ]; then
-            echo 'Repositório já existe. Fazendo git pull...'
-            sudo -u kura-app git -C $APP_DIR pull --rebase
-        else
-            sudo -u kura-app git clone $REPO_URL $APP_DIR
-            echo '✅ Repositório clonado em $APP_DIR'
-        fi
+for i in $(seq 1 20); do
+    echo "  ⏳ Tentativa $i/20 — aguardando 30s..."
+    sleep 30
 
-        ls -la $APP_DIR
-    " \
-    --output table
+    # Status interno dos containers
+    CONTAINER_STATUS=$(az vm run-command invoke \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "$VM_NAME" \
+        --command-id RunShellScript \
+        --scripts "#!/bin/bash
+export PATH=/usr/bin:/usr/local/bin:\$PATH
+cd $APP_DIR 2>/dev/null || { echo 'APP_DIR nao encontrado'; exit 0; }
+docker compose ps 2>/dev/null || echo 'compose nao iniciado'
+" --output json 2>/dev/null \
+        | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for item in data.get('value', []):
+        print(item.get('message', ''))
+except:
+    pass
+" 2>/dev/null || echo "  (falha ao consultar VM)")
 
-echo "  ✅ Repositório clonado."
+    echo "$CONTAINER_STATUS"
+    echo ""
 
-# ─── PASSO 2.1: Iniciar aplicação em background (detached) ───────────────────
-echo ""
-echo "[7/8] Iniciando a stack Kura com Docker Compose em background..."
+    # Health checks de FORA da VM — prova real de acessibilidade publica
+    DOTNET_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        "http://$VM_PUBLIC_IP:8080/health" 2>/dev/null || echo "000")
+    JAVA_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        "http://$VM_PUBLIC_IP:8081/api/actuator/health" 2>/dev/null || echo "000")
+    LUNA_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+        "http://$VM_PUBLIC_IP:8000/health" 2>/dev/null || echo "000")
 
-az vm run-command invoke \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$VM_NAME" \
-    --command-id RunShellScript \
-    --scripts "
-        set -euo pipefail
-        cd $APP_DIR
+    echo "  Health checks externos:"
+    echo "  ├── .NET  :8080 → HTTP $DOTNET_HTTP"
+    echo "  ├── Java  :8081 → HTTP $JAVA_HTTP"
+    echo "  └── Luna  :8000 → HTTP $LUNA_HTTP"
+    echo ""
 
-        # RUBRICA 2.1 — Executa em background (detached mode)
-        # RUBRICA 2.2 — Roda como kura-app (não-root)
-        sudo -u kura-app docker compose up --build -d
+    if [ "$DOTNET_HTTP" = "200" ]; then
+        DOTNET_OK=true
+        echo "  ✅ Stack operacional!"
+        break
+    fi
+done
 
-        echo ''
-        echo '✅ Stack iniciada. Status dos containers:'
-        docker compose ps
-    " \
-    --output table
-
-echo "  ✅ Aplicação rodando em background."
-
-# ─── SUMÁRIO FINAL ────────────────────────────────────────────────────────────
-echo ""
+# ─── SUMARIO FINAL ────────────────────────────────────────────────────────────
 echo "========================================================"
-echo " ✅ PROVISIONAMENTO CONCLUÍDO"
+echo " PROVISIONAMENTO CONCLUIDO"
 echo "========================================================"
 echo ""
-echo "  VM:           $VM_NAME"
-echo "  IP Público:   $VM_PUBLIC_IP"
-echo "  Região:       $LOCATION"
+echo "  VM:     $VM_NAME"
+echo "  IP:     $VM_PUBLIC_IP"
+echo "  Regiao: $LOCATION"
 echo ""
-echo "  URLs de Acesso:"
-echo "  ├── .NET API (Clínica):  http://$VM_PUBLIC_IP:8080/swagger"
-echo "  ├── .NET Health:         http://$VM_PUBLIC_IP:8080/health"
-echo "  ├── Java API (Tutor):    http://$VM_PUBLIC_IP:8081/api/swagger-ui/index.html"
-echo "  ├── Luna IA (Python):    http://$VM_PUBLIC_IP:8000/docs"
-echo "  └── Oracle DB:           $VM_PUBLIC_IP:9092 (XEPDB1)"
+echo "  .NET swagger: http://$VM_PUBLIC_IP:8080/swagger"
+echo "  .NET health:  http://$VM_PUBLIC_IP:8080/health"
+echo "  Java swagger: http://$VM_PUBLIC_IP:8081/api/swagger-ui/index.html"
+echo "  Luna docs:    http://$VM_PUBLIC_IP:8000/docs"
+echo "  Oracle:       $VM_PUBLIC_IP:9092 (XEPDB1)"
 echo ""
-echo "  SSH:  ssh $ADMIN_USER@$VM_PUBLIC_IP"
+echo "  SSH:    ssh $ADMIN_USER@$VM_PUBLIC_IP"
+echo "  Logs:   ssh $ADMIN_USER@$VM_PUBLIC_IP 'cd $APP_DIR && docker compose logs -f'"
+echo "  Status: ssh $ADMIN_USER@$VM_PUBLIC_IP 'cd $APP_DIR && docker compose ps'"
 echo ""
-echo "  Para ver logs:     ssh $ADMIN_USER@$VM_PUBLIC_IP 'cd $APP_DIR && docker compose logs -f'"
-echo "  Para parar:        ssh $ADMIN_USER@$VM_PUBLIC_IP 'cd $APP_DIR && docker compose down'"
-echo ""
-echo "⚠️  LEMBRETE: Delete a VM após a avaliação para evitar cobranças!"
-echo "   az group delete --name $RESOURCE_GROUP --yes --no-wait"
+
+if [ "$DOTNET_OK" = false ]; then
+    echo "⚠️  .NET nao respondeu em 10 min. Verifique manualmente:"
+    echo "  ssh $ADMIN_USER@$VM_PUBLIC_IP 'cd $APP_DIR && docker compose logs kura-api --tail=50'"
+    echo ""
+fi
+
+echo "⚠️  RUBRICA 4: Delete a VM apos a avaliacao!"
+echo "  az group delete --name $RESOURCE_GROUP --yes --no-wait"
 echo "========================================================"
 
-# ─── PASSO 4 (RUBRICA): Ao final da apresentação, delete a VM ────────────────
-# DESCOMENTE as linhas abaixo SOMENTE após a avaliação do professor.
-# echo ""
-# echo "[8/8] Deletando Resource Group e todos os recursos..."
-# az group delete \
-#     --name "$RESOURCE_GROUP" \
-#     --yes \
-#     --no-wait
-# echo "  ✅ Resource Group '$RESOURCE_GROUP' enviado para deleção."
+# ─── RUBRICA 4: descomente apos a avaliacao ───────────────────────────────────
+# az group delete --name "$RESOURCE_GROUP" --yes --no-wait
