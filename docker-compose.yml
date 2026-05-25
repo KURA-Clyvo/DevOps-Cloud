@@ -112,6 +112,10 @@ services:
       - "8081:8081"
     environment:
       SPRING_PROFILES_ACTIVE: prod
+      # Sobrescreve baseline-version do application-prod.yml (que é "0" para o
+      # ambiente FIAP/SQL Developer). No Docker Compose o schema já existe via
+      # 01_schema.sql (equivalente a V1-V6), então o Flyway deve basear em V6.
+      SPRING_FLYWAY_BASELINE_VERSION: "6"
       # Aponta para o container oracle-db
       DB_URL: jdbc:oracle:thin:@//oracle-db:1521/XEPDB1
       DB_USERNAME: ${ORACLE_APP_USER:-RM562999}
