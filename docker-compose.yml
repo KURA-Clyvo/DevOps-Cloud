@@ -44,6 +44,8 @@ services:
     volumes:
       # RUBRICA 2.3 — Volume nomeado para persistência de dados
       - kura-oracle-data:/opt/oracle/oradata
+      # Bootstrap do schema v5 na primeira inicialização (volume vazio)
+      - ./db/init:/container-entrypoint-initdb.d:ro
     networks:
       - kura-net
     healthcheck:
