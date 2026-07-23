@@ -99,6 +99,10 @@ O sistema resolve um problema central da veterinária moderna: a jornada do pet 
     → TwilioGateway.enviar()             [resposta ao tutor]
 ```
 
+> Fonte versionável e editável deste diagrama: [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) (Mermaid, renderiza no GitHub)
+> e [`docs/arquitetura-kura.drawio`](docs/arquitetura-kura.drawio) (editável em [draw.io](https://app.diagrams.net/)).
+> Versão para entrega: [`docs/Kura_Docs_DevOps.pdf`](docs/Kura_Docs_DevOps.pdf).
+
 ---
 
 ## 4. Rotas da API
@@ -480,6 +484,8 @@ az group delete \
 | Repositório .NET | `https://github.com/KURA-Clyvo/backend-clinica-dotnet` |
 | Repositório Java | `https://github.com/KURA-Clyvo/backend-tutor-java` |
 | Repositório Luna IA | `https://github.com/KURA-Clyvo/kura-luna-ai` |
+| Diagrama de arquitetura (Mermaid) | [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) |
+| Diagrama de arquitetura (draw.io) | [`docs/arquitetura-kura.drawio`](docs/arquitetura-kura.drawio) |
 | Vídeo YouTube | *(inserir link após gravação)* |
 
 ---

@@ -1,0 +1,77 @@
+<mxfile host="app.diagrams.net" agent="claude-code" version="24.0.0">
+  <diagram name="KURA - Arquitetura Docker Compose" id="kura-arquitetura">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Actors -->
+        <mxCell id="actor_vet" value="Veterinário / Gestor&#10;(App Clínica)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="actor_tutor" value="Tutor&#10;(App Mobile)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="40" y="180" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="actor_twilio" value="Twilio WhatsApp" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="40" y="280" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="actor_iot" value="Dispositivos IoT&#10;(ESP32 sensores)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="40" y="380" width="160" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- VM boundary -->
+        <mxCell id="vm_box" value="Azure VM (Ubuntu 22.04) — Docker Network: kura_network (bridge)" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#666666;dashed=1;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="280" y="40" width="900" height="480" as="geometry" />
+        </mxCell>
+
+        <!-- kura-api -->
+        <mxCell id="svc_dotnet" value="kura-api&#10;.NET 10 · Clean Architecture&#10;porta 8080&#10;user: kura (non-root)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1A3A52;fontColor=#ffffff;strokeColor=#0d2233;" vertex="1" parent="1">
+          <mxGeometry x="340" y="100" width="220" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- kura-tutor -->
+        <mxCell id="svc_java" value="kura-tutor&#10;Spring Boot 3.2.5 / Java 21&#10;porta 8081 (context /api)&#10;user: spring uid=1000 (non-root)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4A6944;fontColor=#ffffff;strokeColor=#2e4029;" vertex="1" parent="1">
+          <mxGeometry x="640" y="100" width="240" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- luna-ai -->
+        <mxCell id="svc_luna" value="luna-ai&#10;Python 3.12 / FastAPI&#10;porta 8000&#10;user: 1000:1000 (non-root)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#333333;fontColor=#ffffff;strokeColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="340" y="260" width="220" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- oracle -->
+        <mxCell id="svc_oracle" value="oracle-db&#10;gvenzl/oracle-xe:21-slim&#10;porta 9092→1521&#10;volume nomeado: kura_oracle_data" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#1A3A52;fontColor=#ffffff;strokeColor=#0d2233;boundedLbl=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="380" width="220" height="110" as="geometry" />
+        </mxCell>
+
+        <!-- edges: actors to services -->
+        <mxCell id="e1" value="JWT clínica / X-Api-Key IoT" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="actor_vet" target="svc_dotnet">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="JWT tutor" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="actor_tutor" target="svc_java">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="webhook assinado" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="actor_twilio" target="svc_luna">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="X-Api-Key" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="actor_iot" target="svc_dotnet">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- edges: services to oracle -->
+        <mxCell id="e5" value="jdbc/oracle thin" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="svc_dotnet" target="svc_oracle">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="jdbc oracle:thin — Flyway = autoridade de DDL" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="svc_java" target="svc_oracle">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- edge: luna to dotnet -->
+        <mxCell id="e7" value="httpx + KURA_API_KEY (outbound) / X-API-Key inbound POST /whatsapp/enviar" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="svc_luna" target="svc_dotnet">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
