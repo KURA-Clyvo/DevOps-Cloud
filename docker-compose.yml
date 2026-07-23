@@ -165,6 +165,10 @@ services:
       KURA_API_BASE_URL: http://kura-api:8080
       KURA_API_KEY: ${LUNA_API_KEY:-kura-luna-integration-key-2026}
       KURA_API_TIMEOUT: "10"
+      # Auth inbound do endpoint POST /whatsapp/enviar (mobile-clinica-rn → Luna direto).
+      # Sem isto, LUNA_INBOUND_API_KEY fica "" (default do settings.py) e o endpoint
+      # rejeita 100% das chamadas com 401 — precisa bater com EXPO_PUBLIC_LUNA_API_KEY do app.
+      LUNA_INBOUND_API_KEY: ${LUNA_INBOUND_API_KEY:-kura-luna-inbound-key-2026}
       # Twilio (preencher no .env)
       TWILIO_SID: ${TWILIO_SID:-}
       TWILIO_TOKEN: ${TWILIO_TOKEN:-}
