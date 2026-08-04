@@ -44,8 +44,8 @@ services:
     volumes:
       # RUBRICA 2.3 — Volume nomeado para persistência de dados
       - kura-oracle-data:/opt/oracle/oradata
-      # Bootstrap do schema v5 na primeira inicialização (volume vazio)
-      - ./db/init:/container-entrypoint-initdb.d:ro
+      # Sem bootstrap manual: o Flyway (kura-tutor) cria o schema completo
+      # (V1→V12+) contra o banco vazio na primeira subida. Ver README.
     networks:
       - kura-net
     healthcheck:
@@ -112,10 +112,9 @@ services:
       - "8081:8081"
     environment:
       SPRING_PROFILES_ACTIVE: prod
-      # Sobrescreve baseline-version do application-prod.yml (que é "0" para o
-      # ambiente FIAP/SQL Developer). No Docker Compose o schema já existe via
-      # 01_schema.sql (equivalente a V1-V6), então o Flyway deve basear em V6.
-      SPRING_FLYWAY_BASELINE_VERSION: "6"
+      # Sem override de baseline-version: banco nasce vazio (sem bootstrap),
+      # então o baseline-version: "0" do application-prod.yml já é o correto
+      # e o Flyway aplica V1→V12+ do zero.
       # Aponta para o container oracle-db
       DB_URL: jdbc:oracle:thin:@//oracle-db:1521/XEPDB1
       DB_USERNAME: ${ORACLE_APP_USER:-RM562999}

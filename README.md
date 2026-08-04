@@ -310,7 +310,12 @@ docker-compose.yml
 ├── kura-tutor        (./java-backend · Dockerfile multistage)
 │   ├── porta:  8081:8081
 │   ├── user:   spring (uid=1000, definido no Dockerfile)
-│   └── depends_on: oracle-db (healthy)
+│   ├── depends_on: oracle-db (healthy)
+│   └── Flyway (baseline-version 0) cria o schema completo (V1→V12+) do zero
+│       contra o volume vazio na primeira subida — não há mais bootstrap SQL
+│       manual em `db/init/`. Isso foi possível porque a V9 e a V12 do Flyway
+│       passaram a criar, respectivamente, as 11 tabelas .NET que faltavam e
+│       as 20 sequences que o EF Core exige.
 │
 └── luna-ai           (./luna-ia · Dockerfile python:3.12-slim)
     ├── porta:  8000:8000
