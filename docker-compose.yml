@@ -13,6 +13,11 @@
 volumes:
   kura-oracle-data:
     name: kura_oracle_data
+  # PDFs de receituário (Documento.DsCaminho) — sem isto, os arquivos vivem só na
+  # camada gravável do container e somem em todo `docker compose down`/recreate
+  # (não precisa de `-v` para sumir: a troca de container já é suficiente).
+  kura-storage-documentos:
+    name: kura_storage_documentos
 
 # ─── Rede Interna ─────────────────────────────────────────────────────────────
 networks:
@@ -57,6 +62,27 @@ services:
       start_period: 180s
 
   # ───────────────────────────────────────────────────────────────────────────
+  # 1.5. INIT — prepara o volume de storage do receituário para o usuário
+  #      não-root do kura-api (RUBRICA 2.2 proíbe rodar o serviço como root).
+  #      Um named volume novo nasce root:root; este passo roda uma única vez,
+  #      como root, só para criar a pasta e entregar a posse ao usuário 'kura'
+  #      (mesma imagem do kura-api — reaproveita o /etc/passwd que já o define).
+  # ───────────────────────────────────────────────────────────────────────────
+  kura-storage-init:
+    image: kura-dotnet-api:latest
+    container_name: kura_storage_init
+    user: root
+    entrypoint: ["sh", "-c"]
+    command:
+      - "mkdir -p \"$$STORAGE_BASE_PATH\" && chown -R kura:kura \"$$STORAGE_BASE_PATH\""
+    environment:
+      STORAGE_BASE_PATH: ${STORAGE_BASE_PATH:-/data/kura/receituarios}
+    volumes:
+      - kura-storage-documentos:${STORAGE_BASE_PATH:-/data/kura/receituarios}
+    networks:
+      - kura-net
+
+  # ───────────────────────────────────────────────────────────────────────────
   # 2. .NET API — Backend Clínica (ASP.NET Core 10)
   #    Clean Architecture: Domain · Application · Infrastructure · Api
   #    Autenticação: JWT + API Key (IoT/Luna)
@@ -81,9 +107,28 @@ services:
       Jwt__Audience: kura-client
       IoT__ApiKey: ${IOT_API_KEY:-kura-iot-device-key-2026}
       Luna__ApiKey: ${LUNA_API_KEY:-kura-luna-integration-key-2026}
+      # FEAT-01 — Teleconsulta (Daily.co). Binding confirmado em
+      # ServiceCollectionExtensions.cs: configuration["Daily:ApiKey"] → env Daily__ApiKey.
+      Daily__ApiKey: ${DAILY_API_KEY:-kura-daily-dummy-key-2026}
+      # FEAT-02 — Transcrição de áudio → draft SOAP via Luna. Binding confirmado:
+      # configuration["Luna:BaseUrl"]/["Luna:InboundApiKey"] → Luna__BaseUrl/Luna__InboundApiKey.
+      # Luna__BaseUrl aponta pro serviço luna-ai na rede interna (nome do serviço = hostname).
+      Luna__BaseUrl: ${LUNA_BASE_URL:-http://luna-ai:8000}
+      # Mesma variável já usada pelo serviço luna-ai (LUNA_INBOUND_API_KEY) — não duplicar
+      # literal: é a chave que o .NET manda no header X-API-Key e que a Luna valida no inbound
+      # (src/web/dependencies.py::validar_api_key). Tem que ser o MESMO valor dos dois lados.
+      Luna__InboundApiKey: ${LUNA_INBOUND_API_KEY:-kura-luna-inbound-key-2026}
+      # FEAT-03 — Receituário (QuestPDF). Binding confirmado em ReceituarioPdfService.cs:
+      # configuration["Storage:BasePath"] → env Storage__BasePath. Caminho gravável pelo
+      # usuário não-root 'kura' — ver serviço kura-storage-init acima.
+      Storage__BasePath: ${STORAGE_BASE_PATH:-/data/kura/receituarios}
+    volumes:
+      - kura-storage-documentos:${STORAGE_BASE_PATH:-/data/kura/receituarios}
     depends_on:
       oracle-db:
         condition: service_healthy
+      kura-storage-init:
+        condition: service_completed_successfully
     # RUBRICA 2.2 — Usuário sem privilégios (definido no próprio Dockerfile)
     # O Dockerfile .NET já cria e ativa o usuário 'kura' (não-root).
     networks:

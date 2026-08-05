@@ -302,10 +302,17 @@ docker-compose.yml
 │   ├── volume: kura_oracle_data → /opt/oracle/oradata  [NAMED VOLUME]
 │   └── health: sqlplus SELECT 1
 │
+├── kura-storage-init (mesma imagem do kura-api · roda uma vez, como root)
+│   ├── cria STORAGE_BASE_PATH dentro do volume kura_storage_documentos e
+│   │   entrega a posse ao usuário 'kura' — um named volume novo nasce
+│   │   root:root, o que quebraria a escrita do receituário sem este passo
+│   └── volume: kura_storage_documentos → STORAGE_BASE_PATH  [NAMED VOLUME]
+│
 ├── kura-api          (./dotnet-backend · Dockerfile multistage)
 │   ├── porta:  8080:8080
 │   ├── user:   kura (não-root, uid definido no Dockerfile)
-│   └── depends_on: oracle-db (healthy)
+│   ├── volume: kura_storage_documentos → STORAGE_BASE_PATH (PDFs de receituário)
+│   └── depends_on: oracle-db (healthy) + kura-storage-init (completed)
 │
 ├── kura-tutor        (./java-backend · Dockerfile multistage)
 │   ├── porta:  8081:8081
@@ -347,11 +354,25 @@ services:
 
 O volume `kura_oracle_data` é gerenciado pelo Docker e **não é apagado** com `docker compose down`. Para apagá-lo intencionalmente: `docker compose down -v`.
 
+```yaml
+volumes:
+  kura-storage-documentos:  # volume nomeado — PDFs de receituário (Documento.DsCaminho)
+    name: kura_storage_documentos
+
+services:
+  kura-api:
+    volumes:
+      - kura-storage-documentos:${STORAGE_BASE_PATH:-/data/kura/receituarios}
+```
+
+Mesma regra do `kura_oracle_data`: sobrevive a `docker compose down`, só some com `down -v`. Sem este volume, os PDFs viveriam só na camada gravável do container `kura-api` e sumiriam a cada `down`/recreate — não precisa de `-v` para isso acontecer, basta o container ser recriado.
+
 ### Rede interna
 
 Todos os serviços compartilham a rede `kura_network` (bridge). A comunicação entre serviços usa o **nome do serviço como hostname**:
 
 - Luna → `.NET`: `http://kura-api:8080`
+- `.NET` → Luna: `http://luna-ai:8000` (transcrição de áudio → draft SOAP, `Luna__BaseUrl`)
 - Java → Oracle: `jdbc:oracle:thin:@//oracle-db:1521/XEPDB1`
 - .NET → Oracle: `Data Source=oracle-db:1521/XEPDB1`
 
@@ -370,8 +391,29 @@ ASPNETCORE_ENVIRONMENT          → Production
 ConnectionStrings__DefaultConnection → aponta para oracle-db:1521/XEPDB1
 Jwt__Key                        → chave secreta JWT
 IoT__ApiKey                     → chave dos dispositivos ESP32
-Luna__ApiKey                    → chave da Luna IA
+Luna__ApiKey                    → chave da Luna IA (Luna → .NET, TriagemLuna/tutores)
+Daily__ApiKey                   → chave da Daily.co (FEAT-01 teleconsulta). Sem ela —
+                                   ou com valor inválido — DailyService aplica fallback
+                                   de link manual em vez de falhar; env: DAILY_API_KEY
+Luna__BaseUrl                   → URL da Luna vista pelo .NET (FEAT-02 transcrição de
+                                   áudio → draft SOAP), default http://luna-ai:8000;
+                                   env: LUNA_BASE_URL
+Luna__InboundApiKey             → mesma chave do LUNA_INBOUND_API_KEY do serviço luna-ai
+                                   (não duplicar literal) — vai no header X-API-Key que
+                                   a Luna valida em POST /transcricao; env: LUNA_INBOUND_API_KEY
+Storage__BasePath               → pasta onde o kura-api grava PDFs de receituário
+                                   (FEAT-03, Documento.DsCaminho); montada como named
+                                   volume (kura_storage_documentos) para persistir entre
+                                   `down`/recreate; env: STORAGE_BASE_PATH
 ```
+
+Binding confirmado em `dotnet-backend/src/Kura.Api/Extensions/ServiceCollectionExtensions.cs`
+(`configuration["Daily:ApiKey"]`, `configuration["Luna:BaseUrl"]`, `configuration["Luna:InboundApiKey"]`)
+e `dotnet-backend/src/Kura.Application/Services/ReceituarioPdfService.cs`
+(`configuration["Storage:BasePath"]`) — o binding padrão do .NET usa `__` como separador de
+hierarquia em variável de ambiente (`Daily__ApiKey`), não `:`; o `.env`/`.env.example` deste
+repo usa nomes com `_` simples (`DAILY_API_KEY` etc.), mapeados para as chaves `__` no
+`docker-compose.yml`, seguindo o mesmo padrão já usado por `Jwt__Key`/`IoT__ApiKey`/`Luna__ApiKey`.
 
 **kura-tutor (Java):**
 ```
