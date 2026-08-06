@@ -190,18 +190,25 @@ cp .env.example .env
 nano .env   # preencha as credenciais
 ```
 
-Variáveis obrigatórias no `.env`:
+⚠️ **Este passo não é mais opcional.** Desde a TASK-39, o `docker-compose.yml` usa a
+sintaxe `${VAR:?mensagem}` para as 7 chaves de autenticação abaixo — sem elas
+preenchidas no `.env`, `docker compose up`/`docker compose config` **aborta com erro
+explicativo** em vez de subir com um segredo padrão. Isso é intencional: um
+`docker-compose.yml` público não pode ter default funcional de JWT/senha/API key.
+
+Variáveis **obrigatórias** no `.env` (sem valor → `docker compose` falha ao subir):
 
 ```dotenv
 # ─── Oracle ───────────────────────────────────────────────────────────────────
-ORACLE_SYS_PASSWORD=KuraFiap@2026        # senha do SYS/SYSTEM
-ORACLE_APP_USER=RM562999                  # usuário de aplicação
-ORACLE_APP_PASSWORD=fiap2026             # senha do usuário de aplicação
+ORACLE_SYS_PASSWORD=      # openssl rand -base64 32
+ORACLE_APP_USER=RM562999  # identificador de schema FIAP, não é segredo — pode manter
+ORACLE_APP_PASSWORD=      # openssl rand -base64 32
 
 # ─── .NET ─────────────────────────────────────────────────────────────────────
-DOTNET_JWT_KEY=kura-api-secret-key-fiap-2026-clyvovet
-IOT_API_KEY=kura-iot-device-key-2026
-LUNA_API_KEY=kura-luna-integration-key-2026
+DOTNET_JWT_KEY=       # openssl rand -base64 48
+IOT_API_KEY=          # openssl rand -base64 32
+LUNA_API_KEY=         # openssl rand -base64 32
+LUNA_INBOUND_API_KEY= # openssl rand -base64 32
 
 # ─── Java ─────────────────────────────────────────────────────────────────────
 JAVA_JWT_SECRET=    # mín 64 bytes: openssl rand -base64 64
@@ -212,6 +219,14 @@ TWILIO_TOKEN=your_twilio_auth_token
 TWILIO_FROM_NUMBER=+14155238886
 WEBHOOK_PUBLIC_URL=https://xxxx.ngrok.io/webhook/twilio/whatsapp
 ```
+
+> 🔴 **Segredo queimado:** até a TASK-39, o `docker-compose.yml` deste repositório
+> público definia defaults *funcionais* (não placeholders) para `DOTNET_JWT_KEY`,
+> `JAVA_JWT_SECRET`, `ORACLE_APP_PASSWORD`, `ORACLE_SYS_PASSWORD`, `IOT_API_KEY`,
+> `LUNA_API_KEY` e `LUNA_INBOUND_API_KEY` — esses valores continuam no histórico git
+> e devem ser considerados comprometidos. Qualquer ambiente (local ou Azure) que já
+> tenha subido usando os defaults antigos precisa trocar as 7 chaves por valores
+> novos antes de ser considerado seguro.
 
 ### Passo 3 — Execute na Azure (produção)
 
