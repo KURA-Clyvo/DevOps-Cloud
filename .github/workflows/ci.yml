@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Pins can go stale purely because one of the *other* KURA repos gets new commits on
+  # its own main — with no push/PR ever landing on DevOps-Cloud itself. That's exactly
+  # how the TASK-41 regression accumulated (dotnet 4 commits behind, luna 2, java 1,
+  # for months, unnoticed). A weekly schedule re-runs the freshness check even when
+  # this repo is quiet, so drift gets flagged instead of discovered by accident later.
+  schedule:
+    - cron: '0 6 * * 1' # every Monday, 06:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  compose-config:
+    name: Validate docker compose config
+    runs-on: ubuntu-latest
+    # Doesn't need `submodules: true` here: docker-compose.yml's build.context just
+    # needs the dotnet-backend/java-backend/luna-ia directories to *exist* for
+    # `docker compose config` to resolve — a plain checkout already creates them as
+    # empty placeholders (verified locally: fresh non-recursive clone + `docker
+    # compose config` resolves fine without submodule content).
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Regression guard for TASK-39: docker-compose.yml uses `${VAR:?message}` for 7
+      # auth-related keys (Jwt key, JWT secret, Oracle app/sys passwords, IoT/Luna/
+      # inbound API keys) so that a stack brought up without a real .env fails loudly
+      # instead of silently accepting a functional literal default. If this step ever
+      # starts succeeding, someone reintroduced a `:-default` fallback for one of those
+      # keys — fail the build so it gets noticed.
+      - name: Verify compose config still fails without .env (TASK-39 guard)
+        run: |
+          if docker compose config > /dev/null 2>/tmp/compose-config-no-env.log; then
+            echo "::error::docker compose config succeeded with no .env present — a required auth var regained a functional default (TASK-39 regression)."
+            exit 1
+          fi
+          echo "OK: docker compose config correctly refuses to resolve without .env:"
+          cat /tmp/compose-config-no-env.log
+
+      # Dummy values only — meaningless placeholder strings, not GitHub Actions
+      # secrets. Chosen deliberately over secrets: this job never talks to a real
+      # Oracle/JWT/Luna endpoint, it only exercises variable interpolation in
+      # `docker compose config`, so the values carry no security weight and don't
+      # justify the setup/rotation overhead of repo secrets. Written to a file that
+      # is never committed — nothing in this job runs `git add`/`git commit`, and the
+      # whole runner workspace is discarded when the job ends. (Note: `.gitignore`
+      # only has the literal `.env`, not a glob, so `.env.ci` isn't gitignore-covered
+      # — it's the ephemeral runner lifecycle doing the work here, not .gitignore.)
+      - name: Generate throwaway .env for CI
+        run: |
+          cat > .env.ci <<'EOF'
+          ORACLE_SYS_PASSWORD=ci-dummy-oracle-sys-password
+          ORACLE_APP_PASSWORD=ci-dummy-oracle-app-password
+          DOTNET_JWT_KEY=ci-dummy-dotnet-jwt-key-not-a-real-secret-0000000000
+          IOT_API_KEY=ci-dummy-iot-api-key
+          LUNA_API_KEY=ci-dummy-luna-api-key
+          LUNA_INBOUND_API_KEY=ci-dummy-luna-inbound-api-key
+          JAVA_JWT_SECRET=ci-dummy-java-jwt-secret-not-a-real-secret-00000000000000000000
+          EOF
+
+      - name: docker compose config (with dummy .env)
+        run: docker compose --env-file .env.ci config
+
+  submodule-pin-freshness:
+    name: Check submodule pins against upstream main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        # No submodule checkout needed: the pinned commit each submodule points to is
+        # stored as a gitlink in this repo's own tree (`git ls-tree`), readable without
+        # ever fetching the submodule's content.
+
+      # Public repos, so no auth is strictly required — but unauthenticated GitHub API
+      # calls are capped at 60/hour per source IP, which GitHub Actions runners share
+      # and can exhaust from unrelated traffic, making the job flaky. The ephemeral
+      # per-run GITHUB_TOKEN (not a stored secret) raises that to 5000/hour and costs
+      # nothing to use here.
+      - name: Compare pinned submodule commits to upstream main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          declare -A REPO_MAP=(
+            [dotnet-backend]=backend-clinica-dotnet
+            [java-backend]=backend-tutor-java
+            [luna-ia]=kura-luna-ai
+          )
+
+          stale=0
+          while IFS= read -r line; do
+            sha=$(echo "$line" | awk '{print $3}')
+            path=$(echo "$line" | awk -F'\t' '{print $2}')
+            repo="${REPO_MAP[$path]:-}"
+            if [ -z "$repo" ]; then
+              echo "::warning::unmapped submodule path '$path', skipping"
+              continue
+            fi
+
+            # `if ! upstream_sha=$(...)` (not a bare assignment) is deliberate: under
+            # `set -e`, a plain `upstream_sha=$(curl ... | jq ...)` assignment that
+            # fails aborts the whole step right there — before the script ever reaches
+            # the graceful "could not resolve" branch below — and stops checking the
+            # remaining submodules on a single transient API hiccup. Wrapping it in
+            # `if !` gives the assignment's exit status to the `if`, so `set -e`
+            # doesn't fire and every submodule still gets checked even when one
+            # lookup fails. `-S` (with `-sf`) restores curl's own stderr on failure,
+            # so the runner log shows *why* curl failed, not just that it did.
+            if ! upstream_sha=$(curl -sSf -H "Authorization: token ${GH_TOKEN}" \
+              "https://api.github.com/repos/KURA-Clyvo/${repo}/commits/main" | jq -r '.sha // empty'); then
+              echo "::error::could not resolve upstream main SHA for ${repo} (KURA-Clyvo/${repo}) — curl/jq failed, see stderr above"
+              stale=1
+              continue
+            fi
+
+            if [ -z "$upstream_sha" ]; then
+              echo "::error::upstream main SHA for ${repo} (KURA-Clyvo/${repo}) came back empty — unexpected API response shape"
+              stale=1
+              continue
+            fi
+
+            if [ "$sha" != "$upstream_sha" ]; then
+              echo "::error::submodule '${path}' (KURA-Clyvo/${repo}) is pinned at ${sha}, but upstream main is at ${upstream_sha} — pin is stale. Update it: cd ${path} && git fetch && git checkout main && cd .. && git add ${path} && git commit."
+              stale=1
+            else
+              echo "OK: ${path} (${repo}) pinned at upstream main HEAD (${sha})"
+            fi
+          done < <(git ls-tree HEAD -- dotnet-backend java-backend luna-ia)
+
+          exit $stale
+
+  # ---------------------------------------------------------------------------------
+  # Full `docker compose build` + `up -d` + healthchecks was evaluated and deliberately
+  # left OUT of this workflow — not omitted by accident. Reasoning, measured against
+  # this repo's real images (docker images, 2026-08-06):
+  #
+  #   kura-luna-ai:latest (build)   ~9.8 GB
+  #   gvenzl/oracle-xe:21-slim (pull) ~2.6 GB
+  #   kura-dotnet-api:latest (build)  ~0.7 GB
+  #   kura-java-tutor:latest (build)  ~0.5 GB
+  #   -----------------------------------------
+  #   ~13.6 GB of images alone, before build layer cache, apt/pip/maven caches, and the
+  #   OS + preinstalled tooling that already occupies part of a GitHub-hosted
+  #   ubuntu-latest runner's disk budget (documented as ~14 GB free). It doesn't fit
+  #   with any comfortable margin, and the luna-ai build alone measured ~20 min
+  #   locally — combined with the other two builds and Oracle startup/healthcheck wait,
+  #   this would be a slow job that's one dependency-cache miss away from failing on
+  #   disk space rather than on an actual regression, which makes it a bad CI signal.
+  #
+  #   If this is wanted later, the realistic path is a self-hosted runner (or GHA
+  #   larger runner with more disk) restricted to a manual/scheduled trigger, not
+  #   every push/PR — not a fit for the default ubuntu-latest job model used above.
+  # ---------------------------------------------------------------------------------
