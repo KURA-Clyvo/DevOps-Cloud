@@ -334,6 +334,42 @@ for preciso, cada execução gera CPF/CNPJ/e-mails novos. Requer `curl` e `pytho
 runner, ~20min + imagem da Luna ~9-10GB — mesma razão que excluiu o build completo do
 workflow deste repo, ver `.github/workflows/`); é um gate local, operado manualmente.
 
+### 🎬 Seed de demonstração (`scripts/seed-demo.sh`)
+
+Complementar ao smoke acima, não substituto: `smoke-contratos.sh` **valida contrato**
+antes de uma mudança (roda quantas vezes for preciso, dados descartáveis, sufixo
+aleatório a cada execução); `seed-demo.sh` **prepara uma demonstração** (roda uma vez
+por ambiente, credenciais fixas e conhecidas, para reapresentar a mesma demo em
+sessões diferentes). Em modo real (`EXPO_PUBLIC_USE_MOCKS=false`) a clínica nasce
+vazia — o seed de dado fictício (clínica/tutor/pet) é callback exclusivo do profile
+`dev` do Flyway e nunca roda em `prod`, que é o profile do compose (ver `CLAUDE.md`).
+Sem este script, a única saída era `curl` improvisado no meio de uma demonstração.
+
+```bash
+docker compose ps -a   # confirmar 5/5 healthy/Exited(0) antes de rodar
+
+bash scripts/seed-demo.sh
+```
+
+Cria, via as mesmas rotas HTTP que os apps reais usam (nunca por migration/SQL direto):
+1 clínica de demo (`demo@kura.local` / `SenhaDemo123!`), o veterinário admin dela, 2
+tutores com convite gerado, 3 pets (usando `idEspecie`/`idRaca` do catálogo semeado
+pela `V14__seed_referencia.sql`, com verificação em runtime de que `nmEspecie`/`nmRaca`
+da resposta batem com o esperado — não apenas presume os IDs), 1 consulta e 1
+prescrição com `dsObservacao` preenchida (para a demo mostrar o campo populado, não o
+sentinela "Sem observações") + o receituário PDF gerado a partir dela. Termina
+imprimindo um bloco copiável com as credenciais, os UUIDs de convite dos 2 tutores e os
+IDs de cada entidade criada.
+
+**Idempotência — decisão documentada:** o script **não** é idempotente por escolha.
+Como CNPJ/CPF são fixos (não gerados por sufixo aleatório, ao contrário do smoke), uma
+segunda execução contra o mesmo ambiente encontraria a clínica de demo já cadastrada; em
+vez de tentar mesclar/pular passo a passo (risco de duplicar tutor/pet pela metade), o
+script verifica isso logo no início (tenta logar com as credenciais fixas) e **falha
+com mensagem clara**, orientando a resetar o ambiente (`docker compose down -v && up -d`)
+antes de rodar de novo. Requer `curl` e `python`/`python3` no PATH, mesmos pré-requisitos
+do smoke. Não roda no CI pelo mesmo motivo do smoke (exige Oracle real).
+
 ---
 
 ## 6. Docker Compose — Detalhamento
