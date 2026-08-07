@@ -219,11 +219,15 @@ chamar "eventos-clinicos/consultas (dsObservacao vazio)" 201 POST "$API/api/v1/e
 chamar "medicamentos/listar" 200 GET "$API/api/v1/medicamentos" '' "$TOKEN"
 ID_MEDICAMENTO=$(campo items.0.id 2>/dev/null || echo 1)
 
-# ─── 5. Prescricao — sem dsObservacao (app nunca envia esse campo aqui) ───
-# Origem: mobile-clinica-rn/src/app/(app)/receituario/[idPet].tsx:190-195 (defaultValues,
-# sem dsObservacao) e 217-227 (onSubmit — idPet, idVeterinario, dtEvento, idMedicamento,
-# dsPosologia, nrDuracaoDias; PrescricaoRequest nem declara dsObservacao). Este e um dos
-# 3 endpoints de evento clinico que a prova de que morde da TASK-57 usa.
+# ─── 5. Prescricao — dsObservacao vazio (app envia "", nao omite mais) ───
+# Origem: mobile-clinica-rn/src/app/(app)/receituario/[idPet].tsx:191-197 (defaultValues,
+# dsObservacao: '') e 219-230 (onSubmit — envia dsObservacao: data.dsObservacao junto com
+# idPet, idVeterinario, dtEvento, idMedicamento, dsPosologia, nrDuracaoDias). Ate a
+# TASK-62 (e434f62, com fix wave adicional em a15fca3) o form nao tinha esse campo e o
+# app de fato nunca enviava a chave — hoje ele envia sempre, vazio por padrao se o vet
+# nao preencher. Este e um dos 3 endpoints de evento clinico que a prova de que morde da
+# TASK-57 usa; o coalesce do backend trata ausente e "" da mesma forma, entao o 201
+# esperado nao muda.
 PAYLOAD_PRESCRICAO=$(cat <<JSON
 {
   "idPet": $ID_PET,
@@ -231,11 +235,12 @@ PAYLOAD_PRESCRICAO=$(cat <<JSON
   "dtEvento": "$AGORA",
   "idMedicamento": $ID_MEDICAMENTO,
   "dsPosologia": "1 comprimido a cada 12h por 7 dias",
-  "nrDuracaoDias": 7
+  "nrDuracaoDias": 7,
+  "dsObservacao": ""
 }
 JSON
 )
-chamar "eventos-clinicos/prescricoes (sem dsObservacao)" 201 POST "$API/api/v1/eventos-clinicos/prescricoes" "$PAYLOAD_PRESCRICAO" "$TOKEN"
+chamar "eventos-clinicos/prescricoes (dsObservacao vazio)" 201 POST "$API/api/v1/eventos-clinicos/prescricoes" "$PAYLOAD_PRESCRICAO" "$TOKEN"
 
 # ─── 6. GET /dashboard/hoje ───────────────────────────────────────────────
 # Origem: mobile-clinica-rn/src/services/dashboard.service.ts:131
