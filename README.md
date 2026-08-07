@@ -315,7 +315,7 @@ backlog `KURA_BACKLOG_FIX_4`).
 `scripts/smoke-contratos.sh` é o único detector real: sobe contra o compose vivo e
 exercita payloads com origem citada em comentário acima de cada chamada — não payload
 inventado sem rastro. Para os checks com tela real no app, o payload é **copiado
-literalmente** do código do app, com `arquivo:linha` de origem; para os 6 pares
+literalmente** do código do app, com `arquivo:linha` de origem; para os 5 pares
 DTO × `NOT NULL` da TASK-60 (nenhum tem tela no app hoje), o payload é construído
 direto contra o DTO/validator .NET correspondente, citado como origem em vez de uma
 tela. Rodar **antes de considerar qualquer mudança de contrato pronta para
@@ -331,10 +331,11 @@ bash scripts/smoke-contratos.sh
 Sai com código 0 e "TUDO OK" quando os 17 checks respondem com o status esperado:
 registro de clínica, listagem de pets/medicamentos/dashboard, os 4 endpoints de evento
 clínico (consulta/prescrição/vacina/exame, incluindo os casos sem `dsObservacao` que
-motivaram o backlog), registro de tutor por convite, os 6 pares DTO × `NOT NULL`
+motivaram o backlog), registro de tutor por convite, os 5 pares DTO × `NOT NULL`
 confirmados pela TASK-60 (medicamento sem `dsApresentacao`, tutor sem `nrTelefone` em
-create e update, vacina sem `dsFabricante`, pet com `dsVinculo` vazio explícito — ver
-comentários no script para a lista completa dos 4) e a checagem da TASK-63 de que
+create e update — 2 casos —, vacina sem `dsFabricante`, pet com `dsVinculo` vazio
+explícito — 4 colunas Oracle distintas, ver comentários no script para a lista
+completa) e a checagem da TASK-63 de que
 `GET /pets/{id}/timeline` não devolve mais 500 contra o Oracle real. Qualquer `5xx`
 (ou qualquer status divergente do esperado) conta como falha e o script sai com código
 ≠ 0. Idempotente — pode ser rodado quantas vezes for preciso, cada execução gera

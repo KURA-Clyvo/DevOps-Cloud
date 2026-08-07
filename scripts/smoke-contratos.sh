@@ -302,7 +302,7 @@ chamar "tutor/auth/register-invite" 201 POST "$TUTOR_API/api/v1/auth/register-in
 
 # ─── 10. TASK-60: pares DTO x coluna NOT NULL confirmados pela varredura ──
 # Ver backend-clinica-dotnet/docs/NOT-NULL-audit.md e o relatorio da TASK-60
-# (KURA_BACKLOG_FIX_4) para a varredura completa. Os 6 casos abaixo (4 colunas
+# (KURA_BACKLOG_FIX_4) para a varredura completa. Os 5 casos abaixo (4 colunas
 # Oracle distintas) reproduziram 500/ORA-01400 real antes do fix (370ab7b em
 # diante) e agora devem devolver 2xx com o sentinela persistido — regressao
 # aqui significa que alguem removeu o coalesce do service correspondente.
