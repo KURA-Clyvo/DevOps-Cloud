@@ -303,6 +303,37 @@ curl -X DELETE http://localhost:8080/api/v1/pets/1 \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+### ⚠️ Smoke de contrato app → API (obrigatório antes de qualquer demo)
+
+Nenhuma suíte automatizada deste projeto detecta a classe de bug `'' → NULL` do Oracle
+nem divergência de contrato entre os apps e as APIs: os testes .NET usam
+`.UseInMemoryDatabase` (sem `NOT NULL`, sem a semântica Oracle de string vazia virando
+`NULL`) e os testes mobile batem em mocks sintéticos que sempre respondem sucesso. Já
+custou 3 ciclos de correção sem detecção automatizada (ver `TASK-56`/`TASK-57` do
+backlog `KURA_BACKLOG_FIX_4`).
+
+`scripts/smoke-contratos.sh` é o único detector real: sobe contra o compose vivo e
+exercita os payloads **copiados literalmente** do código dos apps (com `arquivo:linha`
+de origem em comentário acima de cada chamada), não payloads inventados. Rodar **antes
+de considerar qualquer mudança de contrato pronta para demonstração**:
+
+```bash
+# Confirmar que o compose está de pé (5/5 healthy/Exited(0)) antes de rodar
+docker compose ps -a
+
+bash scripts/smoke-contratos.sh
+```
+
+Sai com código 0 e "TUDO OK" quando os 11 passos (registro de clínica, listagem de
+pets/medicamentos/dashboard, os 4 endpoints de evento clínico — incluindo os 3 sem
+`dsObservacao` que motivaram o backlog — e o registro de tutor por convite) respondem
+com o status esperado; qualquer `5xx` (ou qualquer status divergente do esperado) conta
+como falha e o script sai com código ≠ 0. Idempotente — pode ser rodado quantas vezes
+for preciso, cada execução gera CPF/CNPJ/e-mails novos. Requer `curl` e `python` (ou
+`python3`) no PATH — sem dependência de `jq`. Não roda no CI (exige Oracle real no
+runner, ~20min + imagem da Luna ~9-10GB — mesma razão que excluiu o build completo do
+workflow deste repo, ver `.github/workflows/`); é um gate local, operado manualmente.
+
 ---
 
 ## 6. Docker Compose — Detalhamento
