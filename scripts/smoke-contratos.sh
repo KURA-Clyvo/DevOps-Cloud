@@ -295,6 +295,88 @@ JSON
 )
 chamar "tutor/auth/register-invite" 201 POST "$TUTOR_API/api/v1/auth/register-invite" "$PAYLOAD_REGISTER_INVITE"
 
+# ─── 10. TASK-60: pares DTO x coluna NOT NULL confirmados pela varredura ──
+# Ver backend-clinica-dotnet/docs/NOT-NULL-audit.md e o relatorio da TASK-60
+# (KURA_BACKLOG_FIX_4) para a varredura completa. Os 6 casos abaixo (4 colunas
+# Oracle distintas) reproduziram 500/ORA-01400 real antes do fix (370ab7b em
+# diante) e agora devem devolver 2xx com o sentinela persistido — regressao
+# aqui significa que alguem removeu o coalesce do service correspondente.
+# Nenhum dos 4 tem tela no app hoje (mesma situacao de vacina/exame no bloco
+# 7/8 acima) — payloads construidos direto contra os DTOs/validators reais.
+
+# 10a. Medicamento sem dsApresentacao (MEDICAMENTO.DS_APRESENTACAO NOT NULL,
+# MedicamentoCreateValidator nunca teve NotEmpty() pra esse campo).
+PAYLOAD_MEDICAMENTO_SEM_APRES=$(cat <<JSON
+{
+  "nmMedicamento": "Medicamento Smoke $SUFIXO",
+  "dsPrincipioAtivo": "Principio Ativo Smoke"
+}
+JSON
+)
+chamar "medicamentos/POST (sem dsApresentacao)" 201 POST "$API/api/v1/medicamentos" "$PAYLOAD_MEDICAMENTO_SEM_APRES" "$TOKEN"
+
+# 10b. Tutor (create) sem nrTelefone (TUTOR.DS_TELEFONE NOT NULL,
+# TutorCreateValidator nunca teve regra pra esse campo).
+CPF_TUTOR_TASK60=$(gerar_cpf)
+PAYLOAD_TUTOR_SEM_TEL=$(cat <<JSON
+{
+  "nmTutor": "Tutor SemTel Smoke $SUFIXO",
+  "nrCpf": "$CPF_TUTOR_TASK60",
+  "dsEmail": "tutor-semtel-smoke-$SUFIXO@kura-smoke.test",
+  "dsCanalConvite": "EMAIL"
+}
+JSON
+)
+chamar "tutores/POST (sem nrTelefone)" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_SEM_TEL" "$TOKEN"
+
+# 10c. Tutor (update) sem nrTelefone — mesmo gap, TutorUpdateValidator tambem
+# nunca teve regra pra esse campo. Reusa o tutor do bloco "setup" (ID_TUTOR).
+PAYLOAD_TUTOR_UPD_SEM_TEL=$(cat <<JSON
+{
+  "nmTutor": "Tutor Update SemTel Smoke $SUFIXO",
+  "nrCpf": "$CPF_TUTOR",
+  "dsEmail": "tutor-smoke-$SUFIXO@kura-smoke.test"
+}
+JSON
+)
+chamar "tutores/PUT (sem nrTelefone)" 200 PUT "$API/api/v1/tutores/$ID_TUTOR" "$PAYLOAD_TUTOR_UPD_SEM_TEL" "$TOKEN"
+
+# 10d. Vacina sem dsFabricante (VACINA.DS_FABRICANTE NOT NULL,
+# VacinaCreateValidator nunca teve regra pra esse campo).
+PAYLOAD_VACINA_SEM_FAB=$(cat <<JSON
+{
+  "idPet": $ID_PET,
+  "idVeterinario": $ID_VETERINARIO,
+  "dtEvento": "$AGORA",
+  "nmVacina": "V10 Smoke",
+  "nrLote": "LOTE60-$SUFIXO"
+}
+JSON
+)
+chamar "eventos-clinicos/vacinas (sem dsFabricante)" 201 POST "$API/api/v1/eventos-clinicos/vacinas" "$PAYLOAD_VACINA_SEM_FAB" "$TOKEN"
+
+# 10e. Pet com dsVinculo vazio explicito (TUTOR_PET.DS_VINCULO NOT NULL).
+# Diferente dos outros 3: PetCreateDto.DsVinculo ja tem default nomeado
+# "PROPRIETARIO" (nao string.Empty) — so quebra se o cliente mandar "" de
+# proposito. Simulado aqui porque nenhum form do app envia esse campo hoje
+# (GET-only em mobile-clinica-rn), entao um futuro form que inicialize o
+# state com "" reproduziria isso sem aviso.
+PAYLOAD_PET_DSVINCULO_VAZIO=$(cat <<JSON
+{
+  "idEspecie": 1,
+  "idRaca": 1,
+  "nmPet": "Pet DsVinculo Smoke $SUFIXO",
+  "dtNascimento": "2022-01-01T00:00:00Z",
+  "sgSexo": "M",
+  "sgPorte": "M",
+  "idTutor": $ID_TUTOR,
+  "stPrincipal": true,
+  "dsVinculo": ""
+}
+JSON
+)
+chamar "pets/POST (dsVinculo vazio explicito)" 201 POST "$API/api/v1/pets" "$PAYLOAD_PET_DSVINCULO_VAZIO" "$TOKEN"
+
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
 if [ "$FALHAS" -eq 0 ]; then
