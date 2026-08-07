@@ -377,6 +377,19 @@ JSON
 )
 chamar "pets/POST (dsVinculo vazio explicito)" 201 POST "$API/api/v1/pets" "$PAYLOAD_PET_DSVINCULO_VAZIO" "$TOKEN"
 
+# ─── 11. TASK-63: GET /pets/{id}/timeline nao devolve mais 500 ───────────
+# Origem do bug: TimelineRepository.GetByPetIdAsync (backend-clinica-dotnet) consultava
+# VW_TIMELINE_PET via FromSqlRaw — view Flyway (backend-tutor-java) derivada de
+# AGENDAMENTO, sem DS_OBSERVACAO/NM_VETERINARIO, causando ORA-00904 contra Oracle real.
+# Fix: consulta EventoClinico direto via LINQ. ID_PET ja tem 2 eventos clinicos criados
+# nos blocos 3 (consulta) e 5 (prescricao) acima — suficiente pra provar 200 com lista
+# nao-vazia e sem estourar 500. Nao valida ordenacao/conteudo aqui (isso e coberto pelos
+# testes automatizados .NET, TimelineRepositoryTests.cs) — este script so precisa provar
+# que o endpoint nao quebra mais contra o Oracle real, que era exatamente o sintoma que
+# nenhuma suite com .UseInMemoryDatabase conseguia pegar (FromSqlRaw nem roda no
+# InMemory, entao o bug real ficava invisivel pros testes ate bater no compose).
+chamar "pets/timeline (GET, nao mais 500)" 200 GET "$API/api/v1/pets/$ID_PET/timeline" '' "$TOKEN"
+
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
 if [ "$FALHAS" -eq 0 ]; then
