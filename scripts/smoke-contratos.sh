@@ -31,6 +31,21 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 API=${API:-http://localhost:8080}
 TUTOR_API=${TUTOR_API:-http://localhost:8081}
+
+# TASK-69: LUNA_API_KEY autentica os 3 endpoints server-a-servidor consumidos pela IA
+# Luna (chamar_apikey, abaixo). Mesma variavel que o compose injeta como Luna__ApiKey
+# no kura-api e KURA_API_KEY no luna-ai (docker-compose.yml:109/210) — nao duplicada.
+# Aceita override por env var (padrao API/TUTOR_API acima); sem override, le do .env
+# deste repo, que e o mesmo arquivo que o compose usa.
+LUNA_API_KEY=${LUNA_API_KEY:-}
+if [ -z "$LUNA_API_KEY" ] && [ -f .env ]; then
+  LUNA_API_KEY=$(grep -m1 '^LUNA_API_KEY=' .env | cut -d= -f2-)
+fi
+if [ -z "$LUNA_API_KEY" ]; then
+  echo "erro: LUNA_API_KEY nao definido (nem env var, nem .env deste repo) — necessario para os checks server-a-servidor da Luna (ver chamar_apikey)." >&2
+  exit 2
+fi
+
 FALHAS=0
 BODY_FILE=$(mktemp)
 trap 'rm -f "$BODY_FILE"' EXIT
@@ -49,6 +64,27 @@ chamar() {  # chamar <nome> <esperado> <metodo> <url> <payload> [token]
   local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url"
               -H 'Content-Type: application/json' -d "$payload")
   [ -n "$token" ] && args+=(-H "Authorization: Bearer $token")
+  local code; code=$(curl "${args[@]}")
+  if [ "$code" != "$esperado" ]; then
+    echo "FALHA  $nome: esperado $esperado, obtido $code"
+    head -c 300 "$BODY_FILE"; echo
+    FALHAS=$((FALHAS+1))
+  else
+    echo "ok     $nome ($code)"
+  fi
+}
+
+# TASK-69 (KURA_BACKLOG_FIX_6, extensao do G4). Variante de chamar() para os 3
+# endpoints server-a-servidor consumidos pela IA Luna (GET /tutores/telefone/{numero},
+# POST /luna/interactions, POST /luna/triage) — autenticados por header X-Api-Key
+# (LunaApiKeyAuthFilter.cs), nao por "Authorization: Bearer" como o resto da API. Nao
+# generaliza chamar() (os chamadores existentes dependem do parametro posicional
+# "token" -> Bearer) — helper irmao, minimo, so pra este par de headers.
+chamar_apikey() {  # chamar_apikey <nome> <esperado> <metodo> <url> <payload>
+  local nome=$1 esperado=$2 metodo=$3 url=$4 payload=$5
+  local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url"
+              -H 'Content-Type: application/json' -H "X-Api-Key: $LUNA_API_KEY")
+  [ -n "$payload" ] && args+=(-d "$payload")
   local code; code=$(curl "${args[@]}")
   if [ "$code" != "$esperado" ]; then
     echo "FALHA  $nome: esperado $esperado, obtido $code"
@@ -394,6 +430,92 @@ chamar "pets/POST (dsVinculo vazio explicito)" 201 POST "$API/api/v1/pets" "$PAY
 # nenhuma suite com .UseInMemoryDatabase conseguia pegar (FromSqlRaw nem roda no
 # InMemory, entao o bug real ficava invisivel pros testes ate bater no compose).
 chamar "pets/timeline (GET, nao mais 500)" 200 GET "$API/api/v1/pets/$ID_PET/timeline" '' "$TOKEN"
+
+# ─── 12. TASK-69: os 3 endpoints server-a-servidor da IA Luna ────────────
+# Regra de ouro v6 do KURA_BACKLOG_FIX_6: nenhum gate deste projeto tinha verificado que
+# a contraparte .NET destes 3 endpoints existisse de verdade — a Luna chamava rotas que
+# nunca foram implementadas (TASK-66/67 fecharam o gap: schema V15 + os 3 endpoints).
+# Autenticacao: X-Api-Key (chamar_apikey), NAO "Authorization: Bearer" — ver
+# LunaApiKeyAuthFilter.cs. Payloads copiados campo a campo, literalmente, de
+# kura-luna-ai/luna/src/integration/dtos.py — chaves snake_case (id_tutor, ds_canal...),
+# sem traducao pra camelCase: InteractionRequestDto/TriageRequestDto do .NET usam
+# [JsonPropertyName] pra espelhar 1:1 o Pydantic (ver Kura.Application/DTOs/Luna/*.cs).
+# kura_client.py serializa com dto.model_dump(mode="json") (linhas 83-97 e 103-116).
+
+# Tutor dedicado a este bloco (telefone com sufixo desta execucao — GET
+# /tutores/telefone/{numero} nao tem escopo de clinica sem JWT, entao um telefone fixo
+# reusado entre execucoes acumularia tutores ambiguos; sufixado, cada execucao fica
+# inequivoca). Mesmo payload/origem do bloco "setup" acima (TutorCreateDto).
+CPF_TUTOR_LUNA=$(gerar_cpf)
+NR_TELEFONE_LUNA="1199${SUFIXO}"
+PAYLOAD_TUTOR_LUNA=$(cat <<JSON
+{
+  "nmTutor": "Tutor Luna Smoke $SUFIXO",
+  "nrCpf": "$CPF_TUTOR_LUNA",
+  "dsEmail": "tutor-luna-smoke-$SUFIXO@kura-smoke.test",
+  "nrTelefone": "$NR_TELEFONE_LUNA",
+  "dsCanalConvite": "EMAIL"
+}
+JSON
+)
+chamar "setup/tutores (para checks Luna)" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_LUNA" "$TOKEN"
+ID_TUTOR_LUNA=$(campo id)
+
+# 12a. GET /api/v1/tutores/telefone/{numero} — tutor conhecido (TutoresController.cs:81-91).
+chamar_apikey "luna/tutores-telefone (tutor conhecido)" 200 GET "$API/api/v1/tutores/telefone/$NR_TELEFONE_LUNA" ''
+
+# 12b. POST /api/v1/luna/interactions — id_tutor conhecido (2xx esperado).
+# Origem: InteractionRequestDTO, dtos.py:29-37 (id_tutor, ds_canal, ds_direcao,
+# ds_conteudo, dt_recebimento, ds_metadados). ds_metadados vai null porque
+# inbound_message_service.py nunca popula esse campo (nao e omitido do payload —
+# model_dump(mode="json") sem exclude_none inclui a chave com valor null).
+PAYLOAD_LUNA_INTERACTION=$(cat <<JSON
+{
+  "id_tutor": $ID_TUTOR_LUNA,
+  "ds_canal": "WHATSAPP",
+  "ds_direcao": "INBOUND",
+  "ds_conteudo": "Mensagem de smoke test do script automatizado.",
+  "dt_recebimento": "$AGORA",
+  "ds_metadados": null
+}
+JSON
+)
+chamar_apikey "luna/interactions (id_tutor conhecido)" 201 POST "$API/api/v1/luna/interactions" "$PAYLOAD_LUNA_INTERACTION"
+ID_INTERACAO_LUNA=$(campo id_interacao)
+
+# 12c. POST /api/v1/luna/interactions — id_tutor null (tutor desconhecido pela Luna,
+# inbound_message_service.py:85). NAO e falha deste script: e o comportamento parqueado
+# deliberadamente (LunaService.cs:90-95, RegraDeNegocioException -> 422) porque sem
+# id_tutor nao ha como derivar ID_CLINICA (NOT NULL). Verificado aqui, nao so no runbook
+# manual do G4, pra este caminho nao regredir silenciosamente pra 500 no futuro.
+PAYLOAD_LUNA_INTERACTION_SEM_TUTOR=$(cat <<JSON
+{
+  "id_tutor": null,
+  "ds_canal": "WHATSAPP",
+  "ds_direcao": "INBOUND",
+  "ds_conteudo": "Mensagem de tutor desconhecido (id_tutor null).",
+  "dt_recebimento": "$AGORA",
+  "ds_metadados": null
+}
+JSON
+)
+chamar_apikey "luna/interactions (id_tutor null — 422 por design, nao 500)" 422 POST "$API/api/v1/luna/interactions" "$PAYLOAD_LUNA_INTERACTION_SEM_TUTOR"
+
+# 12d. POST /api/v1/luna/triage — liga-se a interacao criada em 12b.
+# Origem: TriageRequestDTO, dtos.py:46-54 (id_interacao, id_tutor, sintomas,
+# ds_urgencia, nr_score, ds_recomendacao).
+PAYLOAD_LUNA_TRIAGE=$(cat <<JSON
+{
+  "id_interacao": $ID_INTERACAO_LUNA,
+  "id_tutor": $ID_TUTOR_LUNA,
+  "sintomas": ["vomito", "letargia"],
+  "ds_urgencia": "MEDIA",
+  "nr_score": 55,
+  "ds_recomendacao": "Observar por 24h e retornar se os sintomas persistirem."
+}
+JSON
+)
+chamar_apikey "luna/triage" 201 POST "$API/api/v1/luna/triage" "$PAYLOAD_LUNA_TRIAGE"
 
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
