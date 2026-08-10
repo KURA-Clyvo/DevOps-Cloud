@@ -217,6 +217,14 @@ services:
       TWILIO_SID: ${TWILIO_SID:-}
       TWILIO_TOKEN: ${TWILIO_TOKEN:-}
       TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-+14155238886}
+      # OpenAI Whisper — transcrição de áudio → draft SOAP (FEAT-02, POST /transcricao).
+      # NÃO fail-fast, por design: settings.py:33 já tem default "" e
+      # transcricao_service.py:62 lança TranscricaoError, capturado em
+      # web/routers/transcricao.py:76 e devolvido como 200 com
+      # {transcricao: null, soap: null} — degradação tratada, não 5xx/crash.
+      # Custo real (~$0.006/min de áudio); exigir a chave pra subir o compose
+      # inteiro bloquearia quem só quer demonstrar o resto do ecossistema.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # Pesos dos modelos de IA
       YOLO_WEIGHTS_PATH: src/ai/models/yolov8n.pt
       BREED_CLASSIFIER_WEIGHTS_PATH: src/ai/models/breed_classifier.pth
