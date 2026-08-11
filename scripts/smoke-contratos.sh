@@ -95,6 +95,28 @@ chamar_apikey() {  # chamar_apikey <nome> <esperado> <metodo> <url> <payload>
   fi
 }
 
+# TASK-81 (KURA_BACKLOG_FIX_7). Variante de chamar() para POST /api/v1/tutor/
+# consentimentos (ConsentimentoBffController.java:57-79) — exige Authorization: Bearer
+# (JWT do tutor) E Idempotency-Key na MESMA chamada (o app manda os dois — o header
+# nao substitui o JWT, ver consentimentos.service.ts::assinar/revogar no
+# mobile-tutor-rn: apiClient injeta o Bearer via interceptor, o service so acrescenta
+# o Idempotency-Key). Nao generaliza chamar()/chamar_apikey() — helper irmao minimo,
+# so pra este par (Bearer + Idempotency-Key), seguindo a mesma regra do cabecalho.
+chamar_idempotency() {  # chamar_idempotency <nome> <esperado> <metodo> <url> <payload> <token> <idem_key>
+  local nome=$1 esperado=$2 metodo=$3 url=$4 payload=$5 token=$6 idem=$7
+  local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url"
+              -H 'Content-Type: application/json' -H "Authorization: Bearer $token"
+              -H "Idempotency-Key: $idem" -d "$payload")
+  local code; code=$(curl "${args[@]}")
+  if [ "$code" != "$esperado" ]; then
+    echo "FALHA  $nome: esperado $esperado, obtido $code"
+    head -c 300 "$BODY_FILE"; echo
+    FALHAS=$((FALHAS+1))
+  else
+    echo "ok     $nome ($code)"
+  fi
+}
+
 # Extrai um campo de um JSON lido do ultimo BODY_FILE gravado por chamar().
 # Caminho em pontos; segmentos so-digitos indexam listas (ex.: "items.0.id").
 campo() {  # campo <caminho.pontilhado>
@@ -149,6 +171,18 @@ print(f"{s[0:2]}.{s[2:5]}.{s[5:8]}/{s[8:12]}-{s[12:14]}")
 }
 
 agora_iso() { "$PY" -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))'; }
+
+# TASK-81 (KURA_BACKLOG_FIX_7). UUID v4 — para o header Idempotency-Key exigido por
+# POST /api/v1/tutor/consentimentos (ConsentimentoBffController.java, ver bloco 15).
+gerar_uuid() { "$PY" -c 'import uuid; print(uuid.uuid4())'; }
+
+# TASK-81. `dtAgendamento` de AgendamentoRequest.java (backend-tutor-java) e um
+# LocalDateTime SEM fuso, com @Future — o Jackson do lado Java desserializa relogio
+# de parede puro. Formata 10 dias no futuro, hora fixa 10:30 — folga bem maior que
+# qualquer diferenca de fuso entre o host que roda este script e a JVM do container
+# (que roda em UTC, TASK-87 ainda nao corrigida), entao nao ha risco de a data cair
+# no passado por causa de conversao de fuso.
+data_futura_java() { "$PY" -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(days=10)).strftime("%Y-%m-%dT10:30:00"))'; }
 
 # ─── dados unicos desta execucao (idempotencia — nunca hardcoded) ──────────
 # Curto de proposito: NrCRMV tem MaximumLength(20) e usa "CRMV-$SUFIXO" — precisa
@@ -249,6 +283,10 @@ PAYLOAD_CONSULTA=$(cat <<JSON
 JSON
 )
 chamar "eventos-clinicos/consultas (dsObservacao vazio)" 201 POST "$API/api/v1/eventos-clinicos/consultas" "$PAYLOAD_CONSULTA" "$TOKEN"
+# TASK-81: capturado aqui (nao so no bloco 18) porque tambem alimenta o check de
+# timeline do tutor (bloco 17) — ConsultaResponseDto.IdEventoClinico (camelCase
+# padrao do System.Text.Json: idEventoClinico).
+ID_EVENTO_CONSULTA=$(campo idEventoClinico)
 
 # ─── 4. GET /medicamentos ─────────────────────────────────────────────────
 # Origem: mobile-clinica-rn/src/services/eventos-clinicos.service.ts:36
@@ -277,6 +315,9 @@ PAYLOAD_PRESCRICAO=$(cat <<JSON
 JSON
 )
 chamar "eventos-clinicos/prescricoes (dsObservacao vazio)" 201 POST "$API/api/v1/eventos-clinicos/prescricoes" "$PAYLOAD_PRESCRICAO" "$TOKEN"
+# TASK-81: PrescricaoResponseDto.IdEventoClinico — insumo do bloco 18 (receituario
+# exige uma Prescricao pre-existente para o evento clinico, ver GerarReceituarioAsync).
+ID_EVENTO_PRESCRICAO=$(campo idEventoClinico)
 
 # ─── 6. GET /dashboard/hoje ───────────────────────────────────────────────
 # Origem: mobile-clinica-rn/src/services/dashboard.service.ts:131
@@ -484,10 +525,27 @@ chamar_apikey "luna/interactions (id_tutor conhecido)" 201 POST "$API/api/v1/lun
 ID_INTERACAO_LUNA=$(campo id_interacao)
 
 # 12c. POST /api/v1/luna/interactions — id_tutor null (tutor desconhecido pela Luna,
-# inbound_message_service.py:85). NAO e falha deste script: e o comportamento parqueado
-# deliberadamente (LunaService.cs:90-95, RegraDeNegocioException -> 422) porque sem
-# id_tutor nao ha como derivar ID_CLINICA (NOT NULL). Verificado aqui, nao so no runbook
-# manual do G4, pra este caminho nao regredir silenciosamente pra 500 no futuro.
+# inbound_message_service.py:85).
+#
+# TASK-81 (achado ao vivo, nao so leitura de doc): este check estava DESATUALIZADO
+# contra o codigo real no momento em que esta task rodou — CLAUDE.md ainda descrevia
+# "422 por design" (o comportamento fechado pela TASK-67/FIX_6) como se fosse o
+# estado atual, mas backend-clinica-dotnet@7642f4e ("fix(luna): allow interaction to
+# be recorded when tutor is unknown (TASK-77)"), commit presente no working tree no
+# momento desta task, MUDOU o contrato: LunaService.RegistrarInteracaoAsync (linhas
+# 82-120) para de lancar RegraDeNegocioException quando dto.IdTutor e null — passa a
+# GRAVAR a interacao com IdClinica/IdTutor nulos (viavel desde que
+# INTERACAO_CANAL.ID_CLINICA virou nullable, V16, TASK-76). Decisao de produto do
+# Felipe (ver CLAUDE.md, cadeia V16 TASK-76->78): o ganho e auditoria, nao
+# visibilidade — uma linha com ID_CLINICA nulo fica invisivel a qualquer leitura
+# escopada por clinica.
+#
+# Exatamente o tipo de drift que a regra de ouro v7 deste backlog existe para achar:
+# um check hardcoded que ficou correto no dia em que foi escrito e ficou errado
+# silenciosamente quando o contrato mudou embaixo dele, sem nenhum teste acusar.
+# Atualizado aqui para o contrato REAL (201), nao o que a documentacao desatualizada
+# alegava — ver a regra do cabecalho deste script ("valor esperado tem que ser o
+# contrato real conferido na fonte").
 PAYLOAD_LUNA_INTERACTION_SEM_TUTOR=$(cat <<JSON
 {
   "id_tutor": null,
@@ -499,7 +557,7 @@ PAYLOAD_LUNA_INTERACTION_SEM_TUTOR=$(cat <<JSON
 }
 JSON
 )
-chamar_apikey "luna/interactions (id_tutor null — 422 por design, nao 500)" 422 POST "$API/api/v1/luna/interactions" "$PAYLOAD_LUNA_INTERACTION_SEM_TUTOR"
+chamar_apikey "luna/interactions (id_tutor null — TASK-77: grava com id_clinica nulo, nao mais 422)" 201 POST "$API/api/v1/luna/interactions" "$PAYLOAD_LUNA_INTERACTION_SEM_TUTOR"
 
 # 12d. POST /api/v1/luna/triage — liga-se a interacao criada em 12b.
 # Origem: TriageRequestDTO, dtos.py:46-54 (id_interacao, id_tutor, sintomas,
@@ -516,6 +574,258 @@ PAYLOAD_LUNA_TRIAGE=$(cat <<JSON
 JSON
 )
 chamar_apikey "luna/triage" 201 POST "$API/api/v1/luna/triage" "$PAYLOAD_LUNA_TRIAGE"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TASK-81 (KURA_BACKLOG_FIX_7). Blocos 13-20: extensao de 22 para ~49 checks.
+#
+# Motivacao (regra de ouro v7): a auditoria que abriu este ciclo mediu que este
+# script cobria MENOS DE UM QUINTO da superficie de consumo real dos 2 apps mobile
+# — e foi exatamente na parte descoberta que estavam os achados Critical do FIX_7
+# (consentimento LGPD do tutor morto em modo real, "Solicitar agendamento" 400
+# garantido). Os blocos abaixo fecham a maior parte da lacuna: toda funcao
+# exportada de src/services/*.service.ts nos 2 apps que faz chamada HTTP real e
+# nao tinha check antes desta task, cobrindo o que era seguro cobrir sem rodar
+# fluxo de audio/Whisper nem disparar mensagem real via Twilio (ver
+# scripts/../mobile-clinica-rn/tests/smoke-coverage.test.ts e
+# mobile-tutor-rn/src/__tests__/smoke-coverage.test.ts para o detector que
+# verifica, a partir do CODIGO (nao de lista escrita a mao), que toda funcao de
+# service nova entra ou neste script ou numa entrada `naoCoberto` com razao
+# explicita — nunca cai fora dos dois em silencio).
+#
+# 3 funcoes ficaram de fora de proposito, marcadas `naoCoberto` no registry dos
+# apps (nao neste script): enviarTranscricao (multipart de audio real + round-trip
+# Whisper via Luna — pesado/nao-deterministico demais pra smoke test),
+# enviarWhatsApp (dispara SMS/WhatsApp real via Twilio — side-effecting, alem de
+# imprevisivel com as credenciais Twilio dummy deste ambiente) e getLunaHealth
+# (bate direto no servico Python da Luna, nao no .NET/Java — terceiro upstream sem
+# LUNA_BASE_URL modelado neste script; candidato a follow-up, nao resolvido aqui).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ─── 13. Login isolado (nao testado antes — so via register/register-invite) ──
+# Origem: mobile-clinica-rn/src/services/auth.service.ts::login (linha 9-12) e
+# mobile-tutor-rn/src/services/auth.service.ts::login (linha 4-7). Reusa as
+# credenciais criadas nos blocos 1 (vet-smoke) e 9 (tutor-smoke).
+
+# 13a. POST /api/v1/auth/login (clinica) — LoginDto.DsEmail/DsSenha (sem
+# validator, ver AuthController.cs:26-33 — credencial ruim daria 422, nao testado
+# aqui porque a regra do script e so payload real do app com credencial valida).
+PAYLOAD_LOGIN_CLINICA=$(cat <<JSON
+{
+  "dsEmail": "vet-smoke-$SUFIXO@kura-smoke.test",
+  "dsSenha": "SmokeTest123"
+}
+JSON
+)
+chamar "auth/login (clinica)" 200 POST "$API/api/v1/auth/login" "$PAYLOAD_LOGIN_CLINICA"
+
+# 13b. POST /api/v1/auth/login (tutor) — LoginRequest.java usa email/senha, NAO
+# dsEmail/dsSenha (divergencia da convencao .NET, confirmada na fonte:
+# auth/api/dto/LoginRequest.java:8-17). Credenciais do tutor criado no bloco
+# "setup" + registrado por convite no bloco 9.
+PAYLOAD_LOGIN_TUTOR=$(cat <<JSON
+{
+  "email": "tutor-smoke-$SUFIXO@kura-smoke.test",
+  "senha": "SmokeTest123"
+}
+JSON
+)
+chamar "tutor/auth/login" 200 POST "$TUTOR_API/api/v1/auth/login" "$PAYLOAD_LOGIN_TUTOR"
+TUTOR_TOKEN=$(campo accessToken)
+
+# ─── 14. tutor/agendamentos (mobile-tutor-rn::agendamentos.service.ts) ────────
+# Origem: listAgendamentos (linha 4-5), solicitarAgendamento (linha 67-73) —
+# corpo ja mapeado pra AgendamentoRequestJava real (TASK-74b, FIX_7):
+# idPet/dtAgendamento/tipo/observacoes, SEM idClinica (decisao do Felipe — Java
+# deriva a clinica do pet) e SEM idVeterinario/duracaoMinutos (a tela nao coleta).
+# cancelarAgendamento (linha 75-76).
+
+chamar "tutor/agendamentos (GET lista)" 200 GET "$TUTOR_API/api/v1/tutor/agendamentos" '' "$TUTOR_TOKEN"
+
+# AG1: para o bloco 20 (teleconsulta) — tipo TELEORIENTACAO so por realismo
+# semantico; TeleconsultaService.GarantirConsentimentoAsync (backend-clinica-
+# dotnet) so exige consentimento TELEORIENTACAO aceito do TUTOR do agendamento,
+# nao verifica o campo `tipo` do agendamento em si (conferido na fonte,
+# TeleconsultaService.cs:71-81) — o tutor-smoke ja tem esse consentimento aceito
+# desde o aceites[] do register-invite (bloco 9).
+PAYLOAD_AGENDAMENTO_AG1=$(cat <<JSON
+{
+  "idPet": $ID_PET,
+  "dtAgendamento": "$(data_futura_java)",
+  "tipo": "TELEORIENTACAO",
+  "observacoes": "Agendamento smoke test — reservado para teleconsulta (bloco 20)."
+}
+JSON
+)
+chamar "tutor/agendamentos (POST — AG1, para teleconsulta)" 201 POST "$TUTOR_API/api/v1/tutor/agendamentos" "$PAYLOAD_AGENDAMENTO_AG1" "$TUTOR_TOKEN"
+ID_AGENDAMENTO_TELE=$(campo idAgendamento)
+
+# AG2: descartavel, so para o check de cancelamento (DELETE).
+PAYLOAD_AGENDAMENTO_AG2=$(cat <<JSON
+{
+  "idPet": $ID_PET,
+  "dtAgendamento": "$(data_futura_java)",
+  "tipo": "CONSULTA",
+  "observacoes": "Agendamento smoke test — sera cancelado (bloco 14d)."
+}
+JSON
+)
+chamar "tutor/agendamentos (POST — AG2, para cancelar)" 201 POST "$TUTOR_API/api/v1/tutor/agendamentos" "$PAYLOAD_AGENDAMENTO_AG2" "$TUTOR_TOKEN"
+ID_AGENDAMENTO_CANCELAR=$(campo idAgendamento)
+
+# Confirmado na fonte (AgendamentoBffController.java:84-99): 204 sem corpo.
+chamar "tutor/agendamentos (DELETE — cancelar AG2)" 204 DELETE "$TUTOR_API/api/v1/tutor/agendamentos/$ID_AGENDAMENTO_CANCELAR" '' "$TUTOR_TOKEN"
+
+# ─── 15. tutor/consentimentos (mobile-tutor-rn::consentimentos.service.ts) ───
+# Origem: listConsentimentos (linha 18-19), assinar (linha 21-25), revogar
+# (linha 31-35) — todos exigem Authorization: Bearer (interceptor do apiClient)
+# E Idempotency-Key (ConsentimentoBffController.java:57-79, @RequestHeader
+# obrigatorio) na MESMA chamada — chamar_idempotency() injeta os dois.
+# tipo=MARKETING de proposito: os 2 tipos que o register-invite (bloco 9) ja
+# assinou (LEMBRETES/TELEORIENTACAO) tornariam o 200/201 esperado ambiguo
+# (replay de idempotencia vs insercao nova) — MARKETING nunca foi tocado antes
+# deste bloco, entao o POST e garantidamente uma insercao nova (201).
+#
+# TASK-81, rodada de fix 1 (G2 achou Critical #2 — task-81-review.md secao 3): o
+# check de "revogar" abaixo esperava 200. ERRADO — confirmado ate um teste
+# automatizado ja existente no proprio repo Java. ConsentimentoBffController.
+# registrar (linha 77): `status = result.criado() ? CREATED : OK`.
+# ConsentimentoService.registrarComIdempotencia (linhas 79-98, comentario
+# linhas 25-27: "REGRA ABSOLUTA: nunca UPDATE — sempre INSERT"): `criado()` so
+# e false quando a Idempotency-Key JA EXISTE (replay). Como cada chamada deste
+# bloco usa `$(gerar_uuid)` — uma key NOVA a cada invocacao — as duas chamadas
+# (assinar E revogar) sao insercoes genuinamente novas do ponto de vista do
+# servidor, nunca um replay. `aceito` ("S" ou "N") NAO entra na decisao de
+# status em nenhum ramo do codigo — "revogar" nao e tratado como update em
+# lugar nenhum. ConsentimentoServiceTest.duasChamadasComKeysDiferentesCriamDoisRegistros
+# (linhas 109-141) confirma: 2 chamadas com keys diferentes -> `criado()==true`
+# nas DUAS, sempre 201. Corrigido de 200 para 201 abaixo — um check errado no
+# instrumento de medida e pior que um bug no codigo medido (teria gerado FALHA
+# falsa contra um servidor correto no primeiro G4 pos-resync).
+
+chamar "tutor/consentimentos (GET lista)" 200 GET "$TUTOR_API/api/v1/tutor/consentimentos" '' "$TUTOR_TOKEN"
+
+PAYLOAD_CONSENTIMENTO_ASSINAR=$(cat <<JSON
+{
+  "tipo": "MARKETING",
+  "versaoTermo": "v1.0",
+  "aceito": "S"
+}
+JSON
+)
+chamar_idempotency "tutor/consentimentos (POST — assinar MARKETING)" 201 POST "$TUTOR_API/api/v1/tutor/consentimentos" "$PAYLOAD_CONSENTIMENTO_ASSINAR" "$TUTOR_TOKEN" "$(gerar_uuid)"
+
+PAYLOAD_CONSENTIMENTO_REVOGAR=$(cat <<JSON
+{
+  "tipo": "MARKETING",
+  "versaoTermo": "v1.0",
+  "aceito": "N"
+}
+JSON
+)
+chamar_idempotency "tutor/consentimentos (POST — revogar MARKETING)" 201 POST "$TUTOR_API/api/v1/tutor/consentimentos" "$PAYLOAD_CONSENTIMENTO_REVOGAR" "$TUTOR_TOKEN" "$(gerar_uuid)"
+
+# ─── 16. tutor/notificacoes e tutor/me/push-token ─────────────────────────────
+# Origem: mobile-tutor-rn/src/services/notifications.service.ts::getNotificacoes
+# (linha 13-15) e registerDeviceToken (linha 61-75, TASK-70 — dsPlatforma em
+# PT-BR, nao dsPlatform).
+
+chamar "tutor/notificacoes (GET)" 200 GET "$TUTOR_API/api/v1/tutor/notificacoes" '' "$TUTOR_TOKEN"
+
+PAYLOAD_PUSH_TOKEN=$(cat <<JSON
+{
+  "dsPushToken": "ExponentPushToken[smoke-$SUFIXO]",
+  "dsPlatforma": "android"
+}
+JSON
+)
+chamar "tutor/me/push-token (PATCH)" 204 PATCH "$TUTOR_API/api/v1/tutor/me/push-token" "$PAYLOAD_PUSH_TOKEN" "$TUTOR_TOKEN"
+
+# ─── 17. tutor/pets, timeline e vacinas ───────────────────────────────────────
+# Origem: mobile-tutor-rn/src/services/pets.service.ts, timeline.service.ts,
+# vacinas.service.ts. ID_PET pertence ao tutor-smoke desde o bloco "setup"
+# (PAYLOAD_PET.idTutor=$ID_TUTOR, o mesmo tutor que assinou o convite no bloco 9).
+
+chamar "tutor/pets (GET lista)" 200 GET "$TUTOR_API/api/v1/tutor/pets" '' "$TUTOR_TOKEN"
+chamar "tutor/pets/{id} (GET detalhe)" 200 GET "$TUTOR_API/api/v1/tutor/pets/$ID_PET" '' "$TUTOR_TOKEN"
+
+# GET timeline: TutorBffController.timelinePet le VW_TIMELINE_PET
+# (TimelinePet.java:7-11), uma view baseada em AGENDAMENTO (nao em
+# EVENTO_CLINICO — achado ja documentado em CLAUDE.md pela TASK-63: foi
+# exatamente a base AGENDAMENTO dessa view que fez o .NET abandona-la pro
+# proprio uso). Isso significa que a consulta/prescricao dos blocos 3/5 (tabela
+# EVENTO_CLINICO, .NET-owned) NAO aparecem aqui — quem aparece sao os
+# agendamentos AG1/AG2 do bloco 14, criados no mesmo pet. idEvento e o campo
+# real (TimelineEventoResponse.java:10), nao idEventoClinico.
+chamar "tutor/pets/{id}/timeline (GET)" 200 GET "$TUTOR_API/api/v1/tutor/pets/$ID_PET/timeline" '' "$TUTOR_TOKEN"
+ID_EVENTO_TIMELINE_TUTOR=$(campo content.0.idEvento)
+
+chamar "tutor/pets/{id}/timeline/{idEvento} (GET detalhe)" 200 GET "$TUTOR_API/api/v1/tutor/pets/$ID_PET/timeline/$ID_EVENTO_TIMELINE_TUTOR" '' "$TUTOR_TOKEN"
+
+# Pode devolver lista vazia (VW_VACINAS_VENCENDO so lista pendencia futura, e
+# nenhum bloco deste script cria Vacina para este pet) — 200 e o contrato
+# esperado em ambos os casos, vazio ou nao.
+chamar "tutor/pets/{id}/vacinas (GET)" 200 GET "$TUTOR_API/api/v1/tutor/pets/$ID_PET/vacinas" '' "$TUTOR_TOKEN"
+chamar "tutor/pets/{id}/vacinas/status (GET)" 200 GET "$TUTOR_API/api/v1/tutor/pets/$ID_PET/vacinas/status" '' "$TUTOR_TOKEN"
+
+# ─── 18. .NET: dashboard, pets/{id}, agenda, soap, receituario ───────────────
+# Origem: mobile-clinica-rn/src/services/dashboard.service.ts (getAlertas,
+# getRecentes), pets.service.ts (getPetById), agenda.service.ts (getAgenda),
+# eventos-clinicos.service.ts (confirmarSoap, gerarReceituario,
+# baixarEAbrirReceituario).
+
+chamar "dashboard/alertas (GET)" 200 GET "$API/api/v1/dashboard/alertas" '' "$TOKEN"
+chamar "dashboard/recentes (GET)" 200 GET "$API/api/v1/dashboard/recentes" '' "$TOKEN"
+chamar "pets/{id} (GET detalhe, contexto clinica)" 200 GET "$API/api/v1/pets/$ID_PET" '' "$TOKEN"
+
+# Janela de 7 dias a partir de hoje — bem dentro do limite de 31 dias que
+# AgendaService.GetAgendaAsync exige (dataFim - dataInicio <= 31), evitando 422.
+DATA_INICIO_AGENDA=$("$PY" -c 'import datetime; print(datetime.date.today().isoformat())')
+DATA_FIM_AGENDA=$("$PY" -c 'import datetime; print((datetime.date.today()+datetime.timedelta(days=7)).isoformat())')
+chamar "agenda (GET)" 200 GET "$API/api/v1/agenda?dataInicio=$DATA_INICIO_AGENDA&dataFim=$DATA_FIM_AGENDA" '' "$TOKEN"
+
+# PUT soap — SoapConfirmarDto (S/O/A/P todos string? nullable, sem validator,
+# ver EventosClinicosController.cs:188-195) — usa o evento da consulta (bloco 3).
+PAYLOAD_SOAP=$(cat <<JSON
+{
+  "s": "Tutor relata melhora do quadro.",
+  "o": "Temperatura e FC dentro do normal ao exame.",
+  "a": "Quadro em resolucao.",
+  "p": "Manter observacao, retorno se piora."
+}
+JSON
+)
+chamar "eventos-clinicos/{id}/soap (PUT confirmar)" 200 PUT "$API/api/v1/eventos-clinicos/$ID_EVENTO_CONSULTA/soap" "$PAYLOAD_SOAP" "$TOKEN"
+
+# POST receituario — sem corpo (GerarReceituario(long id), sem [FromBody]).
+# Precisa de Prescricao pre-existente pro MESMO evento clinico — usa
+# ID_EVENTO_PRESCRICAO (bloco 5), nao ID_EVENTO_CONSULTA (senao 404,
+# EntidadeNaoEncontradaException("Prescricao", id), ver ReceituarioPdfService.cs:49-51).
+chamar "eventos-clinicos/{id}/receituario (POST gerar)" 200 POST "$API/api/v1/eventos-clinicos/$ID_EVENTO_PRESCRICAO/receituario" '' "$TOKEN"
+ID_DOCUMENTO_RECEITUARIO=$(campo id)
+
+# GET download — binario (application/pdf), sem corpo JSON. chamar() so verifica
+# o status code aqui; BODY_FILE fica com os bytes do PDF, nao importa pro check.
+chamar "eventos-clinicos/{id}/receituario/{idDocumento}/download (GET)" 200 GET "$API/api/v1/eventos-clinicos/$ID_EVENTO_PRESCRICAO/receituario/$ID_DOCUMENTO_RECEITUARIO/download" '' "$TOKEN"
+
+# ─── 19. .NET: luna/triagens/relatorio (JWT de clinica, distinto dos 3 x-api-key) ──
+# Origem: mobile-clinica-rn/src/services/luna.service.ts::getRelatorioTriagens
+# (linha 46-54). LunaController.GerarRelatorio (linha 28-38) e [Authorize] no
+# METODO, nao na classe — distinto dos irmaos POST /interactions e /triage
+# ([AllowAnonymous] + X-Api-Key) do MESMO controller. Usa Bearer, nao X-Api-Key.
+chamar "luna/triagens/relatorio (GET, JWT clinica)" 200 GET "$API/api/v1/luna/triagens/relatorio?dataInicio=2020-01-01&dataFim=$DATA_FIM_AGENDA" '' "$TOKEN"
+
+# ─── 20. .NET: teleconsulta (POST idempotente + GET) ─────────────────────────
+# Origem: mobile-clinica-rn/src/services/teleconsulta.service.ts::criarOuObterSala
+# (linha 12-17) e obterSala (linha 19-24). Usa AG1 (bloco 14) — tutor com
+# consentimento TELEORIENTACAO aceito (bloco 9), TeleconsultaService.
+# GarantirConsentimentoAsync (cs:71-81) exige exatamente isso. DailyService usa
+# API key placeholder deste ambiente (CLAUDE.md: "Daily nao e credencial real") —
+# CriarSalaAsync tanto pode ter sucesso quanto falhar; os dois caminhos de
+# TeleconsultaService.CriarOuObterSalaAsync (cs:34-57) devolvem 200, nunca lancam
+# por causa disso (StFallbackManual=true no caminho de falha) — 200 e
+# determinístico independente do resultado do provedor externo.
+chamar "teleconsulta/{id}/sala (POST criar)" 200 POST "$API/api/v1/teleconsulta/$ID_AGENDAMENTO_TELE/sala" '' "$TOKEN"
+chamar "teleconsulta/{id}/sala (GET obter)" 200 GET "$API/api/v1/teleconsulta/$ID_AGENDAMENTO_TELE/sala" '' "$TOKEN"
 
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
