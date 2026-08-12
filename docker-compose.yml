@@ -157,6 +157,14 @@ services:
       - "8081:8081"
     environment:
       SPRING_PROFILES_ACTIVE: prod
+      # TASK-87: LocalDateTime.now() (usado em validações @Future/isBefore de agendamento,
+      # ex. AgendamentoRequest.java, Agendamento.java) lê ZoneId.systemDefault() do container,
+      # que sem TZ explícito cai em UTC — 3h adiantado sobre o horário real de Brasília.
+      # Hardcoded (não é segredo), igual a ASPNETCORE_URLS/Jwt__Issuer no serviço kura-api.
+      # Só este serviço: .NET usa DateTime.UtcNow incondicional e a Luna usa
+      # datetime.now(tz=timezone.utc) + cron com fuso fixado no código — os dois já são imunes
+      # ao TZ do container (ver task-87-g0.md, item 2). Setar TZ neles seria no-op.
+      TZ: America/Sao_Paulo
       # Sem override de baseline-version: banco nasce vazio (sem bootstrap),
       # então o baseline-version: "0" do application-prod.yml já é o correto
       # e o Flyway aplica V1→V12+ do zero.
