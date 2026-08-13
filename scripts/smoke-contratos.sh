@@ -841,7 +841,21 @@ chamar "eventos-clinicos/{id}/receituario/{idDocumento}/download (GET)" 200 GET 
 # (linha 46-54). LunaController.GerarRelatorio (linha 28-38) e [Authorize] no
 # METODO, nao na classe — distinto dos irmaos POST /interactions e /triage
 # ([AllowAnonymous] + X-Api-Key) do MESMO controller. Usa Bearer, nao X-Api-Key.
-chamar "luna/triagens/relatorio (GET, JWT clinica)" 200 GET "$API/api/v1/luna/triagens/relatorio?dataInicio=2020-01-01&dataFim=$DATA_FIM_AGENDA" '' "$TOKEN"
+#
+# ⚠️ CORRIGIDO no G4 do FIX_7 (2026-08-12). Este check nascia com
+# `dataInicio=2020-01-01` — ~6 anos de intervalo — e devolvia **422**, nao 200:
+# `LunaService.GerarRelatorioAsync` (LunaService.cs:61-62) rejeita intervalo maior
+# que `MaxIntervaloDias = 90` (LunaService.cs:12). A API estava CERTA; o check e que
+# violava a regra do cabecalho deste arquivo (payload copiado do app, com origem
+# citada): a tela real (`mobile-clinica-rn/src/app/(app)/luna.tsx:190-194`) monta
+# `dataInicio = subDays(new Date(), periodo)` com `periodo` default **7**, e
+# `dataFim = hoje` — janela curta e movel, nunca uma data fixa de 2020.
+# Nenhum valor do seletor de periodo daquela tela chega perto de 90 dias.
+# Lição: este check foi escrito e revisado 3x SEM Docker no ar; so a execucao real
+# pegou. Check nunca executado nao e cobertura, e intencao.
+DATA_INICIO_RELATORIO=$("$PY" -c 'import datetime; print((datetime.date.today()-datetime.timedelta(days=7)).isoformat())')
+DATA_FIM_RELATORIO=$("$PY" -c 'import datetime; print(datetime.date.today().isoformat())')
+chamar "luna/triagens/relatorio (GET, JWT clinica)" 200 GET "$API/api/v1/luna/triagens/relatorio?dataInicio=$DATA_INICIO_RELATORIO&dataFim=$DATA_FIM_RELATORIO" '' "$TOKEN"
 
 # ─── 20. .NET: teleconsulta (POST idempotente + GET) ─────────────────────────
 # Origem: mobile-clinica-rn/src/services/teleconsulta.service.ts::criarOuObterSala
