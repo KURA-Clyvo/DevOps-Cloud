@@ -48,6 +48,9 @@ fi
 
 FALHAS=0
 BODY_FILE=$(mktemp)
+# Corpo da requisicao vai para disco e e enviado com --data-binary @arquivo, nunca
+# como argumento de linha de comando — ver o bloco de comentario acima de chamar().
+PAYLOAD_FILE=$(mktemp)
 trap 'rm -f "$BODY_FILE"' EXIT
 
 PY=python
@@ -59,10 +62,29 @@ fi
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
+# ─── envio de corpo: SEMPRE por arquivo, nunca por argumento ────────────────
+# Descoberto no G4 do FIX_7 (2026-08-12), com a stack real de pe: passar o corpo
+# como ARGUMENTO (`-d "$payload"`) corrompe qualquer byte nao-ASCII no Git Bash do
+# Windows. `curl.exe` e binario nativo Win32, e a camada de conversao de argumento
+# do MSYS transcodifica o argumento de UTF-8 para o codepage ANSI (cp1252) antes de
+# entregar ao processo. Sintoma medido: um em-dash (UTF-8 `e2 80 94`) chegou ao Java
+# como o byte solto `0x97` (em-dash do cp1252), e o Jackson devolveu
+# "Invalid UTF-8 start byte 0x97" -> **HTTP 500**, num endpoint que estava correto.
+#
+# Custou um falso REPROVA do G4: o bloco 14 (POST /tutor/agendamentos) acusou 500 e
+# a suspeita inicial recaiu sobre a TASK-74a. Provado isolado que era o harness, nao
+# o produto: payload so-ASCII via `-d` -> 201; o MESMO em-dash via arquivo -> 201,
+# com o servidor devolvendo o caractere intacto no corpo da resposta.
+#
+# `--data-binary @arquivo` faz curl ler os bytes do disco, sem passar pela conversao
+# de argumento. Isso importa alem do cosmetico: este e um produto em PORTUGUES — os
+# payloads reais dos apps carregam acento o tempo todo, e um gate que nao consegue
+# exercitar UTF-8 e cego justamente onde o produto vive.
 chamar() {  # chamar <nome> <esperado> <metodo> <url> <payload> [token]
   local nome=$1 esperado=$2 metodo=$3 url=$4 payload=$5 token=${6:-}
+  printf '%s' "$payload" > "$PAYLOAD_FILE"
   local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url"
-              -H 'Content-Type: application/json' -d "$payload")
+              -H 'Content-Type: application/json' --data-binary "@$PAYLOAD_FILE")
   [ -n "$token" ] && args+=(-H "Authorization: Bearer $token")
   local code; code=$(curl "${args[@]}")
   if [ "$code" != "$esperado" ]; then
@@ -84,7 +106,11 @@ chamar_apikey() {  # chamar_apikey <nome> <esperado> <metodo> <url> <payload>
   local nome=$1 esperado=$2 metodo=$3 url=$4 payload=$5
   local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url"
               -H 'Content-Type: application/json' -H "X-Api-Key: $LUNA_API_KEY")
-  [ -n "$payload" ] && args+=(-d "$payload")
+  # corpo por arquivo, nunca por argumento — ver bloco de comentario em chamar()
+  if [ -n "$payload" ]; then
+    printf '%s' "$payload" > "$PAYLOAD_FILE"
+    args+=(--data-binary "@$PAYLOAD_FILE")
+  fi
   local code; code=$(curl "${args[@]}")
   if [ "$code" != "$esperado" ]; then
     echo "FALHA  $nome: esperado $esperado, obtido $code"
@@ -106,7 +132,10 @@ chamar_idempotency() {  # chamar_idempotency <nome> <esperado> <metodo> <url> <p
   local nome=$1 esperado=$2 metodo=$3 url=$4 payload=$5 token=$6 idem=$7
   local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url"
               -H 'Content-Type: application/json' -H "Authorization: Bearer $token"
-              -H "Idempotency-Key: $idem" -d "$payload")
+              -H "Idempotency-Key: $idem")
+  # corpo por arquivo, nunca por argumento — ver bloco de comentario em chamar()
+  printf '%s' "$payload" > "$PAYLOAD_FILE"
+  args+=(--data-binary "@$PAYLOAD_FILE")
   local code; code=$(curl "${args[@]}")
   if [ "$code" != "$esperado" ]; then
     echo "FALHA  $nome: esperado $esperado, obtido $code"
