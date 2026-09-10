@@ -1,0 +1,124 @@
+name: Deploy to ACI
+
+# Manual redeploy of the production stack running on Azure Container Instances.
+#
+# WHY workflow_dispatch ONLY (no push trigger): this repo's source of truth for
+# application code is three submodules, and a push here usually means a pinned
+# commit moved — not that someone wants production restarted. Deploying is a
+# deliberate act, so it stays deliberate.
+#
+# ─── WHAT THIS WORKFLOW CAN AND CANNOT DO ───────────────────────────────────
+# It can deploy any of the three application container groups from images that
+# are ALREADY in the ACR, and it can build+push the two small images.
+#
+# It cannot build luna-ai. Measured by the team (see the closing comment in
+# ci.yml): the four images total ~13.6 GB, with luna-ai alone at ~9.8 GB, and a
+# GitHub-hosted ubuntu-latest runner documents ~14 GB free before build layer
+# caches. The luna-ai build also measured ~20 min locally. So luna-ai images are
+# built and pushed from a workstation (./azure/deploy.sh without --skip-build)
+# or from a larger/self-hosted runner; this workflow only rolls them out.
+#
+# It never touches the Oracle container group. deploy.sh --service/--apps-only
+# leaves the database alone by construction — recreating it would wipe the data,
+# since ACI storage is ephemeral and the datafiles have no volume.
+#
+# ─── AZURE AUTH: OIDC, NO STORED CREDENTIALS ────────────────────────────────
+# Uses workload identity federation: the runner exchanges its short-lived OIDC
+# token for an Azure token. Nothing long-lived is stored in this repo. The three
+# values below are repository VARIABLES, not secrets — a client id and a tenant
+# id are identifiers, not credentials, and treating them as secrets only makes
+# the logs harder to read.
+#
+# One-time setup on the Azure side, beyond the app registration + federated
+# credential:
+#   - Contributor (or narrower) on the resource group, so the principal can
+#     create/delete container groups;
+#   - AcrPush on the registry, only if this workflow is used with build: true;
+#   - access to the Key Vault. deploy.sh creates the vault in access-policy
+#     mode, and that policy covers the human who ran it first — NOT this
+#     principal. Grant it explicitly:
+#       az keyvault set-policy --name kura-prod-kv \
+#         --spn <client-id> --secret-permissions get list set
+#     Without this, the run fails at step [2/10] with a Forbidden on the vault.
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Which container group to roll out'
+        required: true
+        type: choice
+        options:
+          - all-apps
+          - clinica-api
+          - tutor-api
+          - luna-ai
+      build:
+        description: 'Build and push the image first (not available for luna-ai)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  id-token: write   # required for the OIDC token exchange
+  contents: read
+
+jobs:
+  deploy:
+    name: Roll out ${{ inputs.service }}
+    runs-on: ubuntu-latest
+    steps:
+      # Fail before touching Azure, not halfway through a deploy.
+      - name: Reject unsupported build request
+        if: ${{ inputs.build && (inputs.service == 'luna-ai' || inputs.service == 'all-apps') }}
+        run: |
+          echo "::error::'build: true' is not supported for '${{ inputs.service }}' because the luna-ai image (~9.8 GB) does not fit on a GitHub-hosted runner. Build and push it from a workstation with ./azure/deploy.sh, then re-run this workflow with build: false."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Submodule CONTENT is only needed to build. For a rollout, deploy.sh
+          # reads each image tag from the gitlink stored in this repo's own tree
+          # (`git ls-tree`), which a plain checkout already provides — so the
+          # deploy path stays fast and doesn't fetch three large repos.
+          submodules: ${{ inputs.build && 'recursive' || 'false' }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Roll out
+        env:
+          # No .env is created here on purpose. In production the Key Vault is
+          # the source of truth for every secret, and deploy.sh reads it
+          # directly — a .env on the runner would just be a second copy to keep
+          # in sync and to leak.
+          KURA_PREFIX: ${{ vars.KURA_PREFIX || 'kura-prod' }}
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus2' }}
+        run: |
+          set -euo pipefail
+          chmod +x azure/*.sh
+
+          ESCOPO=()
+          if [ "${{ inputs.service }}" = "all-apps" ]; then
+            ESCOPO=(--apps-only)
+          else
+            ESCOPO=(--service "${{ inputs.service }}")
+          fi
+
+          BUILD=()
+          if [ "${{ inputs.build }}" != "true" ]; then
+            BUILD=(--skip-build)
+          fi
+
+          ./azure/deploy.sh "${ESCOPO[@]}" "${BUILD[@]}" --yes
+
+      - name: Verify
+        run: ./azure/verify.sh
+        env:
+          KURA_PREFIX: ${{ vars.KURA_PREFIX || 'kura-prod' }}
+          AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus2' }}
