@@ -25,7 +25,8 @@
 4. [Rotas da API](#4-rotas-da-api)
 5. [Como Instalar e Executar (How To)](#5-como-instalar-e-executar)
 6. [Docker Compose — Detalhamento](#6-docker-compose--detalhamento)
-7. [Scripts do Azure CLI](#7-scripts-do-azure-cli)
+7. [Deploy em ACR/ACI (produção)](#7-deploy-em-acraci-produção)
+8. [Segredos no Azure Key Vault](#8-segredos-no-azure-key-vault)
 
 ---
 
@@ -67,29 +68,48 @@ O sistema resolve um problema central da veterinária moderna: a jornada do pet 
 
 ## 3. Arquitetura Macro
 
+O sistema roda em **dois ambientes**, com os mesmos quatro serviços e as mesmas portas.
+O que muda é o isolamento entre eles — e, por consequência, como um encontra o outro.
+
+**Produção — Azure Container Instances (`azure/deploy.sh`)**
+
 ```
-                         ┌─────────────────────────────────────────────────────┐
-                         │           AZURE VM (Ubuntu 22.04 · Standard_B2s)    │
-                         │                                                     │
-                         │  ┌──────────────┐     ┌──────────────────────────┐  │
-  Veterinário/           │  │  kura-api    │     │      kura-tutor          │  │
-  Gestor da Clínica ─────┼─►│  (.NET 10)   │     │   (Java 21 / Spring)     │◄─┼── Tutor (App Mobile)
-  :8080/swagger          │  │  porta 8080  │     │      porta 8081          │  │   :8081/swagger
-                         │  └──────┬───────┘     └────────────┬─────────────┘  │
-                         │         │                           │                │
-  Luna IA               │  ┌──────▼───────────────────────────▼──────────────┐ │
-  (Python / FastAPI) ───┼─►│                   oracle-db                      │ │
-  porta 8000            │  │          gvenzl/oracle-xe:21-slim                 │ │
-                         │  │         porta 9092 (ext) · 1521 (int)            │ │
-  Twilio WhatsApp ───────┼─►│         Named Volume: kura_oracle_data           │ │
-  (lembretes/triagem)   │  └──────────────────────────────────────────────────┘ │
-                         │                                                     │
-  Dispositivos IoT       │  ┌──────────────────────────────────────────────────┐ │
-  (ESP32 sensores) ──────┼─►│                Docker Network: kura_network      │ │
-                         │  │          (bridge — serviços se comunicam         │ │
-                         │  │           por nome: oracle-db, kura-api, etc.)   │ │
-                         │  └──────────────────────────────────────────────────┘ │
-                         └─────────────────────────────────────────────────────┘
+   ┌───────────────────────── Azure · kura-prod-rg · eastus2 ──────────────────────────┐
+   │                                                                                   │
+   │  ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────────────────┐   │
+   │  │  Key Vault       │   │ Container        │   │ Storage Account              │   │
+   │  │  kura-prod-kv    │   │ Registry         │   │ · share de backup (dumps)    │   │
+   │  │  11 segredos     │   │ kuraprodacr      │   │ · share de documentos (PDFs) │   │
+   │  └────────┬─────────┘   └────────┬─────────┘   └───────────▲──────────────────┘   │
+   │           │ secureValue          │ imagem                  │ expdp / PDFs         │
+   │  ┌────────▼──────────────────────▼─────────────────────────┴──────────────────┐   │
+   │  │            Container Instances — um container group por serviço            │   │
+   │  │                                                                            │   │
+   │  │   kura-prod-clinica-api      kura-prod-tutor-api      kura-prod-luna-ai     │   │
+   │  │        :8080                     :8081                    :8000            │   │
+   │  │      (.NET 10)              (Java 21 · Flyway)        (Python/FastAPI)      │   │
+   │  │           └──────────────────────┬┴───────────────────────┘                │   │
+   │  │                      ┌───────────▼──────────────┐                          │   │
+   │  │                      │  kura-prod-oracle-db     │                          │   │
+   │  │                      │  :1521 · disco EFÊMERO   │                          │   │
+   │  └──────────────────────┴──────────────────────────┴──────────────────────────┘   │
+   └───────────────────────────────────────────────────────────────────────────────────┘
+
+   Não há rede compartilhada entre container groups. Cada serviço tem seu FQDN público
+   <nome>.eastus2.azurecontainer.io, e é por ele que os outros o alcançam.
+```
+
+**Desenvolvimento local — `docker compose`**
+
+```
+   ┌────────────── Máquina do desenvolvedor · rede kura_network (bridge) ──────────────┐
+   │   kura-api :8080   ·   kura-tutor :8081   ·   luna-ai :8000                       │
+   │                            └──────┬───────────────┘                               │
+   │                   oracle-db  9092 (host) → 1521 (container)                       │
+   │                   named volume kura_oracle_data                                   │
+   │   Serviços se resolvem por NOME (oracle-db, kura-api, luna-ai).                   │
+   └───────────────────────────────────────────────────────────────────────────────────┘
+```
 
   Fluxo de dados Luna → .NET:
   Tutor WhatsApp → Twilio → POST /webhook/twilio/whatsapp (Luna)
@@ -107,9 +127,9 @@ O sistema resolve um problema central da veterinária moderna: a jornada do pet 
 
 ## 4. Rotas da API
 
-### .NET API — Backend Clínica (`http://<VM_IP>:8080`)
+### .NET API — Backend Clínica (`http://kura-prod-clinica-api.eastus2.azurecontainer.io:8080`)
 
-Documentação interativa completa: `http://<VM_IP>:8080/swagger`
+Documentação interativa completa: `http://kura-prod-clinica-api.eastus2.azurecontainer.io:8080/swagger`
 
 | Método | Rota | Auth | Descrição |
 |---|---|---|---|
@@ -126,9 +146,9 @@ Documentação interativa completa: `http://<VM_IP>:8080/swagger`
 | `GET` | `/health` | Pública | Health check |
 | `GET` | `/metrics` | Pública | Métricas SLO |
 
-### Java API — Backend Tutor (`http://<VM_IP>:8081`)
+### Java API — Backend Tutor (`http://kura-prod-tutor-api.eastus2.azurecontainer.io:8081`)
 
-Documentação: `http://<VM_IP>:8081/api/swagger-ui/index.html`
+Documentação: `http://kura-prod-tutor-api.eastus2.azurecontainer.io:8081/api/swagger-ui/index.html`
 
 | Método | Rota | Auth | Descrição |
 |---|---|---|---|
@@ -142,9 +162,9 @@ Documentação: `http://<VM_IP>:8081/api/swagger-ui/index.html`
 | `POST` | `/api/tutores/{id}/consentimentos` | JWT | Registra aceite LGPD |
 | `GET` | `/api/tutores/{id}/lgpd/relatorio` | JWT | Relatório LGPD (art. 18) |
 
-### Luna IA — Python FastAPI (`http://<VM_IP>:8000`)
+### Luna IA — Python FastAPI (`http://kura-prod-luna-ai.eastus2.azurecontainer.io:8000`)
 
-Documentação: `http://<VM_IP>:8000/docs`
+Documentação: `http://kura-prod-luna-ai.eastus2.azurecontainer.io:8000/docs`
 
 | Método | Rota | Auth | Descrição |
 |---|---|---|---|
@@ -157,30 +177,51 @@ Documentação: `http://<VM_IP>:8000/docs`
 
 ### Pré-requisitos locais
 
-| Ferramenta | Versão mínima |
-|---|---|
-| Azure CLI | 2.50+ |
-| Git | 2.x |
-| Conta Azure | crédito ativo |
+| Ferramenta | Versão mínima | Necessária para |
+|---|---|---|
+| Git | 2.x | clone + submódulos |
+| Docker | 24+ | build das imagens e execução local |
+| Azure CLI | 2.50+ | deploy em ACR/ACI |
+| Python | 3.8+ | usado pelos scripts em `azure/` para renderizar os manifestos |
+| Conta Azure | crédito ativo | — |
 
 ### Passo 1 — Clone do repositório de infraestrutura
 
 ```bash
-git clone https://github.com/FelipeFerrete/kura-infra.git
-cd kura-infra
+git clone --recurse-submodules https://github.com/KURA-Clyvo/DevOps-Cloud.git
+cd DevOps-Cloud
 ```
 
-A estrutura de diretórios esperada é:
+Se já tiver clonado sem `--recurse-submodules`:
+
+```bash
+git submodule update --init --recursive
+```
+
+O conteúdo dos submódulos é **obrigatório para buildar** as imagens. Para apenas
+reimplantar uma tag que já está no ACR (`--skip-build`), o clone raso basta — o
+`deploy.sh` lê o commit fixado direto da árvore deste repositório.
+
+Estrutura do repositório:
 
 ```
-kura-infra/
-├── docker-compose.yml      ← orquestra todos os serviços
-├── script-azure.sh         ← provisiona a VM na Azure
-├── .env.example            ← template de variáveis de ambiente
-├── README.md
-├── dotnet-backend/         ← código-fonte da .NET API (submodule ou clone)
-├── java-backend/           ← código-fonte da Java API  (submodule ou clone)
-└── luna-ia/                ← código-fonte do Luna IA   (submodule ou clone)
+DevOps-Cloud/
+├── docker-compose.yml        ← ambiente de desenvolvimento local
+├── azure/
+│   ├── deploy.sh             ← provisiona e implanta tudo em ACR/ACI
+│   ├── verify.sh             ← valida cofre, ACR e os 4 serviços por FQDN público
+│   ├── backup-db.sh          ← dump lógico do Oracle (Data Pump) para o Azure Files
+│   ├── restore-db.sh         ← restaura um dump
+│   ├── teardown.sh           ← apaga o ambiente inteiro (operação excepcional)
+│   └── aci-*.yaml            ← manifestos de container group (templates)
+├── scripts/
+│   ├── smoke-contratos.sh    ← smoke de contrato app → API
+│   └── seed-demo.sh          ← popula uma clínica de demonstração
+├── docs/                     ← arquitetura (Mermaid, draw.io, PDF)
+├── .env.example              ← template de variáveis de ambiente
+├── dotnet-backend/           ← submódulo · backend-clinica-dotnet
+├── java-backend/             ← submódulo · backend-tutor-java
+└── luna-ia/                  ← submódulo · kura-luna-ai
 ```
 
 ### Passo 2 — Configure as variáveis de ambiente
@@ -231,15 +272,29 @@ WEBHOOK_PUBLIC_URL=https://xxxx.ngrok.io/webhook/twilio/whatsapp
 ### Passo 3 — Execute na Azure (produção)
 
 ```bash
-# Login na Azure
 az login
-
-# Provisiona VM, instala dependências e sobe a stack
-chmod +x script-azure.sh
-./script-azure.sh
+chmod +x azure/*.sh
+./azure/deploy.sh
 ```
 
-O script retorna o IP público da VM ao final. Aguarde ~5 minutos para o Oracle XE inicializar.
+O `deploy.sh` cria o resource group, o Key Vault (com todos os segredos), o ACR, a
+storage account e os quatro container groups — nessa ordem, e todos os passos de
+infraestrutura são idempotentes. Ao final imprime os quatro endereços públicos.
+
+Detalhes importantes na primeira execução:
+
+- **Demora.** O Oracle XE cria o PDB no primeiro boot (vários minutos) e a imagem da
+  Luna tem ~9,8 GB para buildar e enviar ao ACR.
+- **O `tutor-api` sobe antes do `clinica-api`**, de propósito: o Flyway roda no boot
+  dele e é a autoridade de DDL. Com essa ordem, o `.NET` já encontra o schema pronto.
+- **Nada de `.env` é obrigatório aqui.** Ver §8.
+
+Depois:
+
+```bash
+./azure/verify.sh      # valida cofre, imagens no ACR e os 4 serviços, de fora
+./azure/backup-db.sh   # primeiro dump do banco
+```
 
 ### Execução local (desenvolvimento)
 
@@ -526,92 +581,186 @@ YOLO_WEIGHTS_PATH      → caminho dos pesos YOLOv8n
 
 ---
 
-## 7. Scripts do Azure CLI
+## 7. Deploy em ACR/ACI (produção)
 
-O arquivo `script-azure.sh` executa **em sequência** as seguintes tarefas:
+Produção roda em **Azure Container Instances**: um container group por serviço, imagens
+no **Azure Container Registry**, segredos no **Azure Key Vault**. Tudo é provisionado por
+`azure/deploy.sh`.
 
-### Tarefa 1 — Provisiona a VM Linux (RUBRICA 1.1)
+### Modos de execução
 
-```bash
-az group create \
-    --name "kura-rg-fiap2026" \
-    --location "brazilsouth"
+| Comando | O que faz |
+|---|---|
+| `./azure/deploy.sh` | Implantação completa. Se o container group do Oracle **já existe, é preservado** — o banco não é tocado. |
+| `./azure/deploy.sh --apps-only` | Redeploy só das três aplicações. Nem olha para o Oracle. É o modo usado pelo GitHub Actions. |
+| `./azure/deploy.sh --service luna-ai` | Redeploy de um serviço só (`clinica-api`, `tutor-api`, `luna-ai`). |
+| `./azure/deploy.sh --db-only` | Só a infraestrutura e o Oracle, sem tocar em aplicação. Usado no fluxo de restauração. |
+| `./azure/deploy.sh --recreate-db` | **Apaga e recria o banco.** Pede confirmação digitada. |
+| `./azure/deploy.sh --skip-build` | Não builda; usa a tag que já está no ACR. |
 
-az vm create \
-    --resource-group "kura-rg-fiap2026" \
-    --name "kura-vm-fiap2026" \
-    --image Ubuntu2204 \
-    --size Standard_B2s \
-    --admin-username "kuraadmin" \
-    --generate-ssh-keys \
-    --public-ip-sku Standard
-```
+### O banco: por que não há volume, e o que garante a durabilidade
 
-### Tarefa 1.2 — Abre as portas (RUBRICA 1.2)
+O único tipo de volume do ACI é `azureFile`, que é **SMB** — e o Oracle não abre a
+instância com os datafiles em SMB (`ORA-00205`/`ORA-00210`: falta o locking POSIX/O_DIRECT
+que control files e redo logs exigem). Não é questão de configuração: **não existe volume
+persistente possível para o banco neste modelo.**
 
-```bash
-# Portas abertas: 22 (SSH), 8080 (.NET), 8081 (Java), 8000 (Luna), 9092 (Oracle)
-az vm open-port --resource-group "kura-rg-fiap2026" --name "kura-vm-fiap2026" --port 22
-az vm open-port --resource-group "kura-rg-fiap2026" --name "kura-vm-fiap2026" --port 8080
-az vm open-port --resource-group "kura-rg-fiap2026" --name "kura-vm-fiap2026" --port 8081
-az vm open-port --resource-group "kura-rg-fiap2026" --name "kura-vm-fiap2026" --port 8000
-az vm open-port --resource-group "kura-rg-fiap2026" --name "kura-vm-fiap2026" --port 9092
-```
+Duas consequências, ambas tratadas explicitamente:
 
-### Tarefa 1.3 + 1.4 — Instala Docker, Git e nano (RUBRICA 1.3 e 1.4)
+1. **Recriar o container group do Oracle apaga o banco.** Por isso o `deploy.sh` nunca o
+   recria sem `--recreate-db`, e o modo `--apps-only` existe justamente para que um
+   redeploy de aplicação não chegue perto dele.
+2. **A durabilidade vem de dump lógico**, não de volume:
 
 ```bash
-az vm run-command invoke \
-    --resource-group "kura-rg-fiap2026" \
-    --name "kura-vm-fiap2026" \
-    --command-id RunShellScript \
-    --scripts '
-        apt-get update -y
-        apt-get install -y git nano curl gnupg ca-certificates lsb-release
-        # Adiciona repositório oficial Docker
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list
-        apt-get update -y
-        apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-        systemctl enable docker && systemctl start docker
-    '
+./azure/backup-db.sh                     # dump nomeado pela data/hora UTC
+./azure/backup-db.sh antes-da-migracao   # dump com rótulo próprio
+./azure/restore-db.sh --list             # o que existe no share
 ```
 
-### Tarefa 2.1 — Executa em background (RUBRICA 2.1)
+O dump usa **Data Pump** (`expdp` com `FLASHBACK_TIME`), que é consistente por construção.
+Copiar `/opt/oracle/oradata` com o banco aberto — abordagem tentadora e usada em versões
+anteriores deste projeto — produz datafiles *fuzzy*, que só seriam recuperáveis com o redo
+do intervalo; em `NOARCHIVELOG` (padrão do XE) esse redo não existe, então **aquela cópia
+não restaura**. Este é o motivo de a persistência ter mudado de mecanismo.
+
+**Restaurar** exige uma ordem específica, porque o Flyway roda no boot do `tutor-api` e
+recriaria um schema vazio antes do import:
 
 ```bash
-az vm run-command invoke \
-    --resource-group "kura-rg-fiap2026" \
-    --name "kura-vm-fiap2026" \
-    --command-id RunShellScript \
-    --scripts 'cd /opt/kura && docker compose up --build -d'
+./azure/deploy.sh --db-only --recreate-db   # banco novo e vazio, sem apps
+./azure/restore-db.sh kura-20260910T143000Z
+./azure/deploy.sh --apps-only               # sobe as três aplicações
 ```
 
-### Tarefa 2.2 — Usuário sem privilégios (RUBRICA 2.2)
+Funciona porque o dump inclui a `flyway_schema_history`: ao subir, o Flyway lê o histórico
+restaurado e não reaplica nada.
+
+### Endereçamento: FQDN pré-calculado
+
+No compose os serviços se resolvem por nome na bridge network. Em ACI, container groups
+são recursos isolados — sem rede compartilhada, sem resolução de nome. O endereço passa a
+ser o FQDN público.
+
+Isso cria uma dependência circular: o `.NET` chama a Luna (transcrição, FEAT-02) e a Luna
+chama o `.NET` (triagem). Nenhum poderia ser criado "depois" do outro para herdar seu
+endereço. A saída é que o FQDN do ACI é **determinístico**:
+
+```
+<nome-do-container-group>.<região>.azurecontainer.io
+```
+
+Então o `deploy.sh` calcula os quatro endereços **antes** de criar qualquer container
+group, e o ciclo deixa de existir.
+
+### Imagens: tag por commit, nunca `latest`
+
+Cada imagem é marcada com o SHA do commit fixado do submódulo correspondente
+(`kura/clinica-api:de96c70e9f82`). É isso que permite saber o que está no ar e voltar
+atrás — rollback é recriar o container group apontando para a tag anterior, que continua
+no ACR.
+
+A imagem do Oracle é espelhada do Docker Hub para o ACR com `az acr import`, que copia
+**server-side**, sem baixar os ~2,6 GB para a máquina de quem faz o deploy. Espelhar evita
+o rate limit de pull anônimo do Docker Hub, aplicado por IP de origem — e os IPs de saída
+do ACI são compartilhados entre assinaturas, o que torna esse limite uma falha
+intermitente e difícil de diagnosticar.
+
+### Deploy por GitHub Actions
+
+`.github/workflows/deploy-aci.yml` faz o rollout manual (`workflow_dispatch`), autenticando
+por **OIDC / workload identity federation** — nenhuma credencial de longa duração fica
+guardada no repositório.
+
+O workflow **não builda a imagem da Luna**: os quatro images somam ~13,6 GB, com a Luna
+sozinha em ~9,8 GB, e um runner `ubuntu-latest` documenta ~14 GB livres. A Luna é buildada
+numa estação de trabalho (`./azure/deploy.sh` sem `--skip-build`) e o workflow apenas a
+implanta. É a mesma medição que já justificava a ausência do build completo em `ci.yml`.
+
+O principal do Actions precisa, além do papel no resource group, de acesso ao cofre — que o
+`deploy.sh` cria em modo *access policy*, cobrindo apenas quem rodou primeiro:
 
 ```bash
-az vm run-command invoke \
-    --resource-group "kura-rg-fiap2026" \
-    --name "kura-vm-fiap2026" \
-    --command-id RunShellScript \
-    --scripts '
-        useradd --system --uid 1000 --shell /bin/bash --create-home kura-app
-        usermod -aG docker kura-app
-        chown -R kura-app:kura-app /opt/kura
-    '
+az keyvault set-policy --name kura-prod-kv \
+  --spn <client-id> --secret-permissions get list set
 ```
 
-### Tarefa 4 (OBRIGATÓRIO) — Deletar a VM após avaliação (RUBRICA 04)
+### Encerrar o ambiente
 
 ```bash
-# Execute APÓS a avaliação do professor para evitar cobranças
-az group delete \
-    --name "kura-rg-fiap2026" \
-    --yes \
-    --no-wait
+./azure/teardown.sh                  # apaga o resource group inteiro
+./azure/teardown.sh --purge-keyvault # e apaga os segredos de vez
 ```
 
-> **Evidência de deleção:** Tire um print do portal Azure ou do output do comando `az group show --name kura-rg-fiap2026` retornando erro 404 após a deleção.
+⚠️ Isto apaga também a storage account — **onde moram os dumps de backup**. Baixe o que
+precisar antes:
+
+```bash
+az storage file download-batch --account-name kuraprodstorage \
+  --source kura-oracle-backup --destination ./dumps
+```
+
+---
+
+## 8. Segredos no Azure Key Vault
+
+Em produção os segredos vivem no cofre `kura-prod-kv`, criado pelo próprio `deploy.sh`
+dentro do mesmo resource group. **O `.env` não é usado no caminho Azure.**
+
+> O `.env` continua **obrigatório para o `docker compose` local** — o compose usa
+> `${VAR:?mensagem}` nas chaves de auth de propósito, e o `ci.yml` tem um guard (TASK-39)
+> que quebra o build se isso deixar de ser verdade. Os dois caminhos são independentes.
+
+| Segredo no cofre | Variável | Consumido por |
+|---|---|---|
+| `oracle-sys-password` | `ORACLE_SYS_PASSWORD` | Oracle (`ORACLE_PASSWORD`) |
+| `oracle-app-password` | `ORACLE_APP_PASSWORD` | Oracle, connection string do .NET, `DB_PASSWORD` do Java, `ORACLE_PASSWORD` da Luna |
+| `dotnet-jwt-key` | `DOTNET_JWT_KEY` | .NET (`Jwt__Key`) |
+| `iot-api-key` | `IOT_API_KEY` | .NET (`IoT__ApiKey`) |
+| `luna-api-key` | `LUNA_API_KEY` | .NET (`Luna__ApiKey`), Luna (`KURA_API_KEY`) |
+| `luna-inbound-api-key` | `LUNA_INBOUND_API_KEY` | .NET e Luna — mesmo valor dos dois lados |
+| `java-jwt-secret` | `JAVA_JWT_SECRET` | Java (`JWT_SECRET`) |
+| `daily-api-key` | `DAILY_API_KEY` | .NET — **externa, opcional** |
+| `twilio-sid` / `twilio-token` | `TWILIO_SID` / `TWILIO_TOKEN` | Luna — **externas, opcionais** |
+| `openai-api-key` | `OPENAI_API_KEY` | Luna — **externa, opcional** |
+
+O nome no cofre é a variável em kebab-case minúsculo porque o Key Vault não aceita `_`.
+
+### Como cada segredo converge
+
+1. Veio do ambiente/`.env` e difere do cofre → `az keyvault secret set`;
+2. veio do ambiente e é igual ao do cofre → nada é feito (sem versão nova a cada deploy);
+3. não veio do ambiente mas já está no cofre → reaproveitado;
+4. não existe em lugar nenhum → **gerado** na hora e guardado.
+
+O passo 4 tem uma exceção deliberada: as credenciais marcadas como **externas** (Daily,
+Twilio, OpenAI) nunca são geradas. São emitidas por terceiros, e inventar um valor
+aleatório produziria uma credencial inválida em vez de um erro claro — os três serviços
+degradam de forma tratada quando elas faltam.
+
+As senhas do Oracle são geradas com 28 caracteres **alfanuméricos**, não base64: elas
+entram numa connection string ADO.NET (`User Id=...;Password=...;Data Source=...`) e num
+JDBC URL, onde `;` `/` `+` `=` quebrariam o parsing.
+
+Depois de convergir, **todos são relidos do cofre** com `az keyvault secret show` —
+inclusive os que vieram do `.env` — e só então preenchem os manifestos, onde entram como
+`secureValue` (não aparecem em `az container show` nem nos logs). O YAML preenchido fica
+em `azure/.generated/` (gitignored) e é recriado a cada execução.
+
+### Operar os segredos
+
+```bash
+az keyvault secret list --vault-name kura-prod-kv -o table
+az keyvault secret set  --vault-name kura-prod-kv --name dotnet-jwt-key --value "<novo>"
+./azure/deploy.sh --apps-only     # recria os container groups com o valor girado
+```
+
+⚠️ Girar `oracle-app-password` no cofre **não gira a senha dentro do banco**. Credencial de
+banco é sempre um par coordenado: `ALTER USER` no Oracle **e** o cofre. Girar só um lado
+derruba as três aplicações no próximo deploy com `ORA-01017`.
+
+O `verify.sh` confere no passo `[1/6]` que os segredos obrigatórios existem — presença,
+nunca valor.
 
 ---
 
