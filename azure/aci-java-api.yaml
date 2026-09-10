@@ -1,0 +1,78 @@
+# =============================================================================
+# KURA · Container Group · kura-tutor (Spring Boot 3.2 / Java 21) — ACI
+#
+# Template com placeholders (__ALGO__), preenchido por azure/deploy.sh em
+# azure/.generated/aci-java-api.yaml (gitignored).
+#
+# Equivalente ao serviço `kura-tutor` do docker-compose.yml. Variáveis conferidas
+# contra ele e contra java-backend/src/main/resources/application-prod.yml.
+#
+# ─── ESTE SERVIÇO É A AUTORIDADE DE DDL ──────────────────────────────────────
+# O Flyway roda no startup desta aplicação e cria o schema inteiro contra o
+# Oracle vazio. Por isso o deploy.sh sobe este container group ANTES do .NET —
+# ordem diferente do CP4, onde o .NET subia primeiro e precisava de um restart
+# depois que o schema aparecia. Com Java → .NET, o .NET já encontra as tabelas
+# prontas na primeira subida e o restart deixa de ser necessário.
+#
+# SEGREDOS (Azure Key Vault, via `az keyvault secret show`, como `secureValue`):
+#   __ORACLE_APP_PASSWORD__ <- <cofre>/oracle-app-password
+#   __JAVA_JWT_SECRET__     <- <cofre>/java-jwt-secret
+# =============================================================================
+apiVersion: '2021-10-01'
+location: __LOCATION__
+name: __JAVA_ACI_NAME__
+tags:
+  projeto: kura
+  ambiente: producao
+  componente: api-tutor
+properties:
+  osType: Linux
+  restartPolicy: Always
+  imageRegistryCredentials:
+    - server: __ACR_LOGIN_SERVER__
+      username: __ACR_USERNAME__
+      password: __ACR_PASSWORD__
+  containers:
+    - name: __JAVA_ACI_NAME__
+      properties:
+        # Tag = SHA do commit do submódulo java-backend (ver comentário
+        # equivalente em aci-dotnet-api.yaml).
+        image: __ACR_LOGIN_SERVER__/kura/tutor-api:__JAVA_IMAGE_TAG__
+        resources:
+          requests:
+            cpu: 1
+            memoryInGb: 2
+        ports:
+          - port: 8081
+            protocol: TCP
+        environmentVariables:
+          - name: SPRING_PROFILES_ACTIVE
+            value: prod
+          # TASK-87: LocalDateTime.now() lê ZoneId.systemDefault() do container.
+          # Sem TZ explícito cai em UTC e adianta 3h sobre o horário de Brasília,
+          # desalinhando as validações @Future/isBefore de agendamento. Só este
+          # serviço precisa: o .NET usa DateTime.UtcNow incondicional e a Luna já
+          # fixa o fuso no código.
+          - name: TZ
+            value: America/Sao_Paulo
+          # No compose era jdbc:oracle:thin:@//oracle-db:1521/XEPDB1 — aqui o
+          # host é o FQDN público do container group do Oracle.
+          - name: DB_URL
+            value: __DB_URL__
+          - name: DB_USERNAME
+            value: __ORACLE_APP_USER__
+          - name: DB_PASSWORD
+            secureValue: __ORACLE_APP_PASSWORD__
+          - name: JWT_SECRET
+            secureValue: __JAVA_JWT_SECRET__
+          - name: JWT_ACCESS_EXPIRATION_MINUTES
+            value: "__JWT_ACCESS_EXPIRATION_MINUTES__"
+          - name: CORS_ALLOWED_ORIGINS
+            value: __CORS_ALLOWED_ORIGINS__
+  ipAddress:
+    type: Public
+    dnsNameLabel: __JAVA_ACI_NAME__
+    ports:
+      - protocol: TCP
+        port: 8081
+type: Microsoft.ContainerInstance/containerGroups

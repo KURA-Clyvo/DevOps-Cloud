@@ -1,0 +1,99 @@
+# =============================================================================
+# KURA · Container Group · Oracle XE — ACI
+#
+# Template com placeholders (__ALGO__). azure/deploy.sh gera a versão preenchida
+# em azure/.generated/aci-oracle-db.yaml (gitignored) e chama:
+#   az container create --resource-group <RG> --file azure/.generated/aci-oracle-db.yaml
+#
+# Equivalente ao serviço `oracle-db` do docker-compose.yml, com três diferenças
+# que o ACI impõe e que não têm como ser contornadas:
+#
+#   1. SEM VOLUME PARA /opt/oracle/oradata. O único tipo de volume do ACI é
+#      `azureFile`, que é SMB — e o Oracle não abre a instância com os datafiles
+#      em SMB (ORA-00205/ORA-00210: SMB não fornece o locking POSIX/O_DIRECT que
+#      control files e redo logs exigem). Medido, não suposto. O banco roda no
+#      disco local do container group, e a durabilidade vem de expdp
+#      (azure/backup-db.sh) para o share montado em /mnt/backup, não de volume.
+#      Consequência a encarar de frente: recriar este container group APAGA o
+#      banco. Por isso o deploy.sh exige --recreate-db para tocar nele.
+#
+#   2. SEM shm_size. O compose usa `shm_size: '1g'`; o ACI não expõe esse ajuste.
+#      Oracle XE sobe assim mesmo (comprovado em implantação anterior), mas se
+#      aparecer ORA-27300/ORA-27301 relacionado a memória compartilhada, é aqui
+#      que a causa está.
+#
+#   3. A PORTA É 1521, não 9092. O compose remapeia para 9092 só para não colidir
+#      com um Oracle local na máquina do dev; em ACI cada container group tem seu
+#      próprio FQDN, então não há colisão e a porta nativa vale.
+#
+# SEGREDOS: vêm do Azure Key Vault, lidos pelo deploy.sh com
+# `az keyvault secret show` e injetados aqui como `secureValue` (não aparecem em
+# `az container show` nem nos logs). Mapa:
+#   __ORACLE_SYS_PASSWORD__ <- <cofre>/oracle-sys-password
+#   __ORACLE_APP_PASSWORD__ <- <cofre>/oracle-app-password
+# =============================================================================
+apiVersion: '2021-10-01'
+location: __LOCATION__
+name: __ORACLE_ACI_NAME__
+tags:
+  projeto: kura
+  ambiente: producao
+  componente: banco-oracle
+properties:
+  osType: Linux
+  # `Always` (e não `OnFailure`): banco é serviço de vida longa, e qualquer saída
+  # do processo — limpa ou não — significa indisponibilidade, então sempre volta.
+  # Atenção operacional: cada restart descarta o log do boot anterior, e sem
+  # workspace de log configurado esse rastro se perde. Ao investigar um crash,
+  # capture `az container logs` ANTES de mexer no container group.
+  restartPolicy: Always
+  imageRegistryCredentials:
+    - server: __ACR_LOGIN_SERVER__
+      username: __ACR_USERNAME__
+      password: __ACR_PASSWORD__
+  containers:
+    - name: __ORACLE_ACI_NAME__
+      properties:
+        # Imagem espelhada no ACR por `az acr import` (server-side, sem passar
+        # pela máquina de quem roda o deploy). Espelhar em vez de puxar do Docker
+        # Hub direto evita o rate limit de pull anônimo, que o ACI consome de IPs
+        # compartilhados entre assinaturas — falha intermitente e difícil de
+        # diagnosticar justamente quando se está recriando o ambiente.
+        image: __ACR_LOGIN_SERVER__/kura/oracle-xe:__ORACLE_IMAGE_TAG__
+        resources:
+          requests:
+            cpu: 2
+            memoryInGb: 4
+        ports:
+          - port: 1521
+            protocol: TCP
+        environmentVariables:
+          # Senha de SYS/SYSTEM
+          - name: ORACLE_PASSWORD
+            secureValue: __ORACLE_SYS_PASSWORD__
+          # Usuário de aplicação criado automaticamente pela imagem gvenzl.
+          # É o dono do schema: o Flyway (java-backend) cria todos os objetos
+          # dentro dele.
+          - name: APP_USER
+            value: __ORACLE_APP_USER__
+          - name: APP_USER_PASSWORD
+            secureValue: __ORACLE_APP_PASSWORD__
+        volumeMounts:
+          # Destino dos dumps do Data Pump (azure/backup-db.sh). É I/O sequencial
+          # de arquivo comum — o caso em que SMB funciona bem, ao contrário dos
+          # datafiles do item 1 do cabeçalho.
+          - name: kura-backup
+            mountPath: /mnt/backup
+  volumes:
+    - name: kura-backup
+      azureFile:
+        shareName: __STORAGE_SHARE_BACKUP__
+        storageAccountName: __STORAGE_ACCOUNT_NAME__
+        storageAccountKey: __STORAGE_ACCOUNT_KEY__
+  ipAddress:
+    type: Public
+    dnsNameLabel: __ORACLE_ACI_NAME__
+    ports:
+      - protocol: TCP
+        port: 1521
+type: Microsoft.ContainerInstance/containerGroups

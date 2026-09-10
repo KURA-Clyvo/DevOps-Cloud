@@ -1,2 +1,7 @@
 .env
 CLAUDE.md
+
+# Manifestos de ACI com os placeholders já substituídos por valor real.
+# azure/deploy.sh gera isto antes de chamar `az container create`; o conteúdo
+# leva segredo em texto e é recriado a cada execução.
+azure/.generated/

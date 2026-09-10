@@ -1,0 +1,121 @@
+# =============================================================================
+# KURA · Container Group · kura-api (.NET 10 / backend clínica) — ACI
+#
+# Template com placeholders (__ALGO__), preenchido por azure/deploy.sh em
+# azure/.generated/aci-dotnet-api.yaml (gitignored).
+#
+# Equivalente ao serviço `kura-api` do docker-compose.yml. As variáveis abaixo
+# são as MESMAS que o compose injeta — conferidas uma a uma contra ele, nada
+# inventado. O que muda é só de onde vem o endereço dos outros serviços.
+#
+# ─── ENDEREÇAMENTO: por que FQDN e não nome de serviço ───────────────────────
+# No compose, `oracle-db` e `luna-ai` resolvem pelo DNS da bridge network. Em
+# ACI, cada container group é um recurso isolado: não há rede compartilhada nem
+# resolução de nome entre eles. O endereço passa a ser o FQDN público do ACI.
+#
+# Isso cria uma dependência circular, porque o .NET chama a Luna (transcrição,
+# FEAT-02) e a Luna chama o .NET (triagem) — nenhum dos dois poderia ser criado
+# "depois" do outro para herdar seu endereço. A saída é que o FQDN do ACI é
+# DETERMINÍSTICO:
+#     <dnsNameLabel>.<região>.azurecontainer.io
+# e o dnsNameLabel é o próprio nome do container group, que o deploy.sh já
+# define. Então os quatro FQDNs são calculados ANTES de criar qualquer container
+# group, e o ciclo deixa de existir. Ver a seção de FQDNs em deploy.sh.
+#
+# SEGREDOS: vêm do Azure Key Vault via `az keyvault secret show`, injetados como
+# `secureValue`. Mapa:
+#   __DOTNET_JWT_KEY__           <- <cofre>/dotnet-jwt-key
+#   __IOT_API_KEY__              <- <cofre>/iot-api-key
+#   __LUNA_API_KEY__             <- <cofre>/luna-api-key
+#   __LUNA_INBOUND_API_KEY__     <- <cofre>/luna-inbound-api-key
+#   __DAILY_API_KEY__            <- <cofre>/daily-api-key (externo, opcional)
+#   __ORACLE_CONNECTION_STRING__ é montada pelo deploy.sh com o FQDN do Oracle
+#                                   + <cofre>/oracle-app-password
+# =============================================================================
+apiVersion: '2021-10-01'
+location: __LOCATION__
+name: __DOTNET_ACI_NAME__
+tags:
+  projeto: kura
+  ambiente: producao
+  componente: api-clinica
+properties:
+  osType: Linux
+  restartPolicy: Always
+  imageRegistryCredentials:
+    - server: __ACR_LOGIN_SERVER__
+      username: __ACR_USERNAME__
+      password: __ACR_PASSWORD__
+  containers:
+    - name: __DOTNET_ACI_NAME__
+      properties:
+        # Tag = SHA do commit do submódulo dotnet-backend, nunca `latest`.
+        # É o que permite saber o que está no ar e voltar atrás: rollback é
+        # recriar este container group apontando para a tag anterior, que
+        # continua no ACR.
+        image: __ACR_LOGIN_SERVER__/kura/clinica-api:__DOTNET_IMAGE_TAG__
+        resources:
+          requests:
+            cpu: 1
+            memoryInGb: 2
+        ports:
+          - port: 8080
+            protocol: TCP
+        environmentVariables:
+          - name: ASPNETCORE_ENVIRONMENT
+            value: __ASPNETCORE_ENVIRONMENT__
+          - name: ASPNETCORE_URLS
+            value: http://+:8080
+          - name: ConnectionStrings__DefaultConnection
+            secureValue: __ORACLE_CONNECTION_STRING__
+          - name: Jwt__Key
+            secureValue: __DOTNET_JWT_KEY__
+          - name: Jwt__Issuer
+            value: kura-api
+          - name: Jwt__Audience
+            value: kura-client
+          - name: IoT__ApiKey
+            secureValue: __IOT_API_KEY__
+          - name: Luna__ApiKey
+            secureValue: __LUNA_API_KEY__
+          # FEAT-01 (Daily.co). Chave externa e opcional: sem valor válido o
+          # DailyService aplica fallback de link manual em vez de falhar.
+          - name: Daily__ApiKey
+            secureValue: __DAILY_API_KEY__
+          # FEAT-02 — endereço da Luna. No compose era http://luna-ai:8000;
+          # aqui é o FQDN público do container group da Luna (ver cabeçalho).
+          - name: Luna__BaseUrl
+            value: __LUNA_BASE_URL__
+          - name: Luna__InboundApiKey
+            secureValue: __LUNA_INBOUND_API_KEY__
+          # FEAT-03 — PDFs de receituário (Documento.DsCaminho).
+          - name: Storage__BasePath
+            value: __STORAGE_BASE_PATH__
+        volumeMounts:
+          # Equivalente ao named volume kura_storage_documentos do compose: os
+          # PDFs são dado de negócio e não podem viver na camada gravável do
+          # container, que some a cada recriação do container group.
+          #
+          # PONTO A VALIDAR NA PRIMEIRA IMPLANTAÇÃO: o container roda como
+          # usuário não-root (`USER kura`, vindo do Dockerfile), e o ACI monta
+          # `azureFile` sem permitir configurar uid/gid do mount. Se o processo
+          # não conseguir gravar aqui, o sintoma é falha ao emitir receituário
+          # (não no boot). Nesse caso, ou este volume sai — e os PDFs voltam a
+          # ser efêmeros, como estavam antes — ou o caminho passa a ser gravado
+          # por um processo com permissão. Não há init container que resolva:
+          # `chown` não tem efeito sobre um mount SMB.
+          - name: kura-documentos
+            mountPath: __STORAGE_BASE_PATH__
+  volumes:
+    - name: kura-documentos
+      azureFile:
+        shareName: __STORAGE_SHARE_DOCUMENTOS__
+        storageAccountName: __STORAGE_ACCOUNT_NAME__
+        storageAccountKey: __STORAGE_ACCOUNT_KEY__
+  ipAddress:
+    type: Public
+    dnsNameLabel: __DOTNET_ACI_NAME__
+    ports:
+      - protocol: TCP
+        port: 8080
+type: Microsoft.ContainerInstance/containerGroups

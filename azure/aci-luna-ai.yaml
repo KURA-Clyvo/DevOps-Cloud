@@ -1,0 +1,122 @@
+# =============================================================================
+# KURA · Container Group · luna-ai (Python 3.12 / FastAPI) — ACI
+#
+# Template com placeholders (__ALGO__), preenchido por azure/deploy.sh em
+# azure/.generated/aci-luna-ai.yaml (gitignored).
+#
+# Equivalente ao serviço `luna-ai` do docker-compose.yml. Variáveis conferidas
+# uma a uma contra ele.
+#
+# ─── DUAS DIFERENÇAS EM RELAÇÃO AO COMPOSE, AMBAS IMPOSTAS PELO ACI ──────────
+#
+#   1. NÃO HÁ COMO FORÇAR USUÁRIO NÃO-ROOT. O compose usa `user: "1000:1000"`
+#      porque o Dockerfile da Luna não define USER. O schema de container group
+#      do ACI não tem campo equivalente — não existe `user`/`securityContext`.
+#      Então este container roda como o usuário da imagem (root), ao contrário
+#      do .NET (`USER kura`) e do Java (`USER spring`), que trazem o usuário do
+#      próprio Dockerfile e continuam não-root aqui.
+#      A correção definitiva é adicionar `USER` ao Dockerfile em luna-ia/luna —
+#      o que também deixaria o compose dispensar o `user:`. Enquanto isso não
+#      acontece, esta é uma divergência conhecida entre local e ACI, declarada
+#      aqui para não passar por acidente.
+#
+#   2. A IMAGEM TEM ~9,8 GB (medido pela equipe, ver comentário no
+#      .github/workflows/ci.yml). Consequências práticas, não teóricas:
+#      recriar este container group leva vários minutos só para puxar a imagem,
+#      e o ACR precisa de SKU com espaço suficiente (o Basic inclui 10 GB no
+#      total, o que esta imagem sozinha praticamente consome). É por isso que o
+#      deploy.sh cria o ACR no SKU Standard.
+#
+# ─── ENDEREÇAMENTO ───────────────────────────────────────────────────────────
+# `oracle-db` e `kura-api` viravam hostname pela bridge network do compose. Aqui
+# são FQDNs públicos de ACI, pré-calculados pelo deploy.sh — ver o cabeçalho de
+# aci-dotnet-api.yaml para a explicação da dependência circular .NET ↔ Luna.
+#
+# SEGREDOS (Azure Key Vault, via `az keyvault secret show`, como `secureValue`):
+#   __ORACLE_APP_PASSWORD__  <- <cofre>/oracle-app-password
+#   __LUNA_API_KEY__         <- <cofre>/luna-api-key
+#   __LUNA_INBOUND_API_KEY__ <- <cofre>/luna-inbound-api-key
+#   __TWILIO_SID__           <- <cofre>/twilio-sid     (externo, opcional)
+#   __TWILIO_TOKEN__         <- <cofre>/twilio-token   (externo, opcional)
+#   __OPENAI_API_KEY__       <- <cofre>/openai-api-key (externo, opcional)
+# =============================================================================
+apiVersion: '2021-10-01'
+location: __LOCATION__
+name: __LUNA_ACI_NAME__
+tags:
+  projeto: kura
+  ambiente: producao
+  componente: luna-ia
+properties:
+  osType: Linux
+  restartPolicy: Always
+  imageRegistryCredentials:
+    - server: __ACR_LOGIN_SERVER__
+      username: __ACR_USERNAME__
+      password: __ACR_PASSWORD__
+  containers:
+    - name: __LUNA_ACI_NAME__
+      properties:
+        # Tag = SHA do commit do submódulo luna-ia (ver comentário equivalente
+        # em aci-dotnet-api.yaml).
+        image: __ACR_LOGIN_SERVER__/kura/luna-ai:__LUNA_IMAGE_TAG__
+        resources:
+          requests:
+            # Mais memória que as outras duas APIs porque carrega os pesos do
+            # YOLOv8n e do classificador de raça em processo.
+            cpu: 2
+            memoryInGb: 4
+        ports:
+          - port: 8000
+            protocol: TCP
+        environmentVariables:
+          # Oracle em thin mode (sem Instant Client)
+          - name: ORACLE_DSN
+            value: __ORACLE_DSN__
+          - name: ORACLE_USER
+            value: __ORACLE_APP_USER__
+          - name: ORACLE_PASSWORD
+            secureValue: __ORACLE_APP_PASSWORD__
+          # Integração outbound com a API .NET. No compose era
+          # http://kura-api:8080.
+          - name: KURA_API_BASE_URL
+            value: __KURA_API_BASE_URL__
+          - name: KURA_API_KEY
+            secureValue: __LUNA_API_KEY__
+          - name: KURA_API_TIMEOUT
+            value: "10"
+          # Auth inbound de POST /whatsapp/enviar (mobile-tutor → Luna direto) e
+          # do POST /transcricao chamado pelo .NET. Mesmo valor dos dois lados.
+          - name: LUNA_INBOUND_API_KEY
+            secureValue: __LUNA_INBOUND_API_KEY__
+          # Twilio — externos e opcionais: sem valor, os envios de WhatsApp
+          # ficam inativos, mas o serviço sobe.
+          - name: TWILIO_SID
+            secureValue: __TWILIO_SID__
+          - name: TWILIO_TOKEN
+            secureValue: __TWILIO_TOKEN__
+          - name: TWILIO_FROM_NUMBER
+            value: __TWILIO_FROM_NUMBER__
+          # OpenAI Whisper (FEAT-02). Sem chave, POST /transcricao responde 200
+          # com {transcricao: null, soap: null} — degradação tratada, não 5xx.
+          - name: OPENAI_API_KEY
+            secureValue: __OPENAI_API_KEY__
+          - name: YOLO_WEIGHTS_PATH
+            value: src/ai/models/yolov8n.pt
+          - name: BREED_CLASSIFIER_WEIGHTS_PATH
+            value: src/ai/models/breed_classifier.pth
+          - name: LUNA_HTTP_PORT
+            value: "8000"
+          - name: WEBHOOK_PUBLIC_URL
+            value: __WEBHOOK_PUBLIC_URL__
+          - name: LOG_LEVEL
+            value: INFO
+          - name: PYTHONPATH
+            value: /app
+  ipAddress:
+    type: Public
+    dnsNameLabel: __LUNA_ACI_NAME__
+    ports:
+      - protocol: TCP
+        port: 8000
+type: Microsoft.ContainerInstance/containerGroups
