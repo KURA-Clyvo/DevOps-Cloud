@@ -112,6 +112,8 @@ O que muda é o isolamento entre eles — e, por consequência, como um encontra
 ```
 
   Fluxo de dados Luna → .NET:
+
+```
   Tutor WhatsApp → Twilio → POST /webhook/twilio/whatsapp (Luna)
     → GET /api/v1/tutores/telefone/{nr}  [.NET kura-api]
     → TriageEngine.classificar()         [local Luna]
