@@ -63,6 +63,31 @@ properties:
             value: __ORACLE_APP_USER__
           - name: DB_PASSWORD
             secureValue: __ORACLE_APP_PASSWORD__
+          # Pool do Hikari ajustado ao caminho PÚBLICO até o Oracle (a
+          # justificativa completa está em deploy.sh, na seção "POR QUE OS POOLS
+          # PRECISAM DE AJUSTE AQUI"): o Azure derruba fluxo TCP ocioso por ~4
+          # minutos sem avisar nenhuma das pontas.
+          #
+          # Os defaults do Hikari fazem exatamente a coisa errada neste caminho:
+          # minimumIdle = maximumPoolSize (as 5 conexões de application-prod.yml
+          # ficam paradas no pool), maxLifetime de 30 min e nenhum keepalive. As
+          # 5 morrem em silêncio aos 4 min e a próxima requisição recebe socket
+          # morto — ORA-17008, e com 5 conexões podres a validação consome o
+          # connection-timeout de 20s antes de sobrar conexão boa, devolvendo
+          # CannotGetJdbcConnectionException e /actuator/health DOWN.
+          #
+          # keepalive 2 min: toca cada conexão ociosa dentro da janela, o que
+          #   mantém o fluxo vivo e ainda detecta o que porventura morreu.
+          # maxLifetime 3 min: nenhuma conexão vive o bastante para entrar na
+          #   janela de risco, e a aposentadoria acontece com o socket vivo — o
+          #   logoff chega ao servidor e não deixa sessão órfã no XE.
+          # (keepaliveTime PRECISA ser menor que maxLifetime; o Hikari recusa o
+          # contrário. Hikari 5.0.1, via Spring Boot 3.2.5 — keepaliveTime
+          # existe desde 4.0.3.)
+          - name: SPRING_DATASOURCE_HIKARI_KEEPALIVE_TIME
+            value: "120000"
+          - name: SPRING_DATASOURCE_HIKARI_MAX_LIFETIME
+            value: "180000"
           - name: JWT_SECRET
             secureValue: __JAVA_JWT_SECRET__
           - name: JWT_ACCESS_EXPIRATION_MINUTES

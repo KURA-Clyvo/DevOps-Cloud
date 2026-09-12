@@ -705,6 +705,63 @@ endereço. A saída é que o FQDN do ACI é **determinístico**:
 Então o `deploy.sh` calcula os quatro endereços **antes** de criar qualquer container
 group, e o ciclo deixa de existir.
 
+### Consequência do endereço público: pool de conexões do Oracle
+
+Como não há VNet comum, o tráfego de banco **sai** do container group, passa pelo NAT de
+saída do Azure e volta pelo IP público do Oracle. Esse caminho tem uma propriedade que
+precisa estar refletida na configuração dos pools: **o fluxo TCP que fica ocioso é
+descartado no meio do caminho** — a tradução de NAT expira (o default documentado da
+plataforma é 4 minutos) e nenhuma das duas pontas recebe `RST` ou `FIN`.
+
+Nada avisa o cliente. A conexão segue no pool, aparentemente saudável, e o defeito aparece
+na próxima requisição que a usar:
+
+| Cliente | Erro |
+|---|---|
+| .NET (ODP.NET) | `ORA-12537: TNS:connection closed` → HTTP 500 no endpoint |
+| Java (JDBC/Hikari) | `ORA-17008: Closed connection` → `CannotGetJdbcConnectionException`, `/actuator/health` **DOWN** |
+| Luna (python-oracledb) | absorvido: o pool *thin* faz `ping` ao adquirir conexão ociosa há mais de 60s |
+
+É um erro **intermitente por construção**: depende de quanto tempo o serviço ficou sem
+tráfego, não do endpoint chamado. Com tráfego constante nunca aparece; depois de alguns
+minutos parado, a primeira chamada falha e a segunda funciona — porque a primeira foi o que
+expurgou a conexão morta do pool.
+
+Como distinguir isso de banco fora do ar, ao reinvestigar:
+
+- o `alert_XE.log` (`az container logs --name kura-prod-oracle-db`) **não** registra erro
+  nem restart na janela da falha — o banco não caiu;
+- o log do `tutor-api` mostra o Hikari reprovando uma a uma as conexões abertas dezenas de
+  minutos antes (`Failed to validate connection ... ORA-17008`), e a requisição seguinte
+  já responde `UP`;
+- cuidado com um falso negativo: um socket ocioso aberto **de fora** contra o IP público do
+  Oracle sobrevive a 300s. O caminho que expira é o de **saída** dos container groups das
+  aplicações, que é justamente onde os pools vivem.
+
+Por isso cada pool é configurado para que **nenhuma conexão fique ociosa perto dos 4
+minutos sem ser validada ou renovada**:
+
+- **.NET** — `deploy.sh` monta a connection string com `Validate Connection=true`
+  (valida ao tirar do pool), `Connection Lifetime=180` (aposenta em 3 min) e
+  `Min Pool Size=0` (o default, 1, mantém justamente uma conexão parada para sempre).
+- **Java** — `aci-java-api.yaml` injeta `SPRING_DATASOURCE_HIKARI_KEEPALIVE_TIME=120000`
+  e `SPRING_DATASOURCE_HIKARI_MAX_LIFETIME=180000`. Os defaults do Hikari fazem o oposto do
+  necessário aqui: `minimumIdle = maximumPoolSize`, `maxLifetime` de 30 min e nenhum
+  keepalive — as 5 conexões ficam paradas até morrerem todas juntas.
+
+Renovar a conexão **antes** da janela, e não só validá-la depois, tem um segundo efeito que
+importa no XE: o fechamento acontece com o socket ainda vivo, então o `logoff` chega ao
+servidor. Conexão que morre no meio do caminho deixa **sessão órfã** no banco — o processo
+servidor fica esperando para sempre num socket que não existe mais, e sem
+`SQLNET.EXPIRE_TIME` configurado no servidor nada as recolhe antes de um restart.
+
+> A alternativa estrutural é colocar os quatro container groups na mesma VNet, onde o
+> tráfego de banco nunca passa por NAT e o problema não existe. O custo é que ACI
+> com VNet **não aceita IP público nem `dnsNameLabel`**: os FQDNs determinísticos desta
+> seção deixariam de existir e expor as APIs passaria a exigir um Application Gateway na
+> frente. Para o escopo deste projeto, ajustar os pools resolve o mesmo sintoma sem esse
+> acréscimo.
+
 ### Imagens: tag por commit, nunca `latest`
 
 Cada imagem é marcada com o SHA do commit fixado do submódulo correspondente

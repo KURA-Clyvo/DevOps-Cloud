@@ -869,7 +869,45 @@ else
 fi
 
 # Endereços derivados, usados pelos três manifestos de aplicação
-ORACLE_CONNECTION_STRING="User Id=${ORACLE_APP_USER};Password=${ORACLE_APP_PASSWORD};Data Source=${ORACLE_FQDN}:1521/${ORACLE_PDB_SERVICE}"
+#
+# ─── POR QUE OS POOLS PRECISAM DE AJUSTE AQUI ────────────────────────────────
+# Os três clientes alcançam o Oracle pelo FQDN PÚBLICO (não há VNet comum entre
+# container groups — ver cabeçalho de aci-dotnet-api.yaml). Esse caminho sai do
+# container group, passa pelo balanceador/NAT do Azure e volta, e tem uma
+# propriedade que muda a configuração de pool: o fluxo TCP que fica OCIOSO é
+# descartado no meio do caminho — o NAT de saída do container group expira a
+# tradução (o default documentado da plataforma é 4 minutos) e não envia RST nem
+# FIN para nenhuma das duas pontas. Quem deixou a conexão parada no pool não é
+# avisado: descobre ao usar, e o erro chega como
+#   ORA-12537 TNS:connection closed   (ODP.NET / .NET)
+#   ORA-17008 Closed connection       (JDBC / Java)
+#
+# Como isto foi localizado, para quem for reinvestigar: o alert log do Oracle não
+# registra erro nem restart na janela da falha (o banco não caiu), e o log do
+# tutor-api mostra o Hikari reprovando UMA A UMA as conexões que abriu ~50 min
+# antes ("Failed to validate connection ... ORA-17008"), com a requisição
+# seguinte funcionando — ou seja, o que morre é o socket parado, não o banco.
+# Atenção a um falso negativo ao reproduzir: um socket ocioso aberto DE FORA para
+# o IP público do Oracle sobrevive a 300s (testado) — o caminho que expira é o de
+# SAÍDA dos container groups das aplicações, que é onde os pools vivem.
+#
+# Daí a regra que vale para os três: NENHUMA conexão pode ficar ociosa no pool
+# perto dos 4 minutos sem ser validada ou renovada. Isto não é ajuste de
+# performance — sem isto, a primeira chamada depois de alguns minutos de
+# ociosidade devolve 500.
+#
+# .NET (ODP.NET):
+#   Validate Connection=true  valida a conexão ao tirá-la do pool; se o socket
+#                             morreu, descarta e pega outra em vez de estourar
+#                             ORA-12537 na cara do endpoint.
+#   Connection Lifetime=180   aposenta a conexão 3 min após abri-la, antes de a
+#                             janela de risco existir. Como o fechamento
+#                             acontece com o socket ainda vivo, o logoff chega
+#                             ao servidor e não deixa sessão órfã no XE.
+#   Min Pool Size=0           o default (1) mantém uma conexão parada para
+#                             sempre — exatamente a que morre e reaparece como
+#                             erro intermitente.
+ORACLE_CONNECTION_STRING="User Id=${ORACLE_APP_USER};Password=${ORACLE_APP_PASSWORD};Data Source=${ORACLE_FQDN}:1521/${ORACLE_PDB_SERVICE};Validate Connection=true;Connection Lifetime=180;Min Pool Size=0"
 DB_URL_JAVA="jdbc:oracle:thin:@//${ORACLE_FQDN}:1521/${ORACLE_PDB_SERVICE}"
 ORACLE_DSN_LUNA="${ORACLE_FQDN}:1521/${ORACLE_PDB_SERVICE}"
 KURA_API_BASE_URL="http://${DOTNET_FQDN}:8080"
