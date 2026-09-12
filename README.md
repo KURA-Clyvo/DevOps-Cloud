@@ -186,6 +186,7 @@ Documentação: `http://kura-prod-luna-ai.eastus2.azurecontainer.io:8000/docs`
 | Azure CLI | 2.50+ | deploy em ACR/ACI |
 | Python | 3.8+ | usado pelos scripts em `azure/` para renderizar os manifestos |
 | Conta Azure | crédito ativo | — |
+| Conta Docker Hub | gratuita | **só no primeiro deploy de um ACR novo** — espelhar a imagem do Oracle (§7). Há alternativa sem conta. |
 
 ### Passo 1 — Clone do repositório de infraestrutura
 
@@ -290,6 +291,55 @@ Detalhes importantes na primeira execução:
 - **O `tutor-api` sobe antes do `clinica-api`**, de propósito: o Flyway roda no boot
   dele e é a autoridade de DDL. Com essa ordem, o `.NET` já encontra o schema pronto.
 - **Nada de `.env` é obrigatório aqui.** Ver §8.
+- **O espelhamento da imagem do Oracle pode pedir credencial do Docker Hub.** É o
+  único ponto do deploy que fala com um registry de terceiro, e acontece só quando
+  `kura/oracle-xe:<tag>` ainda não está no ACR. Ver §7.
+
+#### Credencial do Docker Hub — quando é preciso, e quando não é
+
+O passo `[3/10]` espelha `gvenzl/oracle-xe` para o ACR com `az acr import`. Esse import
+sai por IPs do Azure compartilhados entre assinaturas, e a quota de pull **anônimo** do
+Docker Hub é aplicada por IP de origem — então ele falha com `401`/`TOOMANYREQUESTS` por
+tráfego que não é seu, mesmo quando `docker pull` da mesma imagem pública funciona
+normalmente da sua máquina. Autenticando a origem, o import conta contra a quota da sua
+conta (100 pulls/h) em vez da quota anônima compartilhada.
+
+```dotenv
+DOCKERHUB_USERNAME=     # o dono do token — não é segredo, mas não tem valor fixo
+DOCKERHUB_TOKEN=        # PAT, escopo "Public Repo Read-only"
+```
+
+O PAT sai de *hub.docker.com → Account Settings → Personal access tokens*. **Os dois
+andam juntos:** o PAT só autentica com o username do seu dono, então o `deploy.sh` recusa
+meio par em vez de deixar o `az` responder `401` sem explicação. É também por isso que o
+repositório não traz um usuário fixo — herdar o username de outra pessoa sem o token dela
+não serve para nada, e token de terceiro não se compartilha (a quota é por conta, uma
+revogação derruba todo mundo junto, e PAT em repositório público é revogado
+automaticamente pelo secret scanning).
+
+Na prática, quase nenhum deploy precisa disso:
+
+| Situação | Precisa de credencial? |
+|---|---|
+| ACR novo, primeiro deploy completo | **Sim** (ou a alternativa abaixo) |
+| Qualquer deploy seguinte | Não — o import é pulado quando a imagem já está no ACR |
+| `--apps-only` / `--service <x>` | Não — esses escopos nem chegam no import |
+| Workflow `deploy-aci.yml` | Não — ele só usa os dois escopos acima, e por isso segue sem nenhum `secrets.*` |
+| Deploy contra um ambiente já provisionado por outra pessoa | Não; e se o import rodar, o par vem do Key Vault |
+
+**Sem conta no Docker Hub:** deixe as duas vazias. O `deploy.sh` tenta o import anônimo e,
+se falhar, imprime o caminho alternativo — espelhar pela sua própria máquina:
+
+```bash
+docker pull gvenzl/oracle-xe:21-slim
+az acr login --name kuraprodacr
+docker tag gvenzl/oracle-xe:21-slim kuraprodacr.azurecr.io/kura/oracle-xe:21-slim
+docker push kuraprodacr.azurecr.io/kura/oracle-xe:21-slim
+```
+
+São ~2,6 GB de download e upload, **uma vez** — e sem efeito nenhum sobre o SKU do ACR,
+que já é Standard por causa da Luna (§7). Feito isso, rode o `deploy.sh` de novo: ele
+encontra a imagem e pula o import.
 
 Depois:
 
@@ -668,6 +718,19 @@ o rate limit de pull anônimo do Docker Hub, aplicado por IP de origem — e os 
 do ACI são compartilhados entre assinaturas, o que torna esse limite uma falha
 intermitente e difícil de diagnosticar.
 
+Isso não é teórico para este container group em particular: o Oracle roda com
+`restartPolicy: Always` e **sem volume para os datafiles**. Puxar direto do Docker Hub
+significaria que todo reagendamento do container group depende de uma quota compartilhada
+com terceiros — um limite estourado por outra assinatura viraria banco que não volta do
+restart, com os dados no disco local e nenhum caminho de recuperação além de esperar.
+Espelhar move essa dependência para um momento controlado, que acontece uma vez.
+
+O mesmo compartilhamento de IPs afeta o próprio serviço de import, que por isso aceita
+credencial na origem: `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` (PAT com escopo *Public
+Repo Read-only*). É opcional e necessário no máximo uma vez por ACR — ver
+[§5, Credencial do Docker Hub](#credencial-do-docker-hub--quando-é-preciso-e-quando-não-é)
+para quando isso se aplica e para a alternativa sem conta no Docker Hub.
+
 ### Deploy por GitHub Actions
 
 `.github/workflows/deploy-aci.yml` faz o rollout manual (`workflow_dispatch`), autenticando
@@ -725,6 +788,7 @@ dentro do mesmo resource group. **O `.env` não é usado no caminho Azure.**
 | `daily-api-key` | `DAILY_API_KEY` | .NET — **externa, opcional** |
 | `twilio-sid` / `twilio-token` | `TWILIO_SID` / `TWILIO_TOKEN` | Luna — **externas, opcionais** |
 | `openai-api-key` | `OPENAI_API_KEY` | Luna — **externa, opcional** |
+| `dockerhub-username` / `dockerhub-token` | `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` | `deploy.sh` `[3/10]`, `az acr import` — **externas, opcionais, par indivisível**. Nenhum container as recebe. |
 
 O nome no cofre é a variável em kebab-case minúsculo porque o Key Vault não aceita `_`.
 
@@ -736,9 +800,15 @@ O nome no cofre é a variável em kebab-case minúsculo porque o Key Vault não 
 4. não existe em lugar nenhum → **gerado** na hora e guardado.
 
 O passo 4 tem uma exceção deliberada: as credenciais marcadas como **externas** (Daily,
-Twilio, OpenAI) nunca são geradas. São emitidas por terceiros, e inventar um valor
-aleatório produziria uma credencial inválida em vez de um erro claro — os três serviços
-degradam de forma tratada quando elas faltam.
+Twilio, OpenAI, Docker Hub) nunca são geradas. São emitidas por terceiros, e inventar um
+valor aleatório produziria uma credencial inválida em vez de um erro claro — quem as
+consome degrada de forma tratada quando elas faltam: os três serviços de aplicação
+conforme o `docker-compose.yml`, e o espelhamento do Oracle caindo para import anônimo.
+
+`dockerhub-username` é o único item do cofre que **não é segredo** (é público no perfil do
+Docker Hub). Está lá de propósito: o Docker Hub autentica com o par username+PAT, e o PAT
+só vale para o seu dono — guardar só o token faria o cofre conter meia credencial, e o
+segundo deploy herdaria um `401` sem explicação.
 
 As senhas do Oracle são geradas com 28 caracteres **alfanuméricos**, não base64: elas
 entram numa connection string ADO.NET (`User Id=...;Password=...;Data Source=...`) e num

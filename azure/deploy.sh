@@ -51,11 +51,17 @@
 # =============================================================================
 set -eu
 
-# ─── UTF-8 no Python interno do `az` CLI ─────────────────────────────────────
-# `az container create --file <yaml>` lê o arquivo com
-# locale.getpreferredencoding(), que em Windows costuma ser cp1252 — e os
-# manifestos têm comentários acentuados. Sem isto, o erro é
-# "'charmap' codec can't decode byte 0x81". PEP 540.
+# ─── UTF-8 no Python DESTE script ────────────────────────────────────────────
+# Vale para o $PYTHON_BIN usado em substituir_placeholders(), que lê e escreve
+# os manifestos.
+#
+# ATENÇÃO — isto NÃO protege o `az`. O launcher do Azure CLI no Windows é
+# `python.exe -IBm azure.cli`, e o -I (modo isolado, implica -E) faz o Python do
+# az ignorar toda variável PYTHON*, estas duas inclusive. O manifesto acaba lido
+# com a codificação ANSI da máquina (cp1252 em português), e um byte indefinido
+# nessa tabela derruba `az container create --file` com "'charmap' codec can't
+# decode byte 0x8d". Quem resolve isso é a dobra para ASCII em
+# substituir_placeholders() — ver o docstring de para_ascii() lá embaixo.
 export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
 
@@ -179,10 +185,17 @@ WEBHOOK_PUBLIC_URL="${WEBHOOK_PUBLIC_URL:-https://kura-webhook-nao-configurado.i
 #   b64:N   N bytes aleatórios em base64 — chave de assinatura JWT e API key
 #           interna, que trafegam como valor opaco.
 #   externo NUNCA é gerado. São credenciais emitidas por terceiros (Daily.co,
-#           Twilio, OpenAI): inventar um valor aleatório produziria uma
-#           credencial inválida em vez de um erro claro. Se não vier do ambiente
-#           nem do cofre, segue vazio — as três são opcionais e os serviços
-#           degradam de forma tratada quando faltam (ver docker-compose.yml).
+#           Twilio, OpenAI, Docker Hub): inventar um valor aleatório produziria
+#           uma credencial inválida em vez de um erro claro. Se não vier do
+#           ambiente nem do cofre, segue vazio — todas são opcionais e quem as
+#           consome degrada de forma tratada quando faltam (as três de aplicação
+#           conforme o docker-compose.yml; a do Docker Hub conforme o passo
+#           [3/10], que cai para import anônimo).
+#
+# DOCKERHUB_USERNAME não é segredo — é público no perfil do Docker Hub. Está
+# aqui mesmo assim porque o Docker Hub autentica com o PAR username+PAT, e o PAT
+# só vale para o seu dono: separar os dois faria o cofre guardar meia credencial
+# e produziria um 401 sem explicação quando o segundo deploy herdasse só o token.
 SEGREDOS_GERENCIADOS="ORACLE_SYS_PASSWORD|oracle-sys-password|alnum
 ORACLE_APP_PASSWORD|oracle-app-password|alnum
 DOTNET_JWT_KEY|dotnet-jwt-key|b64:48
@@ -193,7 +206,9 @@ JAVA_JWT_SECRET|java-jwt-secret|b64:64
 DAILY_API_KEY|daily-api-key|externo
 TWILIO_SID|twilio-sid|externo
 TWILIO_TOKEN|twilio-token|externo
-OPENAI_API_KEY|openai-api-key|externo"
+OPENAI_API_KEY|openai-api-key|externo
+DOCKERHUB_USERNAME|dockerhub-username|externo
+DOCKERHUB_TOKEN|dockerhub-token|externo"
 
 # ─── FQDNs pré-calculados ────────────────────────────────────────────────────
 # O FQDN de um ACI é determinístico: <dnsNameLabel>.<região>.azurecontainer.io,
@@ -250,12 +265,63 @@ substituir_placeholders() {
 import base64
 import re
 import sys
+import unicodedata
 template_path, saida_path = sys.argv[1], sys.argv[2]
 with open(template_path, "r", encoding="utf-8") as f:
     conteudo = f.read()
+
+
+def para_ascii(texto):
+    """Dobra o texto para ASCII puro.
+
+    `az container create --file` é executado por `python.exe -IBm azure.cli`, e
+    o -I (modo isolado, implica -E) faz o Python do az IGNORAR todas as
+    variáveis PYTHON* — inclusive o PYTHONUTF8=1 exportado no topo deste
+    script. O YAML acaba lido com a codificação ANSI da máquina, cp1252 em
+    português. O cp1252 mapeia quase todo byte de UTF-8 para mojibake sem
+    reclamar, e comentário com mojibake o YAML ignora — por isso os manifestos
+    do Oracle e do Java sempre passaram. Mas cinco bytes são INDEFINIDOS no
+    cp1252 (0x81 0x8D 0x8F 0x90 0x9D), e aí o az morre com
+    "'charmap' codec can't decode byte 0x8d ... character maps to <undefined>".
+    Bastou um "Í" (0xC3 0x8D) num comentário do template do .NET para derrubar
+    o passo [8/10]; o template da Luna tinha dois 0x81 esperando no [9/10].
+
+    Dobrar resolve na origem: sem byte >127, nenhuma codificação de leitura
+    pode falhar. O NFKD separa o acento da letra e o encode descarta o que não
+    tem equivalente ASCII (acentos soltos, ─, →, ✅), então "DETERMINÍSTICO"
+    vira "DETERMINISTICO" e o comentário segue legível.
+    """
+    return unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+
+
+# Dobra o TEMPLATE, antes de injetar qualquer valor: assim comentário acentuado
+# vira ASCII, mas senha, connection string e JWT entram depois e passam intactos
+# — dobrar um segredo o corromperia em silêncio.
+conteudo = para_ascii(conteudo)
 for par in sys.argv[3:]:
     chave, _, valor_b64 = par.partition("=")
     conteudo = conteudo.replace("__" + chave + "__", base64.b64decode(valor_b64).decode("utf-8"))
+# ─── secureValue vazio vira value: "" ────────────────────────────────────────
+# As credenciais EXTERNAS (Twilio, OpenAI, Daily) são opcionais e ficam vazias
+# no cofre quando ninguém as fornece. Substituir __TWILIO_SID__ por nada deixa
+# a linha como `secureValue:` pelada, que o YAML lê como null — e o ACI recusa
+# o container group inteiro com:
+#   (InvalidEnvironmentVariable) ... One and only one property of 'value' and
+#   'secureValue' can be specified in an environment variable.
+# porque null não conta como "especificado".
+#
+# Omitir a variável NÃO serve: em luna-ia/src/config/settings.py, TWILIO_SID e
+# TWILIO_TOKEN são declarados `str` SEM default, então o Pydantic Settings
+# aborta o boot com ValidationError se a env var não existir. A Luna precisa da
+# variável presente e vazia.
+#
+# Daí `value: ""`: string vazia é um valor especificado, satisfaz o ACI e o
+# Pydantic, e mantém a degradação documentada (TwilioGateway é dependência de
+# requisição, não de startup — sobe e só falha se alguém tentar enviar). Trocar
+# secureValue por value aqui não vaza nada: o que se esconderia é vazio.
+PADRAO_SECRETO_VAZIO = re.compile(r'^(\s*)secureValue:[ \t]*$', re.MULTILINE)
+conteudo = PADRAO_SECRETO_VAZIO.sub(r'\1value: ""', conteudo)
+
 # Placeholder real é __TUDO_MAIUSCULO__. Não confundir com a convenção .NET de
 # env var com "__" no meio em case misto ("ConnectionStrings__DefaultConnection",
 # "Jwt__Key"), que são valores legítimos do YAML final.
@@ -538,20 +604,89 @@ ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query username -o tsv
 ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
 echo "  ✅ ACR pronto: $ACR_LOGIN_SERVER"
 
-# Espelha a imagem oficial do Oracle XE para dentro do ACR. `az acr import` faz
-# a cópia SERVER-SIDE (registry → registry), sem baixar os ~2,6 GB para a
-# máquina que roda o deploy. Espelhar em vez de deixar o ACI puxar do Docker Hub
-# evita o rate limit de pull anônimo, que é aplicado por IP de origem — e os IPs
-# de saída do ACI são compartilhados entre assinaturas, então o limite pode ser
-# atingido por tráfego de terceiros e falhar de forma intermitente.
-echo "  Espelhando gvenzl/oracle-xe:$ORACLE_IMAGE_TAG no ACR (az acr import)..."
-if az acr repository show --name "$ACR_NAME" --image "kura/oracle-xe:$ORACLE_IMAGE_TAG" -o none 2>/dev/null; then
+# ─── Espelhamento da imagem do Oracle XE ─────────────────────────────────────
+# `az acr import` copia SERVER-SIDE (registry → registry), sem baixar os ~2,6 GB
+# para a máquina que roda o deploy. Espelhar em vez de deixar o ACI puxar do
+# Docker Hub evita o rate limit de pull anônimo, que é aplicado por IP de origem
+# — e os IPs de saída do ACI são compartilhados entre assinaturas, então o limite
+# pode ser atingido por tráfego de terceiros. Num container group com
+# `restartPolicy: Always` e sem volume para os datafiles, isso transformaria um
+# limite de terceiro em banco que não volta do restart.
+#
+# AUTENTICAÇÃO NA ORIGEM: o mesmo compartilhamento de IPs vale para o serviço de
+# import do ACR, que sai por IPs do Azure usados por muita gente — na prática o
+# import anônimo falha com 401/TOOMANYREQUESTS mesmo quando o `docker pull` da
+# mesma imagem funciona da estação de trabalho. Com DOCKERHUB_USERNAME+
+# DOCKERHUB_TOKEN o import passa a contar contra a quota da conta (100 pulls/h)
+# em vez da quota anônima compartilhada. PAT com escopo "Public Repo Read-only"
+# basta: a origem é uma imagem pública.
+#
+# Só roda quando o Oracle está no escopo — `--apps-only` e `--service X` não têm
+# o que fazer com esta imagem, e é por isso que o workflow de rollout (que só
+# usa esses dois escopos) nunca precisa de credencial do Docker Hub.
+if [ "$MODO_ESCOPO" != "tudo" ] && [ "$MODO_ESCOPO" != "db" ]; then
+    echo "  Escopo '$MODO_ESCOPO' — imagem do Oracle não é espelhada."
+elif az acr repository show --name "$ACR_NAME" --image "kura/oracle-xe:$ORACLE_IMAGE_TAG" -o none 2>/dev/null; then
     echo "  Imagem do Oracle já está no ACR, pulando o import."
 else
-    az acr import --name "$ACR_NAME" \
+    # Par indivisível: o PAT só autentica com o username do seu dono. Meio par é
+    # sempre erro de configuração, e falhar aqui é muito mais barato que deixar
+    # o `az acr import` responder 401 sem dizer o porquê.
+    if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -z "${DOCKERHUB_TOKEN:-}" ]; then
+        echo "❌ ERRO: DOCKERHUB_USERNAME definido sem DOCKERHUB_TOKEN."
+        echo "   O Docker Hub autentica com o par username+PAT — o token pertence ao usuário."
+        exit 1
+    fi
+    if [ -z "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+        echo "❌ ERRO: DOCKERHUB_TOKEN definido sem DOCKERHUB_USERNAME."
+        echo "   Informe o usuário DONO do token (o username não é segredo)."
+        exit 1
+    fi
+
+    IMPORT_AUTH=()
+    if [ -n "${DOCKERHUB_USERNAME:-}" ]; then
+        IMPORT_AUTH=(--username "$DOCKERHUB_USERNAME" --password "$DOCKERHUB_TOKEN")
+        echo "  Espelhando gvenzl/oracle-xe:$ORACLE_IMAGE_TAG no ACR — autenticado como '$DOCKERHUB_USERNAME'..."
+    else
+        echo "  Espelhando gvenzl/oracle-xe:$ORACLE_IMAGE_TAG no ACR — ANÔNIMO (sem credencial do Docker Hub)..."
+    fi
+
+    # `if !` e não chamada direta: com `set -e` uma falha aqui abortaria o script
+    # com o stderr cru do az, e a causa (quota anônima) não está nessa mensagem.
+    if ! az acr import --name "$ACR_NAME" \
         --source "docker.io/gvenzl/oracle-xe:$ORACLE_IMAGE_TAG" \
         --image "kura/oracle-xe:$ORACLE_IMAGE_TAG" \
+        "${IMPORT_AUTH[@]}" \
         --output none
+    then
+        echo ""
+        echo "❌ ERRO: não foi possível espelhar gvenzl/oracle-xe:$ORACLE_IMAGE_TAG."
+        if [ -z "${DOCKERHUB_USERNAME:-}" ]; then
+            echo "   O import foi anônimo. A causa mais provável é a quota de pull anônimo"
+            echo "   do Docker Hub, consumida pelos IPs compartilhados do serviço de import"
+            echo "   do ACR — não por você. Duas saídas:"
+            echo ""
+            echo "   1) Autenticar a ORIGEM (recomendado). Crie um PAT em"
+            echo "      hub.docker.com → Account Settings → Personal access tokens,"
+            echo "      escopo 'Public Repo Read-only', e preencha no .env:"
+            echo "        DOCKERHUB_USERNAME=<o dono do token>"
+            echo "        DOCKERHUB_TOKEN=<o PAT>"
+            echo "      É necessário UMA vez por ACR: o import acima é pulado depois."
+            echo ""
+            echo "   2) Sem conta no Docker Hub — espelhe pela sua máquina:"
+            echo "        docker pull gvenzl/oracle-xe:$ORACLE_IMAGE_TAG"
+            echo "        az acr login --name $ACR_NAME"
+            echo "        docker tag gvenzl/oracle-xe:$ORACLE_IMAGE_TAG \\"
+            echo "          $ACR_LOGIN_SERVER/kura/oracle-xe:$ORACLE_IMAGE_TAG"
+            echo "        docker push $ACR_LOGIN_SERVER/kura/oracle-xe:$ORACLE_IMAGE_TAG"
+            echo "      ~2,6 GB de download + upload, uma vez. Depois rode o deploy de novo."
+        else
+            echo "   O import foi autenticado como '$DOCKERHUB_USERNAME'. Verifique se o PAT"
+            echo "   pertence a esse usuário, não está expirado/revogado, e tem ao menos o"
+            echo "   escopo 'Public Repo Read-only'."
+        fi
+        exit 1
+    fi
     echo "  ✅ Imagem do Oracle espelhada."
 fi
 
@@ -593,6 +728,8 @@ EOF
     if [ "$ALGUM_BUILD" = "false" ]; then
         echo "  Nenhuma imagem no escopo '$MODO_ESCOPO' — nada a buildar."
     else
+        # Login aqui só para falhar cedo se a credencial estiver quebrada — o
+        # push usa um token NOVO, pedido logo antes de cada envio. Ver abaixo.
         az acr login --name "$ACR_NAME" --output none
         echo "  ✅ Login no ACR OK."
         while IFS='|' read -r SVC CTX REPO TAG; do
@@ -604,8 +741,42 @@ EOF
                 echo "  → build $SVC ($TAG)"
             fi
             docker build -t "${ACR_LOGIN_SERVER}/${REPO}:${TAG}" "$ROOT_DIR/$CTX"
+
+            # ─── Push com token renovado e retentativa ───────────────────────
+            # O refresh token de `az acr login` vale 3 HORAS. Com um único login
+            # no topo do laço, o build da luna-ai (~9,8 GB, medido em 4h numa
+            # conexão de ~4 Mbit/s) consome a validade inteira antes de o push
+            # começar, e o envio morre em "error from registry: authentication
+            # required" com TODAS as camadas em Waiting — nada enviado, depois
+            # de horas de build. Por isso o token é pedido por push, não por
+            # execução.
+            #
+            # A retentativa existe porque o próprio push pode estourar as 3h em
+            # link lento. Ela não é cara: `docker push` pula camada que já está
+            # no registry, então cada tentativa retoma de onde a anterior parou
+            # em vez de recomeçar.
             echo "  → push $SVC"
-            docker push "${ACR_LOGIN_SERVER}/${REPO}:${TAG}"
+            PUSH_OK=false
+            for TENTATIVA in 1 2 3; do
+                az acr login --name "$ACR_NAME" --output none
+                if docker push "${ACR_LOGIN_SERVER}/${REPO}:${TAG}"; then
+                    PUSH_OK=true
+                    break
+                fi
+                if [ "$TENTATIVA" -lt 3 ]; then
+                    echo "  ⚠️  push de $SVC falhou (tentativa $TENTATIVA/3) — renovando token do ACR."
+                    echo "     As camadas já enviadas são preservadas; a retentativa continua de onde parou."
+                fi
+            done
+            if [ "$PUSH_OK" != "true" ]; then
+                echo ""
+                echo "❌ ERRO: push de $SVC falhou nas 3 tentativas."
+                echo "   A imagem local ${ACR_LOGIN_SERVER}/${REPO}:${TAG} está intacta —"
+                echo "   NÃO é preciso rebuildar. Verifique a conexão e rode de novo:"
+                echo "     ./azure/deploy.sh --service $SVC"
+                echo "   O build baterá no cache e o push retoma das camadas que faltam."
+                exit 1
+            fi
         done <<EOF
 $IMAGENS
 EOF

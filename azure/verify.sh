@@ -105,6 +105,12 @@ else
     # Só os obrigatórios. Daily/Twilio/OpenAI são credenciais externas e
     # opcionais — a ausência delas degrada função, não derruba o ambiente, então
     # não entram como falha aqui.
+    #
+    # dockerhub-username/dockerhub-token ficam de fora das DUAS listas de
+    # propósito: são credenciais de FERRAMENTA DE DEPLOY (`az acr import`), não
+    # de runtime. Nenhum container as recebe, e a ausência delas não diz nada
+    # sobre a saúde do ambiente — o que importa aqui é a imagem estar no ACR, o
+    # que o passo [2/6] já verifica.
     for SEGREDO in oracle-sys-password oracle-app-password dotnet-jwt-key \
                    iot-api-key luna-api-key luna-inbound-api-key java-jwt-secret; do
         if az keyvault secret show --vault-name "$KEYVAULT_NAME" --name "$SEGREDO" -o none 2>/dev/null; then

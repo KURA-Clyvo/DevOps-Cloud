@@ -22,12 +22,19 @@ name: Deploy to ACI
 # leaves the database alone by construction — recreating it would wipe the data,
 # since ACI storage is ephemeral and the datafiles have no volume.
 #
+# It also never mirrors the Oracle image. deploy.sh runs `az acr import` only in
+# the 'tudo' and 'db' scopes, and this workflow only ever passes --apps-only or
+# --service — so the Docker Hub credential that import can need (see
+# DOCKERHUB_USERNAME/DOCKERHUB_TOKEN in .env.example) is a workstation-side
+# concern and never has to be stored as a repository secret. That is what keeps
+# the claim below literally true.
+#
 # ─── AZURE AUTH: OIDC, NO STORED CREDENTIALS ────────────────────────────────
 # Uses workload identity federation: the runner exchanges its short-lived OIDC
-# token for an Azure token. Nothing long-lived is stored in this repo. The three
-# values below are repository VARIABLES, not secrets — a client id and a tenant
-# id are identifiers, not credentials, and treating them as secrets only makes
-# the logs harder to read.
+# token for an Azure token. Nothing long-lived is stored in this repo — this
+# workflow uses no `secrets.*` at all. The three values below are repository
+# VARIABLES, not secrets — a client id and a tenant id are identifiers, not
+# credentials, and treating them as secrets only makes the logs harder to read.
 #
 # One-time setup on the Azure side, beyond the app registration + federated
 # credential:
