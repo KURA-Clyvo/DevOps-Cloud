@@ -406,7 +406,28 @@ tag_submodulo() {
 DOTNET_IMAGE_TAG="$(tag_submodulo dotnet-backend)"
 JAVA_IMAGE_TAG="$(tag_submodulo java-backend)"
 LUNA_IMAGE_TAG="$(tag_submodulo luna-ia)"
-ORACLE_IMAGE_TAG="${ORACLE_IMAGE_TAG:-21-slim}"
+# Tag da imagem do Oracle ESPELHADA do Docker Hub, sem modificação.
+ORACLE_BASE_TAG="${ORACLE_BASE_TAG:-21-slim}"
+# Minutos do SQLNET.EXPIRE_TIME (dead connection detection) da imagem derivada.
+# Tem de ficar ABAIXO da janela de NAT (4 min no default da plataforma) para que
+# a sonda do servidor também mantenha a tradução viva — ver comentário do
+# azure/oracle-xe-dcd/Dockerfile.
+ORACLE_DCD_MINUTOS="${ORACLE_DCD_MINUTOS:-2}"
+# Tag que o container group REALMENTE roda: a base + DCD. O valor entra na tag
+# porque mudá-lo tem de produzir imagem nova — tag igual faria o ACI reaproveitar
+# a que ele já conhece e a mudança não chegaria ao ar.
+ORACLE_IMAGE_TAG="${ORACLE_IMAGE_TAG:-${ORACLE_BASE_TAG}-dcd${ORACLE_DCD_MINUTOS}}"
+
+# A derivada não pode ocupar a tag da base: sobrescreveria no ACR a única cópia
+# espelhada do Docker Hub, e o próximo build passaria a empilhar DCD sobre uma
+# imagem que já tem DCD, sem nunca mais tocar a imagem original.
+if [ "$ORACLE_IMAGE_TAG" = "$ORACLE_BASE_TAG" ]; then
+    echo "❌ ERRO: ORACLE_IMAGE_TAG ('$ORACLE_IMAGE_TAG') é igual a ORACLE_BASE_TAG."
+    echo "   A imagem derivada (com SQLNET.EXPIRE_TIME) precisa de tag própria."
+    echo "   Deixe ORACLE_IMAGE_TAG sem definir para usar o default"
+    echo "   '${ORACLE_BASE_TAG}-dcd${ORACLE_DCD_MINUTOS}', ou escolha outra tag."
+    exit 1
+fi
 
 echo ""
 echo "========================================================"
@@ -423,7 +444,9 @@ echo " Tags de imagem (SHA do commit fixado de cada submódulo):"
 echo "   clinica-api : $DOTNET_IMAGE_TAG"
 echo "   tutor-api   : $JAVA_IMAGE_TAG"
 echo "   luna-ai     : $LUNA_IMAGE_TAG"
-echo "   oracle-xe   : $ORACLE_IMAGE_TAG (espelhada do Docker Hub)"
+echo "   oracle-xe   : $ORACLE_IMAGE_TAG"
+echo "                 (base $ORACLE_BASE_TAG espelhada do Docker Hub +"
+echo "                  SQLNET.EXPIRE_TIME=$ORACLE_DCD_MINUTOS, derivada no ACR)"
 echo "========================================================"
 
 # ─── [0/10] Azure CLI autenticada ────────────────────────────────────────────
@@ -626,8 +649,8 @@ echo "  ✅ ACR pronto: $ACR_LOGIN_SERVER"
 # usa esses dois escopos) nunca precisa de credencial do Docker Hub.
 if [ "$MODO_ESCOPO" != "tudo" ] && [ "$MODO_ESCOPO" != "db" ]; then
     echo "  Escopo '$MODO_ESCOPO' — imagem do Oracle não é espelhada."
-elif az acr repository show --name "$ACR_NAME" --image "kura/oracle-xe:$ORACLE_IMAGE_TAG" -o none 2>/dev/null; then
-    echo "  Imagem do Oracle já está no ACR, pulando o import."
+elif az acr repository show --name "$ACR_NAME" --image "kura/oracle-xe:$ORACLE_BASE_TAG" -o none 2>/dev/null; then
+    echo "  Imagem base do Oracle já está no ACR, pulando o import."
 else
     # Par indivisível: o PAT só autentica com o username do seu dono. Meio par é
     # sempre erro de configuração, e falhar aqui é muito mais barato que deixar
@@ -646,21 +669,21 @@ else
     IMPORT_AUTH=()
     if [ -n "${DOCKERHUB_USERNAME:-}" ]; then
         IMPORT_AUTH=(--username "$DOCKERHUB_USERNAME" --password "$DOCKERHUB_TOKEN")
-        echo "  Espelhando gvenzl/oracle-xe:$ORACLE_IMAGE_TAG no ACR — autenticado como '$DOCKERHUB_USERNAME'..."
+        echo "  Espelhando gvenzl/oracle-xe:$ORACLE_BASE_TAG no ACR — autenticado como '$DOCKERHUB_USERNAME'..."
     else
-        echo "  Espelhando gvenzl/oracle-xe:$ORACLE_IMAGE_TAG no ACR — ANÔNIMO (sem credencial do Docker Hub)..."
+        echo "  Espelhando gvenzl/oracle-xe:$ORACLE_BASE_TAG no ACR — ANÔNIMO (sem credencial do Docker Hub)..."
     fi
 
     # `if !` e não chamada direta: com `set -e` uma falha aqui abortaria o script
     # com o stderr cru do az, e a causa (quota anônima) não está nessa mensagem.
     if ! az acr import --name "$ACR_NAME" \
-        --source "docker.io/gvenzl/oracle-xe:$ORACLE_IMAGE_TAG" \
-        --image "kura/oracle-xe:$ORACLE_IMAGE_TAG" \
+        --source "docker.io/gvenzl/oracle-xe:$ORACLE_BASE_TAG" \
+        --image "kura/oracle-xe:$ORACLE_BASE_TAG" \
         "${IMPORT_AUTH[@]}" \
         --output none
     then
         echo ""
-        echo "❌ ERRO: não foi possível espelhar gvenzl/oracle-xe:$ORACLE_IMAGE_TAG."
+        echo "❌ ERRO: não foi possível espelhar gvenzl/oracle-xe:$ORACLE_BASE_TAG."
         if [ -z "${DOCKERHUB_USERNAME:-}" ]; then
             echo "   O import foi anônimo. A causa mais provável é a quota de pull anônimo"
             echo "   do Docker Hub, consumida pelos IPs compartilhados do serviço de import"
@@ -674,11 +697,11 @@ else
             echo "      É necessário UMA vez por ACR: o import acima é pulado depois."
             echo ""
             echo "   2) Sem conta no Docker Hub — espelhe pela sua máquina:"
-            echo "        docker pull gvenzl/oracle-xe:$ORACLE_IMAGE_TAG"
+            echo "        docker pull gvenzl/oracle-xe:$ORACLE_BASE_TAG"
             echo "        az acr login --name $ACR_NAME"
-            echo "        docker tag gvenzl/oracle-xe:$ORACLE_IMAGE_TAG \\"
-            echo "          $ACR_LOGIN_SERVER/kura/oracle-xe:$ORACLE_IMAGE_TAG"
-            echo "        docker push $ACR_LOGIN_SERVER/kura/oracle-xe:$ORACLE_IMAGE_TAG"
+            echo "        docker tag gvenzl/oracle-xe:$ORACLE_BASE_TAG \\"
+            echo "          $ACR_LOGIN_SERVER/kura/oracle-xe:$ORACLE_BASE_TAG"
+            echo "        docker push $ACR_LOGIN_SERVER/kura/oracle-xe:$ORACLE_BASE_TAG"
             echo "      ~2,6 GB de download + upload, uma vez. Depois rode o deploy de novo."
         else
             echo "   O import foi autenticado como '$DOCKERHUB_USERNAME'. Verifique se o PAT"
@@ -687,7 +710,61 @@ else
         fi
         exit 1
     fi
-    echo "  ✅ Imagem do Oracle espelhada."
+    echo "  ✅ Imagem base do Oracle espelhada."
+fi
+
+
+# ─── Imagem derivada do Oracle: dead connection detection ────────────────────
+# A base espelhada acima não tem `SQLNET.EXPIRE_TIME`, e sem ele o servidor nunca
+# descobre que um cliente desapareceu: como o tráfego de banco passa por NAT (não
+# há VNet comum entre container groups), toda conexão que morre por ociosidade
+# deixa uma SESSÃO ÓRFÃ no XE, que nada recolhe antes de um restart. A camada
+# derivada acrescenta essa única linha. O porquê completo — e o motivo de ser
+# imagem derivada, e não volume nem override de `command` — está no cabeçalho de
+# azure/oracle-xe-dcd/Dockerfile.
+#
+# `az acr build` roda DENTRO do ACR: o contexto enviado é só o Dockerfile, a base
+# é puxada registry-local e o resultado nasce lá — nada dos ~2,6 GB passa pela
+# máquina de quem faz o deploy, nem exige Docker instalado. Depende de ACR com
+# suporte a Tasks; o criado aqui é Standard.
+#
+# Mesmo escopo do import: `--apps-only` e `--service X` não têm o que fazer com a
+# imagem do banco. E `--skip-build` NÃO cobre este build — aquela flag existe para
+# pular o build/push das imagens de aplicação, que é o passo caro (a luna-ai tem
+# ~9,8 GB); este é uma camada de poucos KB construída server-side, e pulá-lo
+# deixaria o passo [6/10] apontando para uma tag que não existe no registry.
+if [ "$MODO_ESCOPO" != "tudo" ] && [ "$MODO_ESCOPO" != "db" ]; then
+    echo "  Escopo '$MODO_ESCOPO' — imagem derivada do Oracle não é construída."
+elif az acr repository show --name "$ACR_NAME" --image "kura/oracle-xe:$ORACLE_IMAGE_TAG" -o none 2>/dev/null; then
+    echo "  Imagem derivada kura/oracle-xe:$ORACLE_IMAGE_TAG já está no ACR, pulando o build."
+else
+    echo "  Derivando kura/oracle-xe:$ORACLE_IMAGE_TAG (SQLNET.EXPIRE_TIME=$ORACLE_DCD_MINUTOS) no ACR..."
+    if ! az acr build --registry "$ACR_NAME" \
+        --image "kura/oracle-xe:$ORACLE_IMAGE_TAG" \
+        --file "$SCRIPT_DIR/oracle-xe-dcd/Dockerfile" \
+        --build-arg "IMAGEM_BASE=$ACR_LOGIN_SERVER/kura/oracle-xe:$ORACLE_BASE_TAG" \
+        --build-arg "DCD_MINUTOS=$ORACLE_DCD_MINUTOS" \
+        "$SCRIPT_DIR/oracle-xe-dcd" \
+        --output none
+    then
+        echo ""
+        echo "❌ ERRO: o build da imagem derivada do Oracle falhou."
+        echo "   O log da task do ACR saiu acima — quando o build chega ao fim, ele"
+        echo "   imprime o sqlnet.ora resultante."
+        echo ""
+        echo "   Causas prováveis, em ordem:"
+        echo "   1) ACR sem suporte a Tasks (SKU). Confira:"
+        echo "        az acr show --name $ACR_NAME --query sku.name -o tsv"
+        echo "   2) A imagem base mudou e o diretório de rede do ORACLE_HOME deixou"
+        echo "      de ser gravável pelo usuário da imagem — o RUN falha explícito."
+        echo "   3) Base ausente no ACR: kura/oracle-xe:$ORACLE_BASE_TAG."
+        echo ""
+        echo "   Saída de emergência, para subir o banco SEM DCD (as sessões órfãs"
+        echo "   voltam a acumular, mas o ambiente sobe):"
+        echo "     ORACLE_IMAGE_TAG=$ORACLE_BASE_TAG ./azure/deploy.sh --db-only"
+        exit 1
+    fi
+    echo "  ✅ Imagem derivada pronta: kura/oracle-xe:$ORACLE_IMAGE_TAG"
 fi
 
 # ─── [4/10] Build + push das três imagens de aplicação ───────────────────────

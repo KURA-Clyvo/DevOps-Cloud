@@ -752,8 +752,14 @@ minutos sem ser validada ou renovada**:
 Renovar a conexão **antes** da janela, e não só validá-la depois, tem um segundo efeito que
 importa no XE: o fechamento acontece com o socket ainda vivo, então o `logoff` chega ao
 servidor. Conexão que morre no meio do caminho deixa **sessão órfã** no banco — o processo
-servidor fica esperando para sempre num socket que não existe mais, e sem
-`SQLNET.EXPIRE_TIME` configurado no servidor nada as recolhe antes de um restart.
+servidor fica esperando para sempre num socket que não existe mais.
+
+O lado servidor é coberto por `SQLNET.EXPIRE_TIME=2` (dead connection detection), que o
+Oracle só passa a ter porque o container group roda uma **imagem derivada** da base
+espelhada — ver [Imagem do Oracle: base espelhada + camada de DCD](#imagem-do-oracle-base-espelhada--camada-de-dcd).
+Com ele o banco sonda cada sessão ociosa a cada 2 min, derruba a que não responde (liberando
+processo e sessão) e, como 2 min é menos que a janela de NAT, a própria sonda mantém a
+tradução viva — o que reforça o lado cliente de graça, para os três serviços.
 
 > A alternativa estrutural é colocar os quatro container groups na mesma VNet, onde o
 > tráfego de banco nunca passa por NAT e o problema não existe. O custo é que ACI
@@ -787,6 +793,49 @@ credencial na origem: `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` (PAT com escopo *
 Repo Read-only*). É opcional e necessário no máximo uma vez por ACR — ver
 [§5, Credencial do Docker Hub](#credencial-do-docker-hub--quando-é-preciso-e-quando-não-é)
 para quando isso se aplica e para a alternativa sem conta no Docker Hub.
+
+### Imagem do Oracle: base espelhada + camada de DCD
+
+O banco roda **duas tags** do mesmo repositório no ACR, e a distinção importa:
+
+| Tag | O que é | Como nasce |
+|---|---|---|
+| `kura/oracle-xe:21-slim` | a base, byte a byte igual à do Docker Hub | `az acr import` (passo `[3/10]`) |
+| `kura/oracle-xe:21-slim-dcd2` | a base + `SQLNET.EXPIRE_TIME=2` | `az acr build` a partir de `azure/oracle-xe-dcd/Dockerfile` |
+
+O container group roda a **derivada** (`ORACLE_IMAGE_TAG`). A base nunca é sobrescrita — o
+`deploy.sh` aborta se as duas tags coincidirem, porque isso faria o próximo build empilhar
+DCD sobre uma imagem que já tem DCD e perder a cópia original do Docker Hub.
+
+O número de minutos entra no nome da tag de propósito (`-dcd2`): mudar
+`ORACLE_DCD_MINUTOS` produz tag nova, e o ACI puxa imagem nova em vez de reaproveitar a
+que já conhece.
+
+O build roda **dentro do ACR** (`az acr build`): o contexto enviado é só o Dockerfile, a
+base é lida registry-local e o resultado nasce lá. Nada dos ~2,6 GB passa pela máquina de
+quem faz o deploy, e o passo não exige Docker instalado. Exige ACR com suporte a Tasks — o
+criado aqui é `Standard`. `--skip-build` **não** cobre este build: aquela flag existe para
+pular o build/push das imagens de aplicação (a `luna-ai` tem ~9,8 GB), enquanto esta é uma
+camada de poucos KB cuja ausência deixaria o passo `[6/10]` apontando para uma tag
+inexistente.
+
+Por que imagem derivada, e não um script de inicialização num share ou um `command`
+sobrescrito no manifesto: o único tipo de volume do ACI é `azureFile` (SMB), e pendurar o
+boot do Oracle numa dependência de SMB é arriscado justamente no ponto mais sensível desta
+infra — sem volume para os datafiles, boot que falha é banco perdido. Sobrescrever `command`
+exigiria repetir o entrypoint da imagem base, que não é contrato nosso. A camada derivada
+preserva o entrypoint e deixa a configuração versionada na tag.
+
+Um detalhe que custa tempo se for descoberto em produção: o `sqlnet.ora` que vale **não**
+está em `$ORACLE_HOME/network/admin`. O 21c usa *read-only Oracle home*, e o diretório
+efetivo é `$ORACLE_BASE_HOME/network/admin`
+(`/opt/oracle/homes/OraDBHome21cXE/network/admin`). Escrever no primeiro produz um build que
+passa e um banco **sem** DCD, em silêncio. O `RUN` do Dockerfile por isso procura o
+diretório que de fato contém um `sqlnet.ora` e **falha** se não achar nenhum — se uma base
+futura mudar o layout, o erro aparece no deploy. No primeiro start o
+`container-entrypoint.sh` move esse arquivo para
+`$ORACLE_BASE/oradata/dbconfig/$ORACLE_SID/` e devolve um symlink no lugar; o conteúdo é
+preservado, então a linha acrescentada no build continua valendo depois do boot.
 
 ### Deploy por GitHub Actions
 
