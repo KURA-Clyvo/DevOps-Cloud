@@ -245,6 +245,47 @@ ID_TUTOR_LUNA=$(achar_em_lista "nrCpf" "$CPF_TUTOR_LUNA" "id")
 
 if [ -n "$ID_TUTOR_LUNA" ]; then
   echo "ok     tutor ja existe (id=$ID_TUTOR_LUNA) — pulando criacao/registro"
+
+  # ─── LU-16 G4, achado A1 (BLOQUEANTE) ────────────────────────────────────
+  # Este ramo de idempotencia NUNCA atualizava nrTelefone (-> DS_TELEFONE) — so
+  # a criacao (linha ~262, TELEFONE_CONTATO) e so o bloco 3 abaixo (DS_WHATSAPP)
+  # setavam telefone. DS_TELEFONE (busca EXATA de
+  # GET /api/v1/tutores/telefone/{numero}, o que o InboundMessageService da Luna
+  # chama) e DS_WHATSAPP (o que VW_VACINAS_VENCENDO le) sao colunas DIFERENTES.
+  # Consequencia medida pelo G4: apos UMA execucao sem DEMO_WHATSAPP (que fixa
+  # DS_TELEFONE no placeholder 11990000000), qualquer execucao seguinte COM
+  # DEMO_WHATSAPP corrige so DS_WHATSAPP (bloco 3) — DS_TELEFONE fica preso pra
+  # sempre, e o numero que o Twilio de fato entrega (E.164 sem '+') nunca bate
+  # com DS_TELEFONE. Resultado: o Ato 1 do roteiro (mensagem real do
+  # apresentador) cai no caminho de "tutor nao identificado".
+  #
+  # Fix: sempre que DEMO_WHATSAPP estiver definido, tambem alinhar DS_TELEFONE
+  # com ele — via PUT /api/v1/tutores/{id} (endpoint real, TutorUpdateDto exige
+  # os 4 campos, entao busca os outros 3 antes de reenviar). Idempotente por
+  # construcao: se ja bate, pula o PUT.
+  if [ "$TEM_WHATSAPP" = "S" ]; then
+    NR_TELEFONE_ATUAL=$(achar_em_lista "nrCpf" "$CPF_TUTOR_LUNA" "nrTelefone")
+    if [ "$NR_TELEFONE_ATUAL" = "$DEMO_WHATSAPP" ]; then
+      echo "ok     DS_TELEFONE ja bate com DEMO_WHATSAPP (final $DEMO_WHATSAPP_MASCARADO) — nada a fazer"
+    else
+      NM_TUTOR_ATUAL=$(achar_em_lista "nrCpf" "$CPF_TUTOR_LUNA" "nmTutor")
+      EMAIL_TUTOR_ATUAL=$(achar_em_lista "nrCpf" "$CPF_TUTOR_LUNA" "dsEmail")
+      PAYLOAD_TUTOR_UPDATE=$(cat <<JSON
+{
+  "nmTutor": "$NM_TUTOR_ATUAL",
+  "nrCpf": "$CPF_TUTOR_LUNA",
+  "dsEmail": "$EMAIL_TUTOR_ATUAL",
+  "nrTelefone": "$DEMO_WHATSAPP"
+}
+JSON
+)
+      chamar "tutores/{id} (corrige DS_TELEFONE p/ formato do webhook, A1)" 200 PUT "$API/api/v1/tutores/$ID_TUTOR_LUNA" "$PAYLOAD_TUTOR_UPDATE" "$TOKEN"
+      echo "ok     DS_TELEFONE realinhado com DS_WHATSAPP (final $DEMO_WHATSAPP_MASCARADO) — Ato 1 volta a casar"
+    fi
+  else
+    echo "aviso  DEMO_WHATSAPP nao definido — DS_TELEFONE do tutor existente NAO foi tocado"
+    echo "       (pode estar divergente de DS_WHATSAPP; sem WhatsApp real nesta demo isso nao importa)"
+  fi
 else
   echo "ok     tutor ainda nao existe — criando"
   # NrTelefone (campo de contato do CRM, distinto de DS_WHATSAPP): usa o
