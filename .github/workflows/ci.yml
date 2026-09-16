@@ -61,6 +61,7 @@ jobs:
           LUNA_API_KEY=ci-dummy-luna-api-key
           LUNA_INBOUND_API_KEY=ci-dummy-luna-inbound-api-key
           JAVA_JWT_SECRET=ci-dummy-java-jwt-secret-not-a-real-secret-00000000000000000000
+          WEBHOOK_PUBLIC_URL=https://ci-dummy.invalid/webhook
           EOF
 
       - name: docker compose config (with dummy .env)
