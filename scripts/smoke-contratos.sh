@@ -46,6 +46,20 @@ if [ -z "$LUNA_API_KEY" ]; then
   exit 2
 fi
 
+# LU-13: base URL da Luna (porta propria, docker-compose.yml:206 "8000:8000") e a
+# chave que a PROPRIA Luna valida em requisicoes inbound (validar_api_key em
+# src/web/dependencies.py, settings.LUNA_INBOUND_API_KEY) — usada por
+# POST /jobs/lembrete-vacina/executar (gatilho manual do LU-04). NAO confundir com
+# LUNA_API_KEY acima: aquela e a chave que o .NET valida quando a LUNA o chama
+# (Luna__ApiKey); esta e a chave que a LUNA valida quando ALGUEM (o .NET, ou este
+# script) a chama diretamente (Luna__InboundApiKey/LUNA_INBOUND_API_KEY, mesmo par
+# dos dois lados — docker-compose.yml:120/223).
+LUNA_URL=${LUNA_URL:-http://localhost:8000}
+LUNA_INBOUND_API_KEY=${LUNA_INBOUND_API_KEY:-}
+if [ -z "$LUNA_INBOUND_API_KEY" ] && [ -f .env ]; then
+  LUNA_INBOUND_API_KEY=$(grep -m1 '^LUNA_INBOUND_API_KEY=' .env | cut -d= -f2-)
+fi
+
 FALHAS=0
 BODY_FILE=$(mktemp)
 # Corpo da requisicao vai para disco e e enviado com --data-binary @arquivo, nunca
@@ -869,6 +883,79 @@ chamar "luna/triagens/relatorio (GET, JWT clinica)" 200 GET "$API/api/v1/luna/tr
 # determinístico independente do resultado do provedor externo.
 chamar "teleconsulta/{id}/sala (POST criar)" 200 POST "$API/api/v1/teleconsulta/$ID_AGENDAMENTO_TELE/sala" '' "$TOKEN"
 chamar "teleconsulta/{id}/sala (GET obter)" 200 GET "$API/api/v1/teleconsulta/$ID_AGENDAMENTO_TELE/sala" '' "$TOKEN"
+
+# ─── 21. .NET: luna/triagens (GET, JWT clinica) — PRIMEIRO CHECK DE CORPO ────
+# Origem: mobile-clinica-rn/src/services/luna.service.ts::getTriagens (LU-09) e
+# src/types/api.ts::TriagensListaApiResponse/TriagemListaItemApi (linhas 445-462),
+# lidas diretamente do mapper (nao de memoria) — envelope {items,total,page,pageSize}
+# e, por item, {idTriagem,dtTriagem,urgencia,sintomas,score,regrasVersao,
+# encaminhadoVet,tutor,pets,trechoMensagem}. LunaController.ListarTriagens
+# (LU-08) e [Authorize] no metodo, JWT de clinica igual ao bloco 19 (nao X-Api-Key).
+#
+# LU-13 (FIXES_PENDENTES tema ⑤): ate aqui NENHUM check deste script olhava o
+# CORPO da resposta, so o status HTTP — um contrato que mudasse de shape sem mudar
+# o status nunca seria pego. Este e o embriao do detector desse tema.
+chamar "luna/triagens (GET, JWT clinica)" 200 GET "$API/api/v1/luna/triagens" '' "$TOKEN"
+
+# Chaves esperadas derivadas do mapper (ver comentario acima) — LISTA-ALVO da
+# mutacao obrigatoria do LU-13 (item 3 do brief): remover uma entrada aqui faz
+# este check falhar nominalmente contra a resposta real, sem tocar no app.
+LUNA_TRIAGENS_ENVELOPE="items total page pageSize"
+LUNA_TRIAGENS_ITEM="idTriagem dtTriagem urgencia sintomas score regrasVersao encaminhadoVet tutor pets trechoMensagem"
+
+CORPO_TRIAGENS_RESULTADO=$("$PY" -c '
+import json, sys
+envelope = sys.argv[1].split()
+item_keys = sys.argv[2].split()
+with open(sys.argv[3], "r", encoding="utf-8") as f:
+    data = json.load(f)
+faltando = [k for k in envelope if k not in data]
+if not faltando and data.get("items"):
+    faltando = ["items[0]." + k for k in item_keys if k not in data["items"][0]]
+print(",".join(faltando) if faltando else "OK")
+' "$LUNA_TRIAGENS_ENVELOPE" "$LUNA_TRIAGENS_ITEM" "$BODY_FILE")
+
+if [ "$CORPO_TRIAGENS_RESULTADO" = "OK" ]; then
+  echo "ok     luna/triagens (corpo: envelope + item batem com luna.service.ts)"
+else
+  echo "FALHA  luna/triagens (corpo): chave(s) ausente(s) vs luna.service.ts: $CORPO_TRIAGENS_RESULTADO"
+  FALHAS=$((FALHAS+1))
+fi
+
+# ─── 22. Luna: POST /jobs/lembrete-vacina/executar (gatilho manual, LU-04) ───
+# Origem: kura-luna-ai/luna/src/web/routers/jobs.py — auth por X-API-Key contra
+# LUNA_INBOUND_API_KEY (validar_api_key), NAO Bearer.
+#
+# ⛔ REGRA DURA (brief LU-13, atualizacao sessao 7): este check NUNCA pode
+# disparar envio real de WhatsApp. Dois sub-checks, os dois sem tocar o gateway
+# Twilio de verdade:
+# (a) sem X-API-Key -> auth barra em 401 antes de chegar em qualquer dependencia
+#     de negocio — prova de 0 chamadas por falta de credencial.
+# (b) COM X-API-Key correta -> get_lembrete_service (dependencies.py:108-131)
+#     constroi o TwilioGateway ANTES de rodar o job; com TWILIO_SID/TWILIO_TOKEN
+#     vazios (exigido pela sequencia do item 4 deste brief: exportados vazios no
+#     shell do `docker compose up` desta prova) a construcao falha no SDK e a
+#     dependencia converte isso em 503 (F4-1) — o job.executar() real NUNCA roda,
+#     entao nenhum envio acontece mesmo com a chave certa. So roda se
+#     LUNA_INBOUND_API_KEY estiver disponivel (env ou .env); sem ela, so (a).
+chamar "jobs/lembrete-vacina/executar (POST, sem X-API-Key)" 401 POST "$LUNA_URL/jobs/lembrete-vacina/executar" '' ""
+if [ -n "$LUNA_INBOUND_API_KEY" ]; then
+  chamar_luna_inbound() {  # chamar_luna_inbound <nome> <esperado> <metodo> <url>
+    local nome=$1 esperado=$2 metodo=$3 url=$4
+    local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url" -H "X-API-Key: $LUNA_INBOUND_API_KEY")
+    local code; code=$(curl "${args[@]}")
+    if [ "$code" != "$esperado" ]; then
+      echo "FALHA  $nome: esperado $esperado, obtido $code"
+      head -c 300 "$BODY_FILE"; echo
+      FALHAS=$((FALHAS+1))
+    else
+      echo "ok     $nome ($code)"
+    fi
+  }
+  chamar_luna_inbound "jobs/lembrete-vacina/executar (POST, com X-API-Key, Twilio vazio)" 503 POST "$LUNA_URL/jobs/lembrete-vacina/executar"
+else
+  echo "aviso  jobs/lembrete-vacina/executar (com X-API-Key): LUNA_INBOUND_API_KEY indisponivel, sub-check (b) pulado — so (a) rodou"
+fi
 
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo

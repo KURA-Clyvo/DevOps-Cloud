@@ -238,7 +238,19 @@ services:
       BREED_CLASSIFIER_WEIGHTS_PATH: src/ai/models/breed_classifier.pth
       # Servidor HTTP
       LUNA_HTTP_PORT: "8000"
-      WEBHOOK_PUBLIC_URL: ${WEBHOOK_PUBLIC_URL:-https://your-ngrok-url.ngrok.io/webhook/twilio/whatsapp}
+      # LU-13: sem default funcional — WEBHOOK_PUBLIC_URL entra na URL assinada que o
+      # Twilio valida (X-Twilio-Signature); o antigo default "your-ngrok-url.ngrok.io"
+      # nunca bateria com uma assinatura real, então mascarava a ausência da variável
+      # com um 403 tardio em vez de falhar alto na subida (mesmo padrão da TASK-39).
+      WEBHOOK_PUBLIC_URL: ${WEBHOOK_PUBLIC_URL:?defina WEBHOOK_PUBLIC_URL no .env (URL publica do webhook Twilio)}
+      # LU-13/LU-04: scheduler de lembrete de vacina (APScheduler, lifespan da Luna).
+      # Desligado por padrao — ligar sozinho dispararia Twilio de verdade em qualquer
+      # `up` deste compose, inclusive em maquina de desenvolvimento/CI sem intencao de
+      # notificar tutor nenhum. LUNA_SCHEDULER_HORA e a hora local (0-23) do tick diario;
+      # ambas tem default no proprio settings.py da Luna (LUNA_SCHEDULER_ENABLED=False,
+      # LUNA_SCHEDULER_HORA=8) — aqui so tornamos explicito e configuravel via .env.
+      LUNA_SCHEDULER_ENABLED: ${LUNA_SCHEDULER_ENABLED:-false}
+      LUNA_SCHEDULER_HORA: ${LUNA_SCHEDULER_HORA:-8}
       LOG_LEVEL: INFO
       PYTHONPATH: /app
     depends_on:
