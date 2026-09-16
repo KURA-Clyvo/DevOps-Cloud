@@ -290,7 +290,11 @@ from src.config.settings import Settings
 from src.db.connection import OracleConnectionPool
 
 settings = Settings()
-pool = OracleConnectionPool(settings)
+pool = OracleConnectionPool(
+    dsn=settings.ORACLE_DSN,
+    user=settings.ORACLE_USER,
+    password=settings.ORACLE_PASSWORD,
+)
 id_tutor = int(sys.argv[1])
 whatsapp = sys.argv[2]
 with pool.get_connection() as conn:
