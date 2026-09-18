@@ -89,6 +89,8 @@ properties:
           # do POST /transcricao chamado pelo .NET. Mesmo valor dos dois lados.
           - name: LUNA_INBOUND_API_KEY
             secureValue: __LUNA_INBOUND_API_KEY__
+          - name: CORS_ALLOWED_ORIGINS
+            value: __CORS_ALLOWED_ORIGINS__
           # Twilio — externos e opcionais: sem valor, os envios de WhatsApp
           # ficam inativos, mas o serviço sobe.
           - name: TWILIO_SID

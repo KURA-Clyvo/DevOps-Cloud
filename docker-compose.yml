@@ -122,6 +122,9 @@ services:
       # configuration["Storage:BasePath"] → env Storage__BasePath. Caminho gravável pelo
       # usuário não-root 'kura' — ver serviço kura-storage-init acima.
       Storage__BasePath: ${STORAGE_BASE_PATH:-/data/kura/receituarios}
+      # CORS do mobile-clinica-rn na web (Expo web na 8082; a 8081 é desta stack, a API
+      # Java). Mesma variável da API Java e da Luna — ver CorsExtensions.cs no backend.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://localhost:19006}
     volumes:
       - kura-storage-documentos:${STORAGE_BASE_PATH:-/data/kura/receituarios}
     depends_on:
@@ -174,7 +177,7 @@ services:
       DB_PASSWORD: ${ORACLE_APP_PASSWORD:?defina ORACLE_APP_PASSWORD no .env}
       JWT_SECRET: ${JAVA_JWT_SECRET:?defina JAVA_JWT_SECRET no .env (openssl rand -base64 64)}
       JWT_ACCESS_EXPIRATION_MINUTES: ${JWT_ACCESS_EXPIRATION_MINUTES:-15}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8081,http://localhost:19006}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://localhost:19006}
     depends_on:
       oracle-db:
         condition: service_healthy
@@ -221,6 +224,8 @@ services:
       # Sem isto, LUNA_INBOUND_API_KEY fica "" (default do settings.py) e o endpoint
       # rejeita 100% das chamadas com 401 — precisa bater com EXPO_PUBLIC_LUNA_API_KEY do app.
       LUNA_INBOUND_API_KEY: ${LUNA_INBOUND_API_KEY:?defina LUNA_INBOUND_API_KEY no .env}
+      # CORS do mobile-clinica-rn na web (/whatsapp/enviar, /transcricao, /ready).
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://localhost:19006}
       # Twilio (preencher no .env)
       TWILIO_SID: ${TWILIO_SID:-}
       TWILIO_TOKEN: ${TWILIO_TOKEN:-}
