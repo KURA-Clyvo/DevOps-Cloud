@@ -169,7 +169,7 @@ ORACLE_PDB_SERVICE="${ORACLE_PDB_SERVICE:-XEPDB1}"
 ASPNETCORE_ENVIRONMENT="${ASPNETCORE_ENVIRONMENT:-Production}"
 STORAGE_BASE_PATH="${STORAGE_BASE_PATH:-/data/kura/receituarios}"
 JWT_ACCESS_EXPIRATION_MINUTES="${JWT_ACCESS_EXPIRATION_MINUTES:-15}"
-CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://localhost:19006}"
+CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://localhost:19006,https://kura-clinica.vercel.app,https://kura-tutor.vercel.app}"
 TWILIO_FROM_NUMBER="${TWILIO_FROM_NUMBER:-+14155238886}"
 WEBHOOK_PUBLIC_URL="${WEBHOOK_PUBLIC_URL:-https://kura-webhook-nao-configurado.invalid/webhook/twilio/whatsapp}"
 
