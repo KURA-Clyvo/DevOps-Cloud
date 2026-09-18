@@ -88,6 +88,8 @@ properties:
             value: __LUNA_BASE_URL__
           - name: Luna__InboundApiKey
             secureValue: __LUNA_INBOUND_API_KEY__
+          - name: CORS_ALLOWED_ORIGINS
+            value: __CORS_ALLOWED_ORIGINS__
           # FEAT-03 — PDFs de receituário (Documento.DsCaminho).
           - name: Storage__BasePath
             value: __STORAGE_BASE_PATH__
