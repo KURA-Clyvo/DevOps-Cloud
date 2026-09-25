@@ -122,6 +122,24 @@ services:
       # configuration["Storage:BasePath"] → env Storage__BasePath. Caminho gravável pelo
       # usuário não-root 'kura' — ver serviço kura-storage-init acima.
       Storage__BasePath: ${STORAGE_BASE_PATH:-/data/kura/receituarios}
+      # FT-06 (KURA_BACKLOG_FOTO_PET.md). Binding confirmado em ServiceCollectionExtensions.cs:
+      # configuration["Foto:UrlSecret"] → env Foto__UrlSecret — FAIL-FAST na partida (mesmo
+      # padrão TASK-39 das outras chaves acima: sem valor de ≥32 bytes, o kura-api não sobe).
+      # PRECISA SER O MESMO VALOR do FOTO_URL_SECRET do serviço kura-tutor logo abaixo — é o
+      # segredo HMAC que os dois lados usam para assinar/validar a URL da foto (FT-02/FT-05);
+      # valor divergente faz toda URL do app do tutor devolver 403 do FotosController.
+      Foto__UrlSecret: ${FOTO_URL_SECRET:?defina FOTO_URL_SECRET no .env (openssl rand -base64 48) — MESMO valor do serviço kura-tutor}
+      # Base pública da URL de foto (GeradorUrlFotoPet.cs, configuration["Foto:UrlBase"]).
+      # SEM fail-fast: ausente, o .NET deriva a URL do próprio request (scheme+host do
+      # Kestrel) — funciona para quem chama a API direto (LAN/nativo local), mas é o
+      # default certo só aqui no compose. Em produção (Azure/web hospedado) isto TEM que
+      # ser setado explícito (ver azure/aci-dotnet-api.yaml) — achado F-P1 do G2 da FT-04:
+      # sem ele, atrás do rewrite do Vercel a URL derivada sai em http e sem o prefixo
+      # /proxy/clinica, quebrando a foto na demo web. Default local = a origem que os 2
+      # apps usam para chamar esta API a partir do host (mobile-clinica-rn/.env.example e
+      # mobile-tutor-rn/.env.example não têm override de dev; http://localhost:8080 é a
+      # porta publicada deste serviço, ver "ports" acima). MESMO valor no kura-tutor.
+      Foto__UrlBase: ${FOTO_URL_BASE:-http://localhost:8080}
       # CORS do mobile-clinica-rn na web (Expo web na 8082; a 8081 é desta stack, a API
       # Java). Mesma variável da API Java e da Luna — ver CorsExtensions.cs no backend.
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://localhost:19006}
@@ -177,6 +195,19 @@ services:
       DB_PASSWORD: ${ORACLE_APP_PASSWORD:?defina ORACLE_APP_PASSWORD no .env}
       JWT_SECRET: ${JAVA_JWT_SECRET:?defina JAVA_JWT_SECRET no .env (openssl rand -base64 64)}
       JWT_ACCESS_EXPIRATION_MINUTES: ${JWT_ACCESS_EXPIRATION_MINUTES:-15}
+      # FT-06 (KURA_BACKLOG_FOTO_PET.md). Binding confirmado em application.yml:
+      # kura.foto.url-secret ← env FOTO_URL_SECRET. Ao contrário do kura-api, este lado
+      # NÃO tem fail-fast (decisão da FT-05: sem o segredo, GeradorUrlFotoPet — Java — só
+      # loga um WARN na partida e as URLs de foto saem null; o serviço sobe normalmente).
+      # PRECISA SER O MESMO VALOR do Foto__UrlSecret do serviço kura-api acima — o Java só
+      # GERA a assinatura, nunca valida; se divergir, o .NET rejeita com 403 uma URL que o
+      # Java jurou ser válida.
+      FOTO_URL_SECRET: ${FOTO_URL_SECRET:?defina FOTO_URL_SECRET no .env (openssl rand -base64 48) — MESMO valor do serviço kura-api}
+      # Base pública da URL de foto (kura.foto.url-base ← env FOTO_URL_BASE). Ao contrário
+      # do .NET, o Java NÃO deriva do request (não é quem hospeda o arquivo) — sem valor,
+      # sai vazio e a URL some do DTO (mesmo efeito que sem o segredo). MESMO valor do
+      # Foto__UrlBase do kura-api acima — ver comentário lá para o porquê do default local.
+      FOTO_URL_BASE: ${FOTO_URL_BASE:-http://localhost:8080}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://localhost:19006}
     depends_on:
       oracle-db:
