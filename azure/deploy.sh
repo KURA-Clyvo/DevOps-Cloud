@@ -181,6 +181,36 @@ CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://local
 # quem chama de dentro do app do tutor. Ver o comentário em aci-java-api.yaml
 # para o raciocínio completo.
 FOTO_URL_BASE="${FOTO_URL_BASE:-https://kura-clinica.vercel.app/proxy/clinica}"
+# ─── Guarda de FOTO_URL_BASE (achado I-1 do G2 da FT-06, reproduzido) ────────
+# Um `.env` local copiado de `.env.example` (Passo 2 do README) traz
+# `FOTO_URL_BASE=http://localhost:8080` comentado; se alguém descomentar essa
+# linha para dev local e depois rodar ESTE script na mesma pasta, o `set -a; .
+# .env` do bloco acima faz esse valor vencer o default do Azure logo em cima —
+# e as duas APIs emitiriam URL de foto em `localhost`, quebrando a foto nos 2
+# apps SEM erro nenhum (o mesmo modo de falha que `LUNA_BASE_URL` (~linha
+# 1003, reatribuída incondicionalmente) já existe para evitar). Aborta em vez
+# de deixar isso passar silencioso.
+case "$FOTO_URL_BASE" in
+    https://*)
+        case "$FOTO_URL_BASE" in
+            *localhost*|*127.0.0.1*)
+                echo "❌ ERRO: FOTO_URL_BASE aponta para localhost/127.0.0.1 ('$FOTO_URL_BASE')."
+                echo "   Isso quebra a foto nos 2 apps hospedados, sem erro nenhum. Não defina"
+                echo "   FOTO_URL_BASE no .env usado para este script — o default acima já é a"
+                echo "   origem certa. Se precisar sobrescrever, use uma URL https:// pública real."
+                exit 1
+                ;;
+        esac
+        ;;
+    *)
+        echo "❌ ERRO: FOTO_URL_BASE precisa começar com https:// para o deploy no Azure (valor atual: '$FOTO_URL_BASE')."
+        echo "   Provável causa: um .env local copiado de .env.example com FOTO_URL_BASE"
+        echo "   descomentado (valor de dev, ex.: http://localhost:8080) vazou para este"
+        echo "   deploy. Não defina esta chave no .env usado para deploy no Azure — o"
+        echo "   default acima já é a origem certa."
+        exit 1
+        ;;
+esac
 TWILIO_FROM_NUMBER="${TWILIO_FROM_NUMBER:-+14155238886}"
 WEBHOOK_PUBLIC_URL="${WEBHOOK_PUBLIC_URL:-https://kura-webhook-nao-configurado.invalid/webhook/twilio/whatsapp}"
 

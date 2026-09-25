@@ -294,6 +294,14 @@ Detalhes importantes na primeira execução:
 - **O `tutor-api` sobe antes do `clinica-api`**, de propósito: o Flyway roda no boot
   dele e é a autoridade de DDL. Com essa ordem, o `.NET` já encontra o schema pronto.
 - **Nada de `.env` é obrigatório aqui.** Ver §8.
+- **`FOTO_URL_BASE` é config não-secreta, resolvida automaticamente.** Sem ela no
+  ambiente, o `deploy.sh` usa `https://kura-clinica.vercel.app/proxy/clinica` (mesma
+  origem para os 2 ACIs — ver comentário no script, achado F6-config-1). **Não
+  preencha esta chave num `.env` usado para deploy no Azure**: um `.env` copiado de
+  `.env.example` para dev local traria `http://localhost:8080`, e as duas APIs
+  emitiriam URL de foto em `localhost` — foto quebrada nos 2 apps, sem erro nenhum
+  (achado I-1 do G2 da FT-06). O `deploy.sh` agora **aborta** se detectar isso
+  (`localhost`/`127.0.0.1` ou valor sem `https://`).
 - **O espelhamento da imagem do Oracle pode pedir credencial do Docker Hub.** É o
   único ponto do deploy que fala com um registry de terceiro, e acontece só quando
   `kura/oracle-xe:<tag>` ainda não está no ACR. Ver §7.
