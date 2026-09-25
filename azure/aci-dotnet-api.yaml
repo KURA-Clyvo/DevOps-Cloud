@@ -29,8 +29,23 @@
 #   __LUNA_API_KEY__             <- <cofre>/luna-api-key
 #   __LUNA_INBOUND_API_KEY__     <- <cofre>/luna-inbound-api-key
 #   __DAILY_API_KEY__            <- <cofre>/daily-api-key (externo, opcional)
+#   __FOTO_URL_SECRET__          <- <cofre>/foto-url-secret (FT-06)
 #   __ORACLE_CONNECTION_STRING__ é montada pelo deploy.sh com o FQDN do Oracle
 #                                   + <cofre>/oracle-app-password
+#
+# FT-06 (KURA_BACKLOG_FOTO_PET.md) — __FOTO_URL_BASE__: NÃO é segredo (config
+# não-secreta, `value` puro como CORS_ALLOWED_ORIGINS/STORAGE_BASE_PATH), mas
+# aqui ela NÃO PODE usar o mesmo default do compose local (http://localhost:8080
+# não existe atrás de um ACI). Achado F-P1 do G2 da FT-04, medido contra
+# mobile-clinica-rn/vercel.json: o app web hospedado fala com este container
+# group por um REWRITE do Vercel (`/proxy/clinica/:path*` →
+# `http://<fqdn-deste-aci>:8080/:path*`), nunca direto — sem
+# Foto:UrlBase explícito, a URL sairia derivada do request (http, sem o
+# prefixo /proxy/clinica) e quebraria numa página https. O valor certo é a
+# origem HTTPS que os apps alcançam de fato: hoje
+# `https://kura-clinica.vercel.app/proxy/clinica` (default em deploy.sh,
+# sobrescrevível por env/`.env`). MESMO valor no aci-java-api.yaml — ver o
+# achado sobre a rota do tutor lá.
 # =============================================================================
 apiVersion: '2021-10-01'
 location: __LOCATION__
@@ -93,6 +108,14 @@ properties:
           # FEAT-03 — PDFs de receituário (Documento.DsCaminho).
           - name: Storage__BasePath
             value: __STORAGE_BASE_PATH__
+          # FT-06 — URL assinada da foto do pet (FT-02/FT-04). MESMO valor do
+          # FOTO_URL_SECRET no aci-java-api.yaml — divergir faz o .NET rejeitar
+          # com 403 toda URL que o Java assinou.
+          - name: Foto__UrlSecret
+            secureValue: __FOTO_URL_SECRET__
+          # Ver cabeçalho: NÃO é segredo, e NÃO usa o default do compose local.
+          - name: Foto__UrlBase
+            value: __FOTO_URL_BASE__
         volumeMounts:
           # Equivalente ao named volume kura_storage_documentos do compose: os
           # PDFs são dado de negócio e não podem viver na camada gravável do

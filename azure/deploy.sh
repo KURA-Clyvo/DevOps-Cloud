@@ -170,6 +170,17 @@ ASPNETCORE_ENVIRONMENT="${ASPNETCORE_ENVIRONMENT:-Production}"
 STORAGE_BASE_PATH="${STORAGE_BASE_PATH:-/data/kura/receituarios}"
 JWT_ACCESS_EXPIRATION_MINUTES="${JWT_ACCESS_EXPIRATION_MINUTES:-15}"
 CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://localhost:19006,https://kura-clinica.vercel.app,https://kura-tutor.vercel.app}"
+# FT-06 (KURA_BACKLOG_FOTO_PET.md). NÃO é a mesma origem do compose local
+# (http://localhost:8080 não existe atrás de um ACI) — é a origem HTTPS que os
+# apps hospedados alcançam de fato. Achado medido nesta task: o app do TUTOR
+# não tem rewrite próprio até o .NET (mobile-tutor-rn/vercel.json só proxeia
+# para o Java e a Luna) — a única rota pública até o .NET é a do app da
+# CLÍNICA (mobile-clinica-rn/vercel.json, /proxy/clinica). Por isso o mesmo
+# valor serve para os DOIS ACIs (dotnet e java) abaixo: um <Image>/download de
+# foto não é sujeito a CORS, então a origem "de outro app" funciona igual para
+# quem chama de dentro do app do tutor. Ver o comentário em aci-java-api.yaml
+# para o raciocínio completo.
+FOTO_URL_BASE="${FOTO_URL_BASE:-https://kura-clinica.vercel.app/proxy/clinica}"
 TWILIO_FROM_NUMBER="${TWILIO_FROM_NUMBER:-+14155238886}"
 WEBHOOK_PUBLIC_URL="${WEBHOOK_PUBLIC_URL:-https://kura-webhook-nao-configurado.invalid/webhook/twilio/whatsapp}"
 
@@ -203,6 +214,7 @@ IOT_API_KEY|iot-api-key|b64:32
 LUNA_API_KEY|luna-api-key|b64:32
 LUNA_INBOUND_API_KEY|luna-inbound-api-key|b64:32
 JAVA_JWT_SECRET|java-jwt-secret|b64:64
+FOTO_URL_SECRET|foto-url-secret|b64:48
 DAILY_API_KEY|daily-api-key|externo
 TWILIO_SID|twilio-sid|externo
 TWILIO_TOKEN|twilio-token|externo
@@ -1010,7 +1022,9 @@ if quer_servico tutor-api; then
         "ORACLE_APP_PASSWORD=$ORACLE_APP_PASSWORD" \
         "JAVA_JWT_SECRET=$JAVA_JWT_SECRET" \
         "JWT_ACCESS_EXPIRATION_MINUTES=$JWT_ACCESS_EXPIRATION_MINUTES" \
-        "CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS"
+        "CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS" \
+        "FOTO_URL_SECRET=$FOTO_URL_SECRET" \
+        "FOTO_URL_BASE=$FOTO_URL_BASE"
     recriar_container_group "$ACI_JAVA_NAME" "$GERADOS_DIR/aci-java-api.yaml"
     echo "  Aguardando health (o Flyway aplica as migrations na primeira subida)..."
     if ! aguardar_http_ok "http://$JAVA_FQDN:8081/api/actuator/health" 30 20; then
@@ -1049,7 +1063,9 @@ if quer_servico clinica-api; then
         "STORAGE_SHARE_DOCUMENTOS=$STORAGE_SHARE_DOCUMENTOS" \
         "STORAGE_ACCOUNT_NAME=$STORAGE_ACCOUNT_NAME" \
         "STORAGE_ACCOUNT_KEY=$STORAGE_KEY" \
-        "CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS"
+        "CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS" \
+        "FOTO_URL_SECRET=$FOTO_URL_SECRET" \
+        "FOTO_URL_BASE=$FOTO_URL_BASE"
     recriar_container_group "$ACI_DOTNET_NAME" "$GERADOS_DIR/aci-dotnet-api.yaml"
     echo "  Aguardando health..."
     if ! aguardar_http_ok "http://$DOTNET_FQDN:8080/health" 20 20; then
