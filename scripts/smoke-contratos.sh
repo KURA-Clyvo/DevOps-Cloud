@@ -1007,15 +1007,26 @@ DS_FOTO_URL=$(campo dsFotoUrl)
 DS_FOTO_THUMB_URL=$(campo dsFotoThumbUrl)
 
 # GET pela URL devolvida pelo proprio DTO — prova que a assinatura que o .NET gerou e a
-# que o .NET aceita de volta (nao so leitura de campo).
-CODE_FOTO=$(curl -s -o "$BODY_FILE" -w '%{http_code}' "$DS_FOTO_THUMB_URL")
-if [ "$CODE_FOTO" != "200" ]; then
-  echo "FALHA  fotos/{chave} (GET pela dsFotoThumbUrl do DTO): esperado 200, obtido $CODE_FOTO"
-  head -c 300 "$BODY_FILE"; echo
-  FALHAS=$((FALHAS+1))
-else
-  echo "ok     fotos/{chave} (GET pela dsFotoThumbUrl do DTO) (200)"
-fi
+# que o .NET aceita de volta, e que os bytes servidos sao os ENVIADOS na parte certa
+# (thumb -> variante 256, media -> variante 1080; conteudos diferentes pegam a troca).
+baixar_foto_e_comparar() {  # baixar_foto_e_comparar <nome> <url> <arquivo_enviado>
+  local nome=$1 url=$2 enviado=$3
+  local code
+  code=$(curl -s -o "$BODY_FILE" -w '%{http_code}' "$url")
+  if [ "$code" != "200" ]; then
+    echo "FALHA  $nome: esperado 200, obtido $code"
+    head -c 300 "$BODY_FILE"; echo
+    FALHAS=$((FALHAS+1))
+  elif ! cmp -s "$BODY_FILE" "$enviado"; then
+    echo "FALHA  $nome: 200, mas os bytes servidos diferem dos enviados"
+    FALHAS=$((FALHAS+1))
+  else
+    echo "ok     $nome (200, bytes iguais aos enviados)"
+  fi
+}
+
+baixar_foto_e_comparar "fotos/{chave} (GET pela dsFotoThumbUrl do DTO)" "$DS_FOTO_THUMB_URL" "$FOTO_THUMB_FILE"
+baixar_foto_e_comparar "fotos/{chave} (GET pela dsFotoUrl do DTO)" "$DS_FOTO_URL" "$FOTO_MEDIA_FILE"
 
 # sig adulterada -> 403. Troca o PRIMEIRO caractere da sig, nao o ultimo: medido em
 # PetFotoServirHttpTests.cs (backend-clinica-dotnet) que o ULTIMO caractere de uma sig
