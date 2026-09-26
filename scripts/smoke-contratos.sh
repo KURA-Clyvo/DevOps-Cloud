@@ -76,6 +76,32 @@ fi
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
+# ─── caminho nativo (armadilha de 3 leitores de /tmp diferentes no Git Bash) ─
+# Achado no G4 da FT-10 (2026-09-26, g4-ft10.md F2.b): no Git Bash/Windows um
+# mesmo caminho POSIX como "/tmp/tmp.XXXX" (saida de `mktemp`) e lido de forma
+# DIFERENTE por 3 programas na mesma maquina:
+#   - `cmp` (binario MSYS, `/usr/bin/cmp`) resolve "/tmp" para o /tmp real do
+#     MSYS (ex.: C:\Users\<usuario>\AppData\Local\Temp);
+#   - o `python` nativo do Windows (nao-MSYS, ex. C:\Python314) e o `curl.exe`
+#     nativo (`/mingw64/bin/curl`, PE32+) NAO passam pela camada de traducao de
+#     path do MSYS quando o argumento vem de dentro de uma string Python ou de
+#     um `-F campo=@caminho` — os dois resolvem "/tmp/x" como a raiz do drive
+#     do cwd (ex.: D:\tmp\x), que e uma pasta DIFERENTE da que o `cmp` le.
+# Resultado medido: o servidor grava e serve os bytes certos, mas o `cmp` local
+# compara contra o arquivo ERRADO (as vezes vazio) -> "FALHA bytes diferem"
+# falso. Confirmado por 2 sondas (g4-ft10.md F2.a/F2.b): sem este helper, 2
+# checks do bloco 23 davam FALHA por instrumento, nao por produto; com ele,
+# verdes (bytes iguais).
+# Em Linux (CI ubuntu-latest) nao ha `cygpath` e os 3 programas ja leem o mesmo
+# /tmp — o helper devolve o caminho intacto, sem efeito.
+caminho_nativo() {  # caminho_nativo <caminho_posix>
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 # ─── envio de corpo: SEMPRE por arquivo, nunca por argumento ────────────────
 # Descoberto no G4 do FIX_7 (2026-08-12), com a stack real de pe: passar o corpo
 # como ARGUMENTO (`-d "$payload"`) corrompe qualquer byte nao-ASCII no Git Bash do
@@ -963,31 +989,30 @@ fi
 # com 2 partes nomeadas 'thumb'/'media' — PetFotoUploadValidator.cs) e
 # FotosController.Obter (FT-04, GET /api/v1/fotos/{*chave}?exp=&sig=, anonimo).
 #
-# ⚠️ NAO existe tela no app ainda que suba foto (FT-07 e FT-08, fora deste ciclo — o app
-# so MOSTRA foto quando o backend a expoe, nao sobe nada hoje). O payload multipart aqui e
-# o CONTRATO do endpoint em si (nomes exatos das 2 partes), nao um onSubmit de tela real —
-# regra do cabecalho do script fica citada aqui de proposito, porque esta e a PRIMEIRA vez
-# que este script chama um endpoint sem consumidor de tela ainda.
+# A tela do app que sobe foto e a FT-07 (mobile-clinica-rn, `pets.service.ts::uploadFoto`),
+# que ja existe e ja e coberta no gate `smoke-coverage` — ver `registry.ts` daquele repo.
 #
-# ⚠️ ESTE BLOCO NUNCA EXECUTOU CONTRA O COMPOSE REAL (regra do brief da FT-04: nao subir
-# containers nesta task — o pin do dotnet-backend ainda nao tem FT-02/03/04 e o compose
-# ainda nao tem Foto__UrlSecret, que so entra na FT-06). Fica para o G4 (FT-10) confirmar.
+# Este bloco JA EXECUTOU contra o compose real: G4 da FT-10 (2026-09-26, g4-ft10.md F2.a/
+# F2.b) — upload 200, GET thumb/media 200 com bytes iguais aos enviados, sig adulterada
+# 403. A 1a execucao acusou 2 "bytes diferem" falsos por causa da armadilha de /tmp entre
+# 3 leitores descrita no helper `caminho_nativo()` acima; corrigido usando o helper nas 2
+# escritas do Python e nos 2 `-F …=@` abaixo.
 FOTO_THUMB_FILE=$(mktemp)
 FOTO_MEDIA_FILE=$(mktemp)
 trap 'rm -f "$BODY_FILE" "$PAYLOAD_FILE" "$FOTO_THUMB_FILE" "$FOTO_MEDIA_FILE"' EXIT
 # JPEG minimo valido por MAGIC BYTES (FF D8 FF...) — o validator (ValidadorAssinaturaImagem.cs)
 # so olha o cabecalho, nao o conteudo real da imagem. thumb e media com bytes DIFERENTES
 # (0x01.. x 0x02..) para o check de bytes abaixo distinguir qual variante voltou.
-"$PY" -c "open('$FOTO_THUMB_FILE','wb').write(bytes([0xFF,0xD8,0xFF,0xE0]+[0x01]*16))"
-"$PY" -c "open('$FOTO_MEDIA_FILE','wb').write(bytes([0xFF,0xD8,0xFF,0xE0]+[0x02]*16))"
+"$PY" -c "open('$(caminho_nativo "$FOTO_THUMB_FILE")','wb').write(bytes([0xFF,0xD8,0xFF,0xE0]+[0x01]*16))"
+"$PY" -c "open('$(caminho_nativo "$FOTO_MEDIA_FILE")','wb').write(bytes([0xFF,0xD8,0xFF,0xE0]+[0x02]*16))"
 
 chamar_upload_foto() {  # chamar_upload_foto <nome> <esperado> <url> <thumb_path> <media_path> <token>
   local nome=$1 esperado=$2 url=$3 thumb=$4 media=$5 token=$6
   local code
   code=$(curl -s -o "$BODY_FILE" -w '%{http_code}' -X POST "$url" \
     -H "Authorization: Bearer $token" \
-    -F "thumb=@${thumb};type=application/octet-stream" \
-    -F "media=@${media};type=application/octet-stream")
+    -F "thumb=@$(caminho_nativo "$thumb");type=application/octet-stream" \
+    -F "media=@$(caminho_nativo "$media");type=application/octet-stream")
   if [ "$code" != "$esperado" ]; then
     echo "FALHA  $nome: esperado $esperado, obtido $code"
     head -c 300 "$BODY_FILE"; echo
