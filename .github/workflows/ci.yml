@@ -27,12 +27,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Regression guard for TASK-39: docker-compose.yml uses `${VAR:?message}` for 7
+      # Regression guard for TASK-39: docker-compose.yml uses `${VAR:?message}` for 8
       # auth-related keys (Jwt key, JWT secret, Oracle app/sys passwords, IoT/Luna/
-      # inbound API keys) so that a stack brought up without a real .env fails loudly
-      # instead of silently accepting a functional literal default. If this step ever
-      # starts succeeding, someone reintroduced a `:-default` fallback for one of those
-      # keys — fail the build so it gets noticed.
+      # inbound API keys, and — since FT-06 — the pet photo signed-URL secret) so that
+      # a stack brought up without a real .env fails loudly instead of silently
+      # accepting a functional literal default.
+      #
+      # What this step actually proves (corrected per G2/FT-06 finding M-2, verified
+      # by mutation): that AT LEAST ONE of those 8 keys still aborts `docker compose
+      # config` when there is no .env at all. It does NOT prove that EACH key
+      # individually kept its fail-fast — swapping just one key's `${VAR:?...}` for a
+      # `${VAR:-a-functional-32-byte-default}` (the exact TASK-39 regression, applied
+      # to a single isolated key) sails through undetected here, because the other 7
+      # keys still make the no-.env run fail for an unrelated reason. This step only
+      # turns green if ALL 8 keys lose their fail-fast at once — the crudest version
+      # of the regression, not the only one. Catching a single-key regression would
+      # need a step that removes each key on its own and asserts a non-zero exit
+      # naming that key — out of scope for this fix wave.
       - name: Verify compose config still fails without .env (TASK-39 guard)
         run: |
           if docker compose config > /dev/null 2>/tmp/compose-config-no-env.log; then
@@ -62,6 +73,7 @@ jobs:
           LUNA_INBOUND_API_KEY=ci-dummy-luna-inbound-api-key
           JAVA_JWT_SECRET=ci-dummy-java-jwt-secret-not-a-real-secret-00000000000000000000
           WEBHOOK_PUBLIC_URL=https://ci-dummy.invalid/webhook
+          FOTO_URL_SECRET=ci-dummy-foto-url-secret-at-least-32-bytes-0000
           EOF
 
       - name: docker compose config (with dummy .env)

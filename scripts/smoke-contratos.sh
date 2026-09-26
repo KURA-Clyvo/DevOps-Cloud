@@ -957,6 +957,105 @@ else
   echo "aviso  jobs/lembrete-vacina/executar (com X-API-Key): LUNA_INBOUND_API_KEY indisponivel, sub-check (b) pulado — so (a) rodou"
 fi
 
+# ─── 23. FT-03/FT-04 (KURA_BACKLOG_FOTO_PET.md): upload de foto do pet + GET da foto ────
+# assinada ────────────────────────────────────────────────────────────────────────────
+# Origem dos endpoints: backend-clinica-dotnet PetsController.UploadFoto (FT-03, multipart
+# com 2 partes nomeadas 'thumb'/'media' — PetFotoUploadValidator.cs) e
+# FotosController.Obter (FT-04, GET /api/v1/fotos/{*chave}?exp=&sig=, anonimo).
+#
+# ⚠️ NAO existe tela no app ainda que suba foto (FT-07 e FT-08, fora deste ciclo — o app
+# so MOSTRA foto quando o backend a expoe, nao sobe nada hoje). O payload multipart aqui e
+# o CONTRATO do endpoint em si (nomes exatos das 2 partes), nao um onSubmit de tela real —
+# regra do cabecalho do script fica citada aqui de proposito, porque esta e a PRIMEIRA vez
+# que este script chama um endpoint sem consumidor de tela ainda.
+#
+# ⚠️ ESTE BLOCO NUNCA EXECUTOU CONTRA O COMPOSE REAL (regra do brief da FT-04: nao subir
+# containers nesta task — o pin do dotnet-backend ainda nao tem FT-02/03/04 e o compose
+# ainda nao tem Foto__UrlSecret, que so entra na FT-06). Fica para o G4 (FT-10) confirmar.
+FOTO_THUMB_FILE=$(mktemp)
+FOTO_MEDIA_FILE=$(mktemp)
+trap 'rm -f "$BODY_FILE" "$PAYLOAD_FILE" "$FOTO_THUMB_FILE" "$FOTO_MEDIA_FILE"' EXIT
+# JPEG minimo valido por MAGIC BYTES (FF D8 FF...) — o validator (ValidadorAssinaturaImagem.cs)
+# so olha o cabecalho, nao o conteudo real da imagem. thumb e media com bytes DIFERENTES
+# (0x01.. x 0x02..) para o check de bytes abaixo distinguir qual variante voltou.
+"$PY" -c "open('$FOTO_THUMB_FILE','wb').write(bytes([0xFF,0xD8,0xFF,0xE0]+[0x01]*16))"
+"$PY" -c "open('$FOTO_MEDIA_FILE','wb').write(bytes([0xFF,0xD8,0xFF,0xE0]+[0x02]*16))"
+
+chamar_upload_foto() {  # chamar_upload_foto <nome> <esperado> <url> <thumb_path> <media_path> <token>
+  local nome=$1 esperado=$2 url=$3 thumb=$4 media=$5 token=$6
+  local code
+  code=$(curl -s -o "$BODY_FILE" -w '%{http_code}' -X POST "$url" \
+    -H "Authorization: Bearer $token" \
+    -F "thumb=@${thumb};type=application/octet-stream" \
+    -F "media=@${media};type=application/octet-stream")
+  if [ "$code" != "$esperado" ]; then
+    echo "FALHA  $nome: esperado $esperado, obtido $code"
+    head -c 300 "$BODY_FILE"; echo
+    FALHAS=$((FALHAS+1))
+  else
+    echo "ok     $nome ($code)"
+  fi
+}
+
+chamar_upload_foto "pets/{id}/foto (POST, upload thumb+media)" 200 \
+  "$API/api/v1/pets/$ID_PET/foto" "$FOTO_THUMB_FILE" "$FOTO_MEDIA_FILE" "$TOKEN"
+
+# GET /pets/{id} de novo, agora com foto — extrai as 2 URLs assinadas do DTO
+# (PetResponseDto.DsFotoUrl/DsFotoThumbUrl, FT-04).
+chamar "pets/{id} (GET, apos upload de foto)" 200 GET "$API/api/v1/pets/$ID_PET" '' "$TOKEN"
+DS_FOTO_URL=$(campo dsFotoUrl)
+DS_FOTO_THUMB_URL=$(campo dsFotoThumbUrl)
+
+# GET pela URL devolvida pelo proprio DTO — prova que a assinatura que o .NET gerou e a
+# que o .NET aceita de volta, e que os bytes servidos sao os ENVIADOS na parte certa
+# (thumb -> variante 256, media -> variante 1080; conteudos diferentes pegam a troca).
+baixar_foto_e_comparar() {  # baixar_foto_e_comparar <nome> <url> <arquivo_enviado>
+  local nome=$1 url=$2 enviado=$3
+  local code
+  code=$(curl -s -o "$BODY_FILE" -w '%{http_code}' "$url")
+  if [ "$code" != "200" ]; then
+    echo "FALHA  $nome: esperado 200, obtido $code"
+    head -c 300 "$BODY_FILE"; echo
+    FALHAS=$((FALHAS+1))
+  elif ! cmp -s "$BODY_FILE" "$enviado"; then
+    echo "FALHA  $nome: 200, mas os bytes servidos diferem dos enviados"
+    FALHAS=$((FALHAS+1))
+  else
+    echo "ok     $nome (200, bytes iguais aos enviados)"
+  fi
+}
+
+baixar_foto_e_comparar "fotos/{chave} (GET pela dsFotoThumbUrl do DTO)" "$DS_FOTO_THUMB_URL" "$FOTO_THUMB_FILE"
+baixar_foto_e_comparar "fotos/{chave} (GET pela dsFotoUrl do DTO)" "$DS_FOTO_URL" "$FOTO_MEDIA_FILE"
+
+# sig adulterada -> 403. Troca o PRIMEIRO caractere da sig, nao o ultimo: medido em
+# PetFotoServirHttpTests.cs (backend-clinica-dotnet) que o ULTIMO caractere de uma sig
+# HMAC-SHA256 base64url de 32 bytes carrega so 4 bits significativos (256/6 = 42,67 — os
+# 2 bits baixos do ultimo grupo de 6 bits sao ignorados na decodificacao, mesmo achado
+# F3-a do G2 da FT-01/FT-02) — trocar so o ultimo caractere pode produzir os MESMOS bytes
+# e a "adulteracao" nao adulterar nada. O primeiro caractere cobre um grupo de 6 bits
+# inteiramente significativo.
+DS_FOTO_URL_SIG_ADULTERADA=$("$PY" -c "
+import sys
+import urllib.parse as up
+partes = up.urlsplit(sys.argv[1])
+query = up.parse_qs(partes.query)
+sig = query['sig'][0]
+sig_adulterada = ('B' if sig[0] == 'A' else 'A') + sig[1:]
+query['sig'] = [sig_adulterada]
+nova_query = up.urlencode(query, doseq=True)
+print(up.urlunsplit((partes.scheme, partes.netloc, partes.path, nova_query, partes.fragment)))
+" "$DS_FOTO_THUMB_URL")
+
+CODE_FOTO_SIG_ADULTERADA=$(curl -s -o "$BODY_FILE" -w '%{http_code}' "$DS_FOTO_URL_SIG_ADULTERADA")
+if [ "$CODE_FOTO_SIG_ADULTERADA" != "403" ]; then
+  echo "FALHA  fotos/{chave} (GET com sig adulterada): esperado 403, obtido $CODE_FOTO_SIG_ADULTERADA"
+  head -c 300 "$BODY_FILE"; echo
+  FALHAS=$((FALHAS+1))
+else
+  echo "ok     fotos/{chave} (GET com sig adulterada) (403)"
+fi
+
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
 if [ "$FALHAS" -eq 0 ]; then

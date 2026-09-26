@@ -17,6 +17,33 @@
 # SEGREDOS (Azure Key Vault, via `az keyvault secret show`, como `secureValue`):
 #   __ORACLE_APP_PASSWORD__ <- <cofre>/oracle-app-password
 #   __JAVA_JWT_SECRET__     <- <cofre>/java-jwt-secret
+#   __FOTO_URL_SECRET__     <- <cofre>/foto-url-secret (FT-06; kura.foto.url-secret em
+#                                application.yml — NÃO em application-prod.yml, que não
+#                                sobrescreve o bloco `foto:`, então o valor base já vale
+#                                em produção)
+#
+# ─── FT-06 (KURA_BACKLOG_FOTO_PET.md) — __FOTO_URL_BASE__, e a rota do tutor ──
+# NÃO é segredo (config não-secreta, `value` puro). PRECISA ser o MESMO valor do
+# aci-dotnet-api.yaml — o Java só GERA a assinatura (FT-05), o .NET é quem
+# VALIDA (FT-04), e os dois assinam a mesma string com o mesmo segredo.
+#
+# ACHADO medido nesta task (F-6-config, brief pediu para conferir e NÃO
+# inventar): mobile-tutor-rn/vercel.json NÃO tem nenhum rewrite para o `.NET`
+# — só `/proxy/tutor/:path*` → este container group (Java, 8081) e
+# `/proxy/luna/:path*` → a Luna. Ou seja, o app do tutor não fala com o `.NET`
+# por nenhuma origem própria; a única rota HTTPS pública até o `.NET` que
+# qualquer app hospedado alcança é a do app da CLÍNICA
+# (`/proxy/clinica/:path*` → este mesmo `.NET`, ver aci-dotnet-api.yaml).
+# Isso é o valor que __FOTO_URL_BASE__ tem que carregar aqui também —
+# `https://kura-clinica.vercel.app/proxy/clinica` — mesmo sendo uma origem
+# "de outro app": funciona porque a URL da foto é consumida como recurso de
+# IMAGEM (`<Image src=...}}>`/download de bytes), não como `fetch`/XHR — e
+# carregamento de imagem não é sujeito a CORS (só canvas/pixel-read seria).
+# Confirmado que o FotosController não declara nenhum header que bloquearia
+# isso (`Cross-Origin-Resource-Policy`/`X-Frame-Options`: 0 ocorrências no
+# repo — controle positivo: o mesmo grep acha `X-Content-Type-Options` em
+# FotosController.cs, então o grep enxerga headers que existem de verdade).
+# NÃO VERIFICADO ao vivo (sem ACI provisionado nesta task) — fica para o G4.
 # =============================================================================
 apiVersion: '2021-10-01'
 location: __LOCATION__
@@ -94,6 +121,15 @@ properties:
             value: "__JWT_ACCESS_EXPIRATION_MINUTES__"
           - name: CORS_ALLOWED_ORIGINS
             value: __CORS_ALLOWED_ORIGINS__
+          # FT-06 — URL assinada da foto do pet (FT-05). MESMO valor do
+          # FOTO_URL_SECRET no aci-dotnet-api.yaml (ver cabeçalho).
+          - name: FOTO_URL_SECRET
+            secureValue: __FOTO_URL_SECRET__
+          # Ver cabeçalho: mesmo valor do Foto__UrlBase no aci-dotnet-api.yaml,
+          # que hoje é a origem do proxy da CLÍNICA — não existe rota própria
+          # do tutor até o .NET (achado desta task).
+          - name: FOTO_URL_BASE
+            value: __FOTO_URL_BASE__
   ipAddress:
     type: Public
     dnsNameLabel: __JAVA_ACI_NAME__

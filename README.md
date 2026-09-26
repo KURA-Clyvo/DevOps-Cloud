@@ -235,7 +235,7 @@ nano .env   # preencha as credenciais
 ```
 
 ⚠️ **Este passo não é mais opcional.** Desde a TASK-39, o `docker-compose.yml` usa a
-sintaxe `${VAR:?mensagem}` para as 7 chaves de autenticação abaixo — sem elas
+sintaxe `${VAR:?mensagem}` para as 8 chaves de autenticação abaixo — sem elas
 preenchidas no `.env`, `docker compose up`/`docker compose config` **aborta com erro
 explicativo** em vez de subir com um segredo padrão. Isso é intencional: um
 `docker-compose.yml` público não pode ter default funcional de JWT/senha/API key.
@@ -253,6 +253,9 @@ DOTNET_JWT_KEY=       # openssl rand -base64 48
 IOT_API_KEY=          # openssl rand -base64 32
 LUNA_API_KEY=         # openssl rand -base64 32
 LUNA_INBOUND_API_KEY= # openssl rand -base64 32
+
+# ─── Foto de pet (.NET + Java, FT-06) ──────────────────────────────────────────
+FOTO_URL_SECRET=      # openssl rand -base64 48 — MESMO valor nos dois serviços
 
 # ─── Java ─────────────────────────────────────────────────────────────────────
 JAVA_JWT_SECRET=    # mín 64 bytes: openssl rand -base64 64
@@ -291,6 +294,14 @@ Detalhes importantes na primeira execução:
 - **O `tutor-api` sobe antes do `clinica-api`**, de propósito: o Flyway roda no boot
   dele e é a autoridade de DDL. Com essa ordem, o `.NET` já encontra o schema pronto.
 - **Nada de `.env` é obrigatório aqui.** Ver §8.
+- **`FOTO_URL_BASE` é config não-secreta, resolvida automaticamente.** Sem ela no
+  ambiente, o `deploy.sh` usa `https://kura-clinica.vercel.app/proxy/clinica` (mesma
+  origem para os 2 ACIs — ver comentário no script, achado F6-config-1). **Não
+  preencha esta chave num `.env` usado para deploy no Azure**: um `.env` copiado de
+  `.env.example` para dev local traria `http://localhost:8080`, e as duas APIs
+  emitiriam URL de foto em `localhost` — foto quebrada nos 2 apps, sem erro nenhum
+  (achado I-1 do G2 da FT-06). O `deploy.sh` agora **aborta** se detectar isso
+  (`localhost`/`127.0.0.1` ou valor sem `https://`).
 - **O espelhamento da imagem do Oracle pode pedir credencial do Docker Hub.** É o
   único ponto do deploy que fala com um registry de terceiro, e acontece só quando
   `kura/oracle-xe:<tag>` ainda não está no ACR. Ver §7.
@@ -604,6 +615,13 @@ Storage__BasePath               → pasta onde o kura-api grava PDFs de receitu�
                                    (FEAT-03, Documento.DsCaminho); montada como named
                                    volume (kura_storage_documentos) para persistir entre
                                    `down`/recreate; env: STORAGE_BASE_PATH
+Foto__UrlSecret                  → segredo HMAC da URL assinada de foto do pet (FT-02/
+                                   FT-04); FAIL-FAST na partida se ausente ou < 32 bytes;
+                                   MESMO valor do FOTO_URL_SECRET do kura-tutor abaixo;
+                                   env: FOTO_URL_SECRET
+Foto__UrlBase                    → base pública da URL de foto; sem valor, deriva do
+                                   próprio request (só serve local/LAN — ver achado F-P1
+                                   em azure/aci-dotnet-api.yaml); env: FOTO_URL_BASE
 ```
 
 Binding confirmado em `dotnet-backend/src/Kura.Api/Extensions/ServiceCollectionExtensions.cs`
@@ -621,6 +639,11 @@ DB_URL                 → jdbc:oracle:thin:@//oracle-db:1521/XEPDB1
 DB_USERNAME            → usuário Oracle
 DB_PASSWORD            → senha Oracle
 JWT_SECRET             → mínimo 64 bytes
+FOTO_URL_SECRET        → segredo HMAC da URL assinada de foto do pet (FT-05); SEM
+                          fail-fast (ausente → URLs de foto saem null, WARN na
+                          partida); MESMO valor do Foto__UrlSecret do kura-api acima
+FOTO_URL_BASE          → base pública da URL de foto; sem valor, sai vazio (não
+                          deriva do request — o Java não hospeda o arquivo)
 ```
 
 **luna-ai (Python):**
@@ -891,6 +914,7 @@ dentro do mesmo resource group. **O `.env` não é usado no caminho Azure.**
 | `luna-api-key` | `LUNA_API_KEY` | .NET (`Luna__ApiKey`), Luna (`KURA_API_KEY`) |
 | `luna-inbound-api-key` | `LUNA_INBOUND_API_KEY` | .NET e Luna — mesmo valor dos dois lados |
 | `java-jwt-secret` | `JAVA_JWT_SECRET` | Java (`JWT_SECRET`) |
+| `foto-url-secret` | `FOTO_URL_SECRET` | .NET (`Foto__UrlSecret`) e Java (`FOTO_URL_SECRET`) — mesmo valor dos dois lados |
 | `daily-api-key` | `DAILY_API_KEY` | .NET — **externa, opcional** |
 | `twilio-sid` / `twilio-token` | `TWILIO_SID` / `TWILIO_TOKEN` | Luna — **externas, opcionais** |
 | `openai-api-key` | `OPENAI_API_KEY` | Luna — **externa, opcional** |
