@@ -186,6 +186,61 @@ chamar_idempotency() {  # chamar_idempotency <nome> <esperado> <metodo> <url> <p
   fi
 }
 
+# REC-05 (KURA_BACKLOG_RECEPCAO.md, A-8). Variante de chamar() usada por TODO
+# check cujo corpo de resposta possa carregar `invite.nrToken`/`dsLinkConvite`
+# (TutorComInviteResponseDto/InviteTutorReemitidoResponseDto, e33da98) ou um
+# JWT (TokenResponse, register-invite, d1522ee) — nao so os 2 blocos do bloco
+# 24 que a REC-05 escreveu, mas TODO POST /tutores e o
+# POST /auth/register-invite pre-existente: o corpo so' e' impresso no ramo de
+# FALHA de chamar(), e e' exatamente QUANDO um desses checks falha (a
+# regressao "o servidor aceitou o que deveria rejeitar") que o corpo carrega
+# o token de verdade — G2 (`g2-rec05.md`, achado I-1) mediu isso 2x contra o
+# compose (pin antigo) e 1x contra o .NET novo sob mutacao (M2): o check que
+# existe pra pegar a regressao e' o que vaza a credencial quando a acha.
+# PRECISA estar definida aqui (antes de campo()/gerar_cpf() e de QUALQUER
+# chamada, inclusive "setup/tutores" no bloco 1) — bash nao suporta chamar
+# uma funcao antes dela ser definida na ordem de execucao do script.
+chamar_mascarando_token() {  # chamar_mascarando_token <nome> <esperado> <metodo> <url> <payload> <token_auth>
+  local nome=$1 esperado=$2 metodo=$3 url=$4 payload=$5 token_auth=${6:-}
+  printf '%s' "$payload" > "$PAYLOAD_FILE"
+  local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url"
+              -H 'Content-Type: application/json' --data-binary "@$PAYLOAD_FILE")
+  [ -n "$token_auth" ] && args+=(-H "Authorization: Bearer $token_auth")
+  local code; code=$(curl "${args[@]}")
+  if [ "$code" != "$esperado" ]; then
+    echo "FALHA  $nome: esperado $esperado, obtido $code"
+    "$PY" -c '
+import re, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    corpo = f.read()
+# GUID: o token de convite (Guid.ToString() do .NET) — aparece na chave
+# nrToken (invite.nrToken) e embutido na query string de dsLinkConvite
+# (?token=<guid>&clinicaId=...). Regex sobre a string INTEIRA pega os dois
+# lugares de uma vez, em vez de andar por chave conhecida (que erraria o caso
+# dentro da URL).
+corpo = re.sub(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+    "***REDACTED-GUID***",
+    corpo,
+)
+# JWT: accessToken/refreshToken de um TokenResponse (Java) — 3 segmentos
+# base64url separados por ponto. Achado no 24d: contra um .NET sem a rota de
+# reemissao (REC-02), o token "antigo" nunca e cancelado e o register-invite
+# SUCEDE de verdade, devolvendo um par de JWT genuino.
+corpo = re.sub(
+    r"[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}",
+    "***REDACTED-JWT***",
+    corpo,
+)
+sys.stdout.write(corpo[:300])
+' "$BODY_FILE"
+    echo
+    FALHAS=$((FALHAS+1))
+  else
+    echo "ok     $nome ($code)"
+  fi
+}
+
 # Extrai um campo de um JSON lido do ultimo BODY_FILE gravado por chamar().
 # Caminho em pontos; segmentos so-digitos indexam listas (ex.: "items.0.id").
 campo() {  # campo <caminho.pontilhado>
@@ -341,7 +396,12 @@ PAYLOAD_TUTOR=$(cat <<JSON
 }
 JSON
 )
-chamar "setup/tutores" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR" "$TOKEN"
+# G2 REC-05 (I-1, varredura): resposta e' TutorComInviteResponseDto — carrega
+# invite.nrToken e dsLinkConvite. So imprime corpo se vier != 201, mas se
+# isso acontecer o corpo AINDA pode ter o token (mesma classe do achado
+# principal) — chamar_mascarando_token por coerencia, nao so nos 2 checks
+# que a regressao especifica ataca.
+chamar_mascarando_token "setup/tutores" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR" "$TOKEN"
 INVITE_TOKEN=$(campo invite.nrToken)
 
 # POST /api/v1/pets tambem nao tem tela no app hoje (mobile-clinica-rn nao tem cadastro
@@ -476,7 +536,10 @@ PAYLOAD_REGISTER_INVITE=$(cat <<JSON
 }
 JSON
 )
-chamar "tutor/auth/register-invite" 201 POST "$TUTOR_API/api/v1/auth/register-invite" "$PAYLOAD_REGISTER_INVITE"
+# G2 REC-05 (I-1, varredura): sucesso devolve TokenResponse (accessToken/
+# refreshToken JWT reais) — chamar_mascarando_token por coerencia, mesma
+# razao do "setup/tutores" acima (sem auth Bearer, ultimo argumento vazio).
+chamar_mascarando_token "tutor/auth/register-invite" 201 POST "$TUTOR_API/api/v1/auth/register-invite" "$PAYLOAD_REGISTER_INVITE" ""
 
 # ─── 10. TASK-60: pares DTO x coluna NOT NULL confirmados pela varredura ──
 # Ver backend-clinica-dotnet/docs/NOT-NULL-audit.md e o relatorio da TASK-60
@@ -523,7 +586,12 @@ PAYLOAD_TUTOR_SEM_TEL=$(cat <<JSON
 }
 JSON
 )
-chamar "tutores/POST (sem nrTelefone — REC-05: agora rejeitado)" 400 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_SEM_TEL" "$TOKEN"
+# I-1 (G2 REC-05): esta e' justamente a checagem cuja FALHA (backend aceitou
+# em vez de rejeitar) e' a regressao que este check existe pra pegar — o
+# corpo, nesse caso, carrega invite.nrToken/dsLinkConvite CRUS. Trocado de
+# chamar() puro para chamar_mascarando_token — achado do G2, medido 2x
+# vazando contra o compose (pin antigo) e 1x sob mutacao contra o .NET novo.
+chamar_mascarando_token "tutores/POST (sem nrTelefone — REC-05: agora rejeitado)" 400 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_SEM_TEL" "$TOKEN"
 
 # 10c. Tutor (update) sem nrTelefone — mesmo gap, TutorUpdateValidator tambem
 # nunca teve regra pra esse campo. CONTINUA 200 (confirmado no G2 fix wave 2 da
@@ -633,7 +701,8 @@ PAYLOAD_TUTOR_LUNA=$(cat <<JSON
 }
 JSON
 )
-chamar "setup/tutores (para checks Luna)" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_LUNA" "$TOKEN"
+# G2 REC-05 (I-1, varredura) — mesma razao do "setup/tutores" do bloco 1.
+chamar_mascarando_token "setup/tutores (para checks Luna)" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_LUNA" "$TOKEN"
 ID_TUTOR_LUNA=$(campo id)
 
 # 12a. GET /api/v1/tutores/telefone/{numero} — tutor conhecido (TutoresController.cs:81-91).
@@ -1153,53 +1222,10 @@ fi
 # (origin/main e33da98) e RegisterInviteRequest/OnboardingService.java
 # (origin/main d1522ee). O TOKEN NUNCA vai para stdout/log — nem no sucesso
 # (so os 4 ultimos digitos, mascarado, mesmo padrao de DEMO_WHATSAPP em
-# seed-demo-luna.sh) nem na falha: as duas chamadas que devolvem token no
-# corpo (24a criacao, 24c reemissao, 24d register-invite com token antigo)
-# usam chamar_mascarando_token(), uma variante de chamar() que redige
-# qualquer GUID (token de convite) E qualquer JWT (accessToken/refreshToken —
-# achado no 24d, ver comentario la: contra o .NET antigo a chamada SUCEDE de
-# verdade e devolve um TokenResponse real) antes de imprimir o corpo em caso
-# de FALHA — nunca o head -c 300 cru de chamar().
-chamar_mascarando_token() {  # chamar_mascarando_token <nome> <esperado> <metodo> <url> <payload> <token_auth>
-  local nome=$1 esperado=$2 metodo=$3 url=$4 payload=$5 token_auth=${6:-}
-  printf '%s' "$payload" > "$PAYLOAD_FILE"
-  local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url"
-              -H 'Content-Type: application/json' --data-binary "@$PAYLOAD_FILE")
-  [ -n "$token_auth" ] && args+=(-H "Authorization: Bearer $token_auth")
-  local code; code=$(curl "${args[@]}")
-  if [ "$code" != "$esperado" ]; then
-    echo "FALHA  $nome: esperado $esperado, obtido $code"
-    "$PY" -c '
-import re, sys
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    corpo = f.read()
-# GUID: o token de convite (Guid.ToString() do .NET) — aparece na chave
-# nrToken (invite.nrToken) e embutido na query string de dsLinkConvite
-# (?token=<guid>&clinicaId=...). Regex sobre a string INTEIRA pega os dois
-# lugares de uma vez, em vez de andar por chave conhecida (que erraria o caso
-# dentro da URL).
-corpo = re.sub(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-    "***REDACTED-GUID***",
-    corpo,
-)
-# JWT: accessToken/refreshToken de um TokenResponse (Java) — 3 segmentos
-# base64url separados por ponto. Achado no 24d: contra um .NET sem a rota de
-# reemissao (REC-02), o token "antigo" nunca e cancelado e o register-invite
-# SUCEDE de verdade, devolvendo um par de JWT genuino.
-corpo = re.sub(
-    r"[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}",
-    "***REDACTED-JWT***",
-    corpo,
-)
-sys.stdout.write(corpo[:300])
-' "$BODY_FILE"
-    echo
-    FALHAS=$((FALHAS+1))
-  else
-    echo "ok     $nome ($code)"
-  fi
-}
+# seed-demo-luna.sh) nem na falha. `chamar_mascarando_token()` (definida no
+# topo do script, junto de chamar()/chamar_apikey() — precisa vir ANTES de
+# QUALQUER chamada, e o "setup/tutores" no bloco 1 ja usa) e' a variante que
+# redige token/JWT do corpo antes de imprimir em caso de FALHA.
 
 # Config do convite lida do mesmo .env do compose (ou env var, override) — usada
 # so para decidir se a asserção "dsLinkConvite não-nulo" roda: sem a config
@@ -1269,7 +1295,10 @@ PAYLOAD_TUTOR_REC05_SEM_AVISO=$(cat <<JSON
 }
 JSON
 )
-chamar "rec-05/tutores (POST sem stAvisoPrivacidadeInformado)" 400 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_REC05_SEM_AVISO" "$TOKEN"
+# I-1 (G2 REC-05): mesma classe do check "sem nrTelefone" acima — a FALHA
+# (backend aceitou sem exigir o aviso) e' a propria regressao que este check
+# detecta, e o corpo carregaria o token cru nesse caso.
+chamar_mascarando_token "rec-05/tutores (POST sem stAvisoPrivacidadeInformado)" 400 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_REC05_SEM_AVISO" "$TOKEN"
 chamar "rec-05/tutores/busca (confirma nenhuma linha gravada apesar do 400)" 200 GET "$API/api/v1/tutores?busca=$CPF_TUTOR_REC05_SEM_AVISO" '' "$TOKEN"
 QTD_TUTOR_SEM_AVISO=$("$PY" -c '
 import json, sys
