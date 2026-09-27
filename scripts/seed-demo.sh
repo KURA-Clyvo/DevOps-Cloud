@@ -169,6 +169,7 @@ PAYLOAD_TUTOR_1=$(cat <<JSON
   "nrCpf": "$CPF_TUTOR_1",
   "dsEmail": "tutor1-demo@kura.local",
   "nrTelefone": "11988880001",
+  "stAvisoPrivacidadeInformado": true,
   "dsCanalConvite": "EMAIL"
 }
 JSON
@@ -183,6 +184,7 @@ PAYLOAD_TUTOR_2=$(cat <<JSON
   "nrCpf": "$CPF_TUTOR_2",
   "dsEmail": "tutor2-demo@kura.local",
   "nrTelefone": "11988880002",
+  "stAvisoPrivacidadeInformado": true,
   "dsCanalConvite": "EMAIL"
 }
 JSON
