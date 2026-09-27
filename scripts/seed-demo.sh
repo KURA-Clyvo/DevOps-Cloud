@@ -83,6 +83,25 @@ sys.stdout.write(str(cur))
 ' "$1" "$BODY_FILE"
 }
 
+# REC-05 (fix wave G2, m-seed): variante de campo() que nao estoura sob
+# set -euo pipefail quando o caminho nao existe — usada so' pra dsLinkConvite,
+# que sai null quando CONVITE_URL_BASE_APP_TUTOR nao esta configurada (A-8) e
+# este script roda sem essa garantia (compose local tipico nao seta a var).
+campo_opcional() {  # campo_opcional <caminho.pontilhado>
+  "$PY" -c '
+import json, sys
+try:
+    with open(sys.argv[2], "r", encoding="utf-8") as f:
+        data = json.load(f)
+    cur = data
+    for p in sys.argv[1].split("."):
+        cur = cur[int(p)] if p.isdigit() else cur[p]
+    sys.stdout.write(str(cur))
+except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+    sys.stdout.write("")
+' "$1" "$BODY_FILE"
+}
+
 # Conta itens de uma lista JSON no topo do ultimo BODY_FILE (usado na verificacao final
 # de GET /api/v1/pets — precisa confirmar "nao vazio", nao so status 200).
 tamanho_lista() {
@@ -177,6 +196,7 @@ JSON
 chamar "tutores (tutor 1)" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_1" "$TOKEN"
 ID_TUTOR_1=$(campo id)
 INVITE_TUTOR_1=$(campo invite.nrToken)
+DS_LINK_CONVITE_1=$(campo_opcional dsLinkConvite)
 
 PAYLOAD_TUTOR_2=$(cat <<JSON
 {
@@ -192,6 +212,7 @@ JSON
 chamar "tutores (tutor 2)" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_2" "$TOKEN"
 ID_TUTOR_2=$(campo id)
 INVITE_TUTOR_2=$(campo invite.nrToken)
+DS_LINK_CONVITE_2=$(campo_opcional dsLinkConvite)
 
 # ─── 3. Tres pets, usando idEspecie/idRaca do catalogo V14 ────────────────
 # IDs conferidos contra java-backend/src/main/resources/db/migration/V14__seed_referencia.sql
@@ -332,12 +353,44 @@ fi
 echo "ok     GET /api/v1/pets confirma $QTD_PETS pet(s) para a clinica de demo"
 echo
 
+# REC-05 (fix wave G2, achado m-seed): ate aqui os 2 tokens de convite sao
+# INSUMO DO OPERADOR (por design — sem eles nao ha como completar o registro
+# do tutor no app), mas imprimir o valor CRU no stdout colide com A-8 ("grep
+# 0 no G4") se algum gate capturar a saida deste seed. Solucao: o valor
+# completo (token + link, quando a config existir) vai para um arquivo LOCAL
+# gitignored — nunca pro stdout — e o stdout mostra so' os 8 primeiros
+# caracteres + "…", com um ponteiro pra alternativa que nao depende de
+# nenhum dos dois: o botao "Gerar novo convite" no app da clinica
+# (mobile-clinica-rn, tela tutores/novo.tsx — REC-03, ainda numa branch nao
+# mesclada em main no momento desta fix wave; se essa branch nao estiver
+# disponivel no seu checkout, use o arquivo local abaixo).
+#
+# Achado ao varrer os .md que citam esse output (grep, sem escopo nenhuma
+# ocorrencia real fora de `.A Call/secao_E.md`, roteiro academico antigo):
+# aquele roteiro manda "anotar INVITE_TUTOR_1" e completar o registro do
+# tutor com o valor cru — dependencia real, registrada aqui em vez de
+# quebrada em silencio. O arquivo local preserva essa dependencia (o operador
+# ainda consegue o valor completo, so' não sai mais pelo terminal/log).
+CONVITES_LOCAL_FILE="seed-demo-convites.local.txt"
+{
+  echo "# Gerado por scripts/seed-demo.sh em $(agora_iso) — NUNCA versionar, NUNCA colar em relatorio/log."
+  echo "# Convite de tutor #1 (Tutor Demo Um):"
+  echo "token: $INVITE_TUTOR_1"
+  [ -n "$DS_LINK_CONVITE_1" ] && [ "$DS_LINK_CONVITE_1" != "None" ] && echo "link:  $DS_LINK_CONVITE_1"
+  echo "# Convite de tutor #2 (Tutor Demo Dois):"
+  echo "token: $INVITE_TUTOR_2"
+  [ -n "$DS_LINK_CONVITE_2" ] && [ "$DS_LINK_CONVITE_2" != "None" ] && echo "link:  $DS_LINK_CONVITE_2"
+} > "$CONVITES_LOCAL_FILE"
+
 # ─── resultado ──────────────────────────────────────────────────────────────
 echo "=== DEMO PRONTA ==="
 echo "Clinica:  $EMAIL_ACESSO / $SENHA_CLINICA"
 echo "App clinica: EXPO_PUBLIC_USE_MOCKS=false"
-echo "Convite de tutor #1 (Tutor Demo Um, para completar o passo de registro): $INVITE_TUTOR_1"
-echo "Convite de tutor #2 (Tutor Demo Dois): $INVITE_TUTOR_2"
+echo "Convite de tutor #1 (Tutor Demo Um), token mascarado: ${INVITE_TUTOR_1:0:8}…"
+echo "Convite de tutor #2 (Tutor Demo Dois), token mascarado: ${INVITE_TUTOR_2:0:8}…"
+echo "Para completar o registro do tutor: abra o app da clinica, tela do tutor, botao"
+echo "\"Gerar novo convite\" (QR/link prontos pro app do tutor) — OU use o valor completo"
+echo "salvo em ./$CONVITES_LOCAL_FILE (arquivo local, gitignored, nunca impresso aqui)."
 echo "Pets: Rex (id $ID_PET_1), Mimi (id $ID_PET_2), Bolinha (id $ID_PET_3)"
 echo "Consulta: idEventoClinico $ID_EVENTO_CONSULTA"
 echo "Prescricao + receituario: idEventoClinico $ID_EVENTO_PRESCRICAO, idDocumento $ID_DOCUMENTO_RECEITUARIO"
