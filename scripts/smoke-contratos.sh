@@ -200,6 +200,35 @@ sys.stdout.write(str(cur))
 ' "$1" "$BODY_FILE"
 }
 
+# REC-05: variante de campo() que devolve "" (em vez de estourar KeyError, que
+# mataria o script inteiro sob set -euo pipefail — mesma classe de armadilha do
+# achado registrado acima na leitura de CONVITE_URL_BASE_APP_TUTOR) quando o
+# CAMINHO não existe no corpo. Uso: campos que só existem no contrato NOVO
+# (ex.: dsLinkConvite) e que este script roda deliberadamente contra o
+# contrato ANTIGO também (REC-05, prova de contraste) — nesse caso "ausente"
+# e "presente e null" têm de produzir o MESMO resultado observável (string
+# vazia), porque para o efeito prático (link não disponível) são a mesma
+# coisa. NÃO usada em nenhum outro lugar do script — os `campo()` puros que já
+# existiam continuam estourando de propósito se o corpo não tiver o que o
+# consumidor real do app espera (é o comportamento que os detecta).
+campo_opcional() {  # campo_opcional <caminho.pontilhado>
+  "$PY" -c '
+import json, sys
+try:
+    with open(sys.argv[2], "r", encoding="utf-8") as f:
+        data = json.load(f)
+    cur = data
+    for p in sys.argv[1].split("."):
+        cur = cur[int(p)] if p.isdigit() else cur[p]
+    sys.stdout.write(str(cur))
+except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+    # corpo vazio (ex.: 404 sem payload de um .NET que nao tem a rota) tambem
+    # cai aqui — achado ao rodar este script contra o .NET antigo (REC-02 nao
+    # existe la, a rota de reemissao devolve 404 SEM corpo).
+    sys.stdout.write("")
+' "$1" "$BODY_FILE"
+}
+
 # CPF valido (11 digitos, sem formatacao) com digito verificador real — algoritmo
 # oficial (modulo 11). Gerado por chamada (random.SystemRandom, nao hardcoded) para o
 # script ser idempotente entre execucoes.
@@ -1125,9 +1154,12 @@ fi
 # (origin/main d1522ee). O TOKEN NUNCA vai para stdout/log — nem no sucesso
 # (so os 4 ultimos digitos, mascarado, mesmo padrao de DEMO_WHATSAPP em
 # seed-demo-luna.sh) nem na falha: as duas chamadas que devolvem token no
-# corpo (24a criacao, 24c reemissao) usam chamar_mascarando_token(), uma
-# variante de chamar() que redige "nrToken"/qualquer GUID antes de imprimir o
-# corpo em caso de FALHA — nunca o head -c 300 cru de chamar().
+# corpo (24a criacao, 24c reemissao, 24d register-invite com token antigo)
+# usam chamar_mascarando_token(), uma variante de chamar() que redige
+# qualquer GUID (token de convite) E qualquer JWT (accessToken/refreshToken —
+# achado no 24d, ver comentario la: contra o .NET antigo a chamada SUCEDE de
+# verdade e devolve um TokenResponse real) antes de imprimir o corpo em caso
+# de FALHA — nunca o head -c 300 cru de chamar().
 chamar_mascarando_token() {  # chamar_mascarando_token <nome> <esperado> <metodo> <url> <payload> <token_auth>
   local nome=$1 esperado=$2 metodo=$3 url=$4 payload=$5 token_auth=${6:-}
   printf '%s' "$payload" > "$PAYLOAD_FILE"
@@ -1141,14 +1173,23 @@ chamar_mascarando_token() {  # chamar_mascarando_token <nome> <esperado> <metodo
 import re, sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     corpo = f.read()
-# O token e sempre um GUID (Guid.ToString() do .NET) — aparece tanto na chave
-# nrToken (invite.nrToken) quanto embutido na query string de dsLinkConvite
-# (?token=<guid>&clinicaId=...). Um regex de GUID sobre a string INTEIRA pega
-# os dois lugares de uma vez, em vez de andar por chave conhecida (que erraria
-# o caso dentro da URL). Aplicado SEMPRE, nao so no fallback de JSON invalido.
+# GUID: o token de convite (Guid.ToString() do .NET) — aparece na chave
+# nrToken (invite.nrToken) e embutido na query string de dsLinkConvite
+# (?token=<guid>&clinicaId=...). Regex sobre a string INTEIRA pega os dois
+# lugares de uma vez, em vez de andar por chave conhecida (que erraria o caso
+# dentro da URL).
 corpo = re.sub(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
     "***REDACTED-GUID***",
+    corpo,
+)
+# JWT: accessToken/refreshToken de um TokenResponse (Java) — 3 segmentos
+# base64url separados por ponto. Achado no 24d: contra um .NET sem a rota de
+# reemissao (REC-02), o token "antigo" nunca e cancelado e o register-invite
+# SUCEDE de verdade, devolvendo um par de JWT genuino.
+corpo = re.sub(
+    r"[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}",
+    "***REDACTED-JWT***",
     corpo,
 )
 sys.stdout.write(corpo[:300])
@@ -1164,9 +1205,24 @@ sys.stdout.write(corpo[:300])
 # so para decidir se a asserção "dsLinkConvite não-nulo" roda: sem a config
 # setada, GerarLink() devolve sempre null por design (A-8), e afirmar
 # não-nulo seria falso positivo do PRÓPRIO instrumento, não do produto.
+#
+# ⚠️ ACHADO (REC-05, medido ao rodar este script contra o .NET antigo, sem a
+# var exportada e sem a linha em .env): `grep -m1 ... .env | cut -d= -f2-`
+# SEM `|| true` mata o script inteiro em SILÊNCIO daqui pra frente, sob
+# `set -euo pipefail` — quando o grep não acha a linha (exit 1) e é o único
+# comando não-zero do pipe, `pipefail` propaga esse 1 pro `$(...)`, e a
+# atribuição (comando simples dentro do corpo de um `if`, não isento de `-e`)
+# derruba o script sem imprimir nada. Medido: comparar a contagem de checks
+# reconhecidos entre um `bash -x` com a linha em `.env` (chega ao fim, 67
+# checks) e sem ela (para exatamente aqui, 58 checks, sem nenhuma linha
+# `FALHA`/erro — só some). O MESMO padrão (`LUNA_API_KEY`/`LUNA_INBOUND_API_KEY`,
+# topo do script) tem a mesma fragilidade latente, mascarada porque essas 2
+# chaves sempre existem no `.env` deste projeto — não corrigido aqui (fora do
+# escopo da REC-05, que só toca os blocos que criou). O `|| true` abaixo evita
+# que ESTE bloco novo repita a mesma armadilha.
 CONVITE_URL_BASE_APP_TUTOR=${CONVITE_URL_BASE_APP_TUTOR:-}
 if [ -z "$CONVITE_URL_BASE_APP_TUTOR" ] && [ -f .env ]; then
-  CONVITE_URL_BASE_APP_TUTOR=$(grep -m1 '^CONVITE_URL_BASE_APP_TUTOR=' .env | cut -d= -f2-)
+  CONVITE_URL_BASE_APP_TUTOR=$(grep -m1 '^CONVITE_URL_BASE_APP_TUTOR=' .env | cut -d= -f2- || true)
 fi
 
 # 24a. POST /api/v1/tutores com os campos novos — 201, dsLinkConvite
@@ -1187,7 +1243,7 @@ JSON
 chamar_mascarando_token "rec-05/tutores (POST com aviso — criação + convite)" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_REC05" "$TOKEN"
 ID_TUTOR_REC05=$(campo id)
 INVITE_TOKEN_REC05_V1=$(campo invite.nrToken)
-DS_LINK_CONVITE_V1=$(campo dsLinkConvite)
+DS_LINK_CONVITE_V1=$(campo_opcional dsLinkConvite)
 if [ -n "$CONVITE_URL_BASE_APP_TUTOR" ]; then
   if [ "$DS_LINK_CONVITE_V1" != "None" ] && [ -n "$DS_LINK_CONVITE_V1" ]; then
     echo "ok     rec-05/tutores (dsLinkConvite não-nulo, config setada)"
@@ -1231,9 +1287,17 @@ fi
 # 24c. POST /api/v1/tutores/{id}/convite — reemissão (REC-02): 201, token NOVO
 # (nunca comparado/impresso em claro), cancela o invite V1 gerado no 24a.
 chamar_mascarando_token "rec-05/tutores/{id}/convite (reemissão)" 201 POST "$API/api/v1/tutores/$ID_TUTOR_REC05/convite" '' "$TOKEN"
-INVITE_TOKEN_REC05_V2=$(campo invite.nrToken)
-DS_LINK_CONVITE_V2=$(campo dsLinkConvite)
-if [ "$INVITE_TOKEN_REC05_V2" = "$INVITE_TOKEN_REC05_V1" ]; then
+INVITE_TOKEN_REC05_V2=$(campo_opcional invite.nrToken)
+DS_LINK_CONVITE_V2=$(campo_opcional dsLinkConvite)
+# campo_opcional() (não campo()): a chamada acima pode ter falhado com 404 contra
+# um .NET sem a rota de reemissão (REC-02) — corpo vazio/sem invite.nrToken. Sem a
+# guarda abaixo, "" (ausente) != INVITE_TOKEN_REC05_V1 (o V1 real) daria um "ok"
+# ENGANOSO ("token é novo") quando na verdade a reemissão nem aconteceu — o FALHA
+# do esperado/obtido logo acima (chamar_mascarando_token) já registrou o problema
+# real; não duplicar com uma comparação que passa pelo motivo errado.
+if [ -z "$INVITE_TOKEN_REC05_V2" ]; then
+  echo "aviso  rec-05/tutores/{id}/convite: sem invite.nrToken no corpo (reemissão não aconteceu — ver FALHA acima) — pulando comparação de token"
+elif [ "$INVITE_TOKEN_REC05_V2" = "$INVITE_TOKEN_REC05_V1" ]; then
   echo "FALHA  rec-05/tutores/{id}/convite: token reemitido é IGUAL ao anterior (deveria ser novo)"
   FALHAS=$((FALHAS+1))
 else
@@ -1251,8 +1315,20 @@ fi
 # 24d. O token V1 (cancelado pela reemissão 24c) é recusado pelo Java em
 # POST /auth/register-invite — 409 "Convite cancelado" (OnboardingService.java,
 # passo 2, isAtivo()==false — NÃO "já utilizado", que seria o passo 3: o V1
-# nunca foi usado, só cancelado). Corpo não carrega token — sem necessidade de
-# chamar_mascarando_token.
+# nunca foi usado, só cancelado).
+#
+# ⚠️ ACHADO (medido rodando este check contra o .NET ANTIGO, onde a reemissão
+# não existe — REC-02 não fechou lá — e o token V1 continua ativo/não usado):
+# a chamada abaixo então SUCEDE de verdade (201, "esperado 409, obtido 201"),
+# e o corpo da resposta é um `TokenResponse` REAL do Java —
+# `{"accessToken":"eyJ...","refreshToken":"eyJ..."}` — dois JWTs válidos. Um
+# `chamar()` puro imprimiria esse corpo inteiro (via `head -c 300`) no
+# caminho de falha — JWT vazando pro stdout do smoke, a MESMA classe de
+# problema que este bloco existe para evitar no token de convite. Por isso
+# usa `chamar_mascarando_token`, cujo regex de redação foi ampliado (abaixo)
+# pra cobrir tanto GUID (token de convite) quanto JWT (accessToken/
+# refreshToken) — não só "corpo não carrega token", carrega, e o helper
+# genérico tinha que saber disso ANTES de rodar, não depois de vazar.
 PAYLOAD_REGISTER_INVITE_TOKEN_ANTIGO=$(cat <<JSON
 {
   "token": "$INVITE_TOKEN_REC05_V1",
@@ -1263,7 +1339,7 @@ PAYLOAD_REGISTER_INVITE_TOKEN_ANTIGO=$(cat <<JSON
 }
 JSON
 )
-chamar "rec-05/tutor/auth/register-invite (token ANTIGO, cancelado pela reemissão)" 409 POST "$TUTOR_API/api/v1/auth/register-invite" "$PAYLOAD_REGISTER_INVITE_TOKEN_ANTIGO"
+chamar_mascarando_token "rec-05/tutor/auth/register-invite (token ANTIGO, cancelado pela reemissão)" 409 POST "$TUTOR_API/api/v1/auth/register-invite" "$PAYLOAD_REGISTER_INVITE_TOKEN_ANTIGO" ""
 
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
