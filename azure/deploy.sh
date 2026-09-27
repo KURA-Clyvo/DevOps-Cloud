@@ -180,69 +180,59 @@ CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://local
 # foto não é sujeito a CORS, então a origem "de outro app" funciona igual para
 # quem chama de dentro do app do tutor. Ver o comentário em aci-java-api.yaml
 # para o raciocínio completo.
+# REC-05 (fix wave G2, achado m-guard) — guarda ÚNICA para toda URL pública
+# https:// que este script exige (FOTO_URL_BASE e CONVITE_URL_BASE_APP_TUTOR
+# abaixo). Antes eram 2 blocos `case` quase idênticos (um herdado da FT-06,
+# outro copiado dele pela REC-05) cuja lista de padrões proibidos
+# (*localhost*|*127.0.0.1*[|*192.168.*|*10.0.2.2*]) o G2 mediu que deixava
+# passar (`EXIT=0` indevido): `https://10.x` — qualquer coisa em
+# `10.0.0.0/8` fora do literal `10.0.2.2` —, `https://172.16-31.x` (o range
+# padrão de rede Docker/172.16.0.0/12), `https://0.0.0.0` e HOST VAZIO
+# (`https://` sozinho, que geraria um link `https:///register?...`).
+#
+# Extrai o HOST antes de comparar (em vez de `grep`/`case` na string
+# inteira), para não depender do que vem depois (porta, path) nem produzir
+# falso positivo em algo como `https://meufotos10.example.com` (que o
+# padrão antigo `*10.*` teria acertado por engano se alguém tivesse tentado
+# consertá-lo ingenuamente).
+guardar_url_publica_https() {  # guardar_url_publica_https <nome_da_variavel> <valor>
+    local nome=$1 valor=$2 host
+    case "$valor" in
+        https://*) ;;
+        *)
+            echo "❌ ERRO: $nome precisa começar com https:// para o deploy no Azure (valor atual: '$valor')."
+            echo "   Provável causa: um .env local copiado de .env.example com essa chave"
+            echo "   descomentada (valor de dev/LAN) vazou para este deploy. Não defina esta"
+            echo "   chave no .env usado para deploy no Azure — o default do script já é a"
+            echo "   origem certa."
+            exit 1
+            ;;
+    esac
+    host="${valor#https://}"
+    host="${host%%/*}"
+    host="${host%%:*}"
+    case "$host" in
+        ""|localhost|127.*|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|0.0.0.0)
+            echo "❌ ERRO: $nome aponta para localhost/IP privado/host vazio ('$valor', host='$host')."
+            echo "   Isso quebra a foto/o link de convite em produção, sem erro nenhum. Não"
+            echo "   defina $nome no .env usado para este script — o default do script já é a"
+            echo "   origem certa. Se precisar sobrescrever, use uma URL https:// pública real."
+            exit 1
+            ;;
+    esac
+}
+
 FOTO_URL_BASE="${FOTO_URL_BASE:-https://kura-clinica.vercel.app/proxy/clinica}"
-# ─── Guarda de FOTO_URL_BASE (achado I-1 do G2 da FT-06, reproduzido) ────────
-# Um `.env` local copiado de `.env.example` (Passo 2 do README) traz
-# `FOTO_URL_BASE=http://localhost:8080` comentado; se alguém descomentar essa
-# linha para dev local e depois rodar ESTE script na mesma pasta, o `set -a; .
-# .env` do bloco acima faz esse valor vencer o default do Azure logo em cima —
-# e as duas APIs emitiriam URL de foto em `localhost`, quebrando a foto nos 2
-# apps SEM erro nenhum (o mesmo modo de falha que `LUNA_BASE_URL` (~linha
-# 1003, reatribuída incondicionalmente) já existe para evitar). Aborta em vez
-# de deixar isso passar silencioso.
-case "$FOTO_URL_BASE" in
-    https://*)
-        case "$FOTO_URL_BASE" in
-            *localhost*|*127.0.0.1*)
-                echo "❌ ERRO: FOTO_URL_BASE aponta para localhost/127.0.0.1 ('$FOTO_URL_BASE')."
-                echo "   Isso quebra a foto nos 2 apps hospedados, sem erro nenhum. Não defina"
-                echo "   FOTO_URL_BASE no .env usado para este script — o default acima já é a"
-                echo "   origem certa. Se precisar sobrescrever, use uma URL https:// pública real."
-                exit 1
-                ;;
-        esac
-        ;;
-    *)
-        echo "❌ ERRO: FOTO_URL_BASE precisa começar com https:// para o deploy no Azure (valor atual: '$FOTO_URL_BASE')."
-        echo "   Provável causa: um .env local copiado de .env.example com FOTO_URL_BASE"
-        echo "   descomentado (valor de dev, ex.: http://localhost:8080) vazou para este"
-        echo "   deploy. Não defina esta chave no .env usado para deploy no Azure — o"
-        echo "   default acima já é a origem certa."
-        exit 1
-        ;;
-esac
+# achado I-1 do G2 da FT-06 (guarda contra `.env` de dev vazando pro deploy),
+# ampliado pelo m-guard da REC-05 acima.
+guardar_url_publica_https FOTO_URL_BASE "$FOTO_URL_BASE"
 # REC-05 (KURA_BACKLOG_RECEPCAO.md, A-8). Só o ACI do .NET usa (Convite__UrlBaseAppTutor
 # — ver aci-dotnet-api.yaml). Diferente de FOTO_URL_BASE acima: o link do convite
 # aponta para o APP DO TUTOR hospedado (não para este próprio backend nem para o app
 # da clínica) — a origem certa é a raiz pública do mobile-tutor-rn na Vercel, sem
 # prefixo de proxy (a tela /register roda direto ali, ver REC-06/G0 item 5).
 CONVITE_URL_BASE_APP_TUTOR="${CONVITE_URL_BASE_APP_TUTOR:-https://kura-tutor.vercel.app}"
-# ─── Guarda de CONVITE_URL_BASE_APP_TUTOR (mesmo molde da guarda de FOTO_URL_BASE
-# acima, achado I-1 do G2 da FT-06) ───────────────────────────────────────────
-# Sem esta guarda, um `.env` de dev com CONVITE_URL_BASE_APP_TUTOR apontando para
-# localhost/IP de LAN vazaria para o deploy (`set -a` faz o valor do .env vencer o
-# default acima) e o QR/link de convite gerado em produção apontaria para um
-# endereço que só existe na rede do notebook — silencioso, sem erro de deploy.
-case "$CONVITE_URL_BASE_APP_TUTOR" in
-    https://*)
-        case "$CONVITE_URL_BASE_APP_TUTOR" in
-            *localhost*|*127.0.0.1*|*192.168.*|*10.0.2.2*)
-                echo "❌ ERRO: CONVITE_URL_BASE_APP_TUTOR aponta para localhost/IP de LAN ('$CONVITE_URL_BASE_APP_TUTOR')."
-                echo "   Isso quebra o link/QR de convite em produção, sem erro nenhum. Não defina"
-                echo "   CONVITE_URL_BASE_APP_TUTOR no .env usado para este script — o default acima"
-                echo "   já é a origem certa. Se precisar sobrescrever, use uma URL https:// pública real."
-                exit 1
-                ;;
-        esac
-        ;;
-    *)
-        echo "❌ ERRO: CONVITE_URL_BASE_APP_TUTOR precisa começar com https:// para o deploy no Azure (valor atual: '$CONVITE_URL_BASE_APP_TUTOR')."
-        echo "   Provável causa: um .env local copiado de .env.example com essa chave"
-        echo "   descomentada (valor de dev/LAN) vazou para este deploy. Não defina esta"
-        echo "   chave no .env usado para deploy no Azure — o default acima já é a origem certa."
-        exit 1
-        ;;
-esac
+guardar_url_publica_https CONVITE_URL_BASE_APP_TUTOR "$CONVITE_URL_BASE_APP_TUTOR"
 TWILIO_FROM_NUMBER="${TWILIO_FROM_NUMBER:-+14155238886}"
 WEBHOOK_PUBLIC_URL="${WEBHOOK_PUBLIC_URL:-https://kura-webhook-nao-configurado.invalid/webhook/twilio/whatsapp}"
 

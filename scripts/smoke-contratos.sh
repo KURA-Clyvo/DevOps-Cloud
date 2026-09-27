@@ -1368,7 +1368,26 @@ PAYLOAD_REGISTER_INVITE_TOKEN_ANTIGO=$(cat <<JSON
 }
 JSON
 )
+FALHAS_ANTES_24D=$FALHAS
 chamar_mascarando_token "rec-05/tutor/auth/register-invite (token ANTIGO, cancelado pela reemissão)" 409 POST "$TUTOR_API/api/v1/auth/register-invite" "$PAYLOAD_REGISTER_INVITE_TOKEN_ANTIGO" ""
+# m-24d (G2 REC-05): o status 409 sozinho não distingue "cancelado" (passo 2,
+# isAtivo()==false) de "já utilizado" (passo 3) — os dois são 409. A mensagem
+# do ApiError (campo "mensagem", GlobalExceptionHandler.java:134-138) é o que
+# amarra a asserção ao motivo CERTO. Só roda se o status já bateu (senão o
+# corpo pode não ser nem um ApiError — ex.: sucedeu de verdade e devolveu um
+# TokenResponse, caso do achado I-1/F1b) — a mensagem "Convite cancelado."
+# não é segredo (sem token/JWT dentro), pode aparecer no log sem risco.
+if [ "$FALHAS" = "$FALHAS_ANTES_24D" ]; then
+  MENSAGEM_TOKEN_ANTIGO=$(campo_opcional mensagem)
+  if [ "$MENSAGEM_TOKEN_ANTIGO" = "Convite cancelado." ]; then
+    echo "ok     rec-05/tutor/auth/register-invite (mensagem confere: \"Convite cancelado.\")"
+  else
+    echo "FALHA  rec-05/tutor/auth/register-invite (mensagem): esperado \"Convite cancelado.\", obtido \"$MENSAGEM_TOKEN_ANTIGO\""
+    FALHAS=$((FALHAS+1))
+  fi
+else
+  echo "aviso  rec-05/tutor/auth/register-invite (mensagem): status já não bateu o esperado (ver FALHA acima) — pulando checagem da mensagem"
+fi
 
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
