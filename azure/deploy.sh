@@ -211,6 +211,38 @@ case "$FOTO_URL_BASE" in
         exit 1
         ;;
 esac
+# REC-05 (KURA_BACKLOG_RECEPCAO.md, A-8). Só o ACI do .NET usa (Convite__UrlBaseAppTutor
+# — ver aci-dotnet-api.yaml). Diferente de FOTO_URL_BASE acima: o link do convite
+# aponta para o APP DO TUTOR hospedado (não para este próprio backend nem para o app
+# da clínica) — a origem certa é a raiz pública do mobile-tutor-rn na Vercel, sem
+# prefixo de proxy (a tela /register roda direto ali, ver REC-06/G0 item 5).
+CONVITE_URL_BASE_APP_TUTOR="${CONVITE_URL_BASE_APP_TUTOR:-https://kura-tutor.vercel.app}"
+# ─── Guarda de CONVITE_URL_BASE_APP_TUTOR (mesmo molde da guarda de FOTO_URL_BASE
+# acima, achado I-1 do G2 da FT-06) ───────────────────────────────────────────
+# Sem esta guarda, um `.env` de dev com CONVITE_URL_BASE_APP_TUTOR apontando para
+# localhost/IP de LAN vazaria para o deploy (`set -a` faz o valor do .env vencer o
+# default acima) e o QR/link de convite gerado em produção apontaria para um
+# endereço que só existe na rede do notebook — silencioso, sem erro de deploy.
+case "$CONVITE_URL_BASE_APP_TUTOR" in
+    https://*)
+        case "$CONVITE_URL_BASE_APP_TUTOR" in
+            *localhost*|*127.0.0.1*|*192.168.*|*10.0.2.2*)
+                echo "❌ ERRO: CONVITE_URL_BASE_APP_TUTOR aponta para localhost/IP de LAN ('$CONVITE_URL_BASE_APP_TUTOR')."
+                echo "   Isso quebra o link/QR de convite em produção, sem erro nenhum. Não defina"
+                echo "   CONVITE_URL_BASE_APP_TUTOR no .env usado para este script — o default acima"
+                echo "   já é a origem certa. Se precisar sobrescrever, use uma URL https:// pública real."
+                exit 1
+                ;;
+        esac
+        ;;
+    *)
+        echo "❌ ERRO: CONVITE_URL_BASE_APP_TUTOR precisa começar com https:// para o deploy no Azure (valor atual: '$CONVITE_URL_BASE_APP_TUTOR')."
+        echo "   Provável causa: um .env local copiado de .env.example com essa chave"
+        echo "   descomentada (valor de dev/LAN) vazou para este deploy. Não defina esta"
+        echo "   chave no .env usado para deploy no Azure — o default acima já é a origem certa."
+        exit 1
+        ;;
+esac
 TWILIO_FROM_NUMBER="${TWILIO_FROM_NUMBER:-+14155238886}"
 WEBHOOK_PUBLIC_URL="${WEBHOOK_PUBLIC_URL:-https://kura-webhook-nao-configurado.invalid/webhook/twilio/whatsapp}"
 
@@ -1095,7 +1127,8 @@ if quer_servico clinica-api; then
         "STORAGE_ACCOUNT_KEY=$STORAGE_KEY" \
         "CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS" \
         "FOTO_URL_SECRET=$FOTO_URL_SECRET" \
-        "FOTO_URL_BASE=$FOTO_URL_BASE"
+        "FOTO_URL_BASE=$FOTO_URL_BASE" \
+        "CONVITE_URL_BASE_APP_TUTOR=$CONVITE_URL_BASE_APP_TUTOR"
     recriar_container_group "$ACI_DOTNET_NAME" "$GERADOS_DIR/aci-dotnet-api.yaml"
     echo "  Aguardando health..."
     if ! aguardar_http_ok "http://$DOTNET_FQDN:8080/health" 20 20; then

@@ -147,6 +147,17 @@ services:
       # Ao contrário deste serviço, o kura-tutor abaixo MANTÉM um default explícito —
       # o Java não deriva do request (ver comentário lá).
       Foto__UrlBase: ${FOTO_URL_BASE:-}
+      # REC-05 (KURA_BACKLOG_RECEPCAO.md, A-8). Binding confirmado em
+      # GeradorLinkConvite.cs: configuration["Convite:UrlBaseAppTutor"] → env
+      # Convite__UrlBaseAppTutor. Mesmo padrão do Foto__UrlBase logo acima: SEM
+      # fail-fast — ausente/vazia, GerarLink() devolve sempre null (um único WARN
+      # na partida, ver GeradorLinkConvite.cs), o cadastro de tutor continua
+      # funcionando sem o link (dsLinkConvite: null). Diferente do Foto__UrlBase,
+      # este NÃO deriva do request quando ausente — o link é consumido FORA de
+      # qualquer contexto HTTP relacionado (QR code, WhatsApp), não há request
+      # de que derivar. Default vazio de propósito: preencher só quando for
+      # testar o link web de verdade (ver .env.example).
+      Convite__UrlBaseAppTutor: ${CONVITE_URL_BASE_APP_TUTOR:-}
       # CORS do mobile-clinica-rn na web (Expo web na 8082; a 8081 é desta stack, a API
       # Java). Mesma variável da API Java e da Luna — ver CorsExtensions.cs no backend.
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://localhost:19006}
