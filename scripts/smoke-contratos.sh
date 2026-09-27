@@ -299,12 +299,15 @@ chamar "pets/listar" 200 GET "$API/api/v1/pets" '' "$TOKEN"
 # chama diretamente hoje neste form — o app usa hooks que nao apareceram na varredura
 # do brief); construido direto contra Kura.Application/DTOs/Tutor/TutorCreateDto.cs e
 # TutorCreateValidator.cs so para obter um invite valido, insumo do teste 11.
+# REC-05 (KURA_BACKLOG_RECEPCAO.md, A-9): stAvisoPrivacidadeInformado passou a ser
+# obrigatorio (TutorCreateValidator, origin/main e33da98) — sem ele, 400.
 PAYLOAD_TUTOR=$(cat <<JSON
 {
   "nmTutor": "Tutor Smoke $SUFIXO",
   "nrCpf": "$CPF_TUTOR",
   "dsEmail": "tutor-smoke-$SUFIXO@kura-smoke.test",
   "nrTelefone": "11988880000",
+  "stAvisoPrivacidadeInformado": true,
   "dsCanalConvite": "EMAIL"
 }
 JSON
@@ -454,6 +457,10 @@ chamar "tutor/auth/register-invite" 201 POST "$TUTOR_API/api/v1/auth/register-in
 # aqui significa que alguem removeu o coalesce do service correspondente.
 # Nenhum dos 4 tem tela no app hoje (mesma situacao de vacina/exame no bloco
 # 7/8 acima) — payloads construidos direto contra os DTOs/validators reais.
+# ⚠️ EXCECAO: o 10b (tutor create sem nrTelefone) SAIU dessa familia na REC-05
+# — deixou de ser um caso de coalesce (2xx) e virou um caso de validacao (400),
+# porque nrTelefone passou a ser campo obrigatorio. Ver comentario no proprio
+# 10b.
 
 # 10a. Medicamento sem dsApresentacao (MEDICAMENTO.DS_APRESENTACAO NOT NULL,
 # MedicamentoCreateValidator nunca teve NotEmpty() pra esse campo).
@@ -466,22 +473,33 @@ JSON
 )
 chamar "medicamentos/POST (sem dsApresentacao)" 201 POST "$API/api/v1/medicamentos" "$PAYLOAD_MEDICAMENTO_SEM_APRES" "$TOKEN"
 
-# 10b. Tutor (create) sem nrTelefone (TUTOR.DS_TELEFONE NOT NULL,
-# TutorCreateValidator nunca teve regra pra esse campo).
+# 10b. Tutor (create) sem nrTelefone — SUPERSEDIDO pela REC-05
+# (KURA_BACKLOG_RECEPCAO.md, A-12, G0 item 6 consumidor 5). Ate a REC-01,
+# TutorCreateValidator nao tinha regra pra nrTelefone e o payload sem telefone
+# caia no mesmo coalesce de NOT NULL dos outros casos deste bloco (201, com o
+# sentinela "Nao informado"). Desde a REC-01 (origin/main e33da98),
+# NormalizadorTelefone.TentarNormalizar roda ANTES do coalesce e nrTelefone
+# passou a ser exigido pelo validator — o payload sem telefone agora e
+# REJEITADO (400), nunca chega ao service. stAvisoPrivacidadeInformado:true
+# aqui isola a causa do 400 (senao o teste tambem falharia por falta de
+# aviso, e nao provaria o que se propoe a provar).
 CPF_TUTOR_TASK60=$(gerar_cpf)
 PAYLOAD_TUTOR_SEM_TEL=$(cat <<JSON
 {
   "nmTutor": "Tutor SemTel Smoke $SUFIXO",
   "nrCpf": "$CPF_TUTOR_TASK60",
   "dsEmail": "tutor-semtel-smoke-$SUFIXO@kura-smoke.test",
+  "stAvisoPrivacidadeInformado": true,
   "dsCanalConvite": "EMAIL"
 }
 JSON
 )
-chamar "tutores/POST (sem nrTelefone)" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_SEM_TEL" "$TOKEN"
+chamar "tutores/POST (sem nrTelefone — REC-05: agora rejeitado)" 400 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_SEM_TEL" "$TOKEN"
 
 # 10c. Tutor (update) sem nrTelefone — mesmo gap, TutorUpdateValidator tambem
-# nunca teve regra pra esse campo. Reusa o tutor do bloco "setup" (ID_TUTOR).
+# nunca teve regra pra esse campo. CONTINUA 200 (confirmado no G2 fix wave 2 da
+# REC-01, rec-01-report.md: o PUT nao exige nrTelefone — decisao do maestro,
+# "acompanha o telefone atual" quando ausente). Reusa o tutor do bloco "setup" (ID_TUTOR).
 PAYLOAD_TUTOR_UPD_SEM_TEL=$(cat <<JSON
 {
   "nmTutor": "Tutor Update SemTel Smoke $SUFIXO",
@@ -556,14 +574,32 @@ chamar "pets/timeline (GET, nao mais 500)" 200 GET "$API/api/v1/pets/$ID_PET/tim
 # /tutores/telefone/{numero} nao tem escopo de clinica sem JWT, entao um telefone fixo
 # reusado entre execucoes acumularia tutores ambiguos; sufixado, cada execucao fica
 # inequivoca). Mesmo payload/origem do bloco "setup" acima (TutorCreateDto).
+#
+# REC-05 (KURA_BACKLOG_RECEPCAO.md, A-12, G0 item 6 consumidor 7) — REESCRITO.
+# O valor antigo, "1199${SUFIXO}" (SUFIXO tem comprimento VARIAVEL, tipicamente
+# 9-11 digitos -> total 13-15 digitos), nao passa em NENHUM ramo de
+# NormalizadorTelefone.TentarNormalizar (Domain/Tutores/NormalizadorTelefone.cs,
+# origin/main e33da98): nao comeca com '+' (ramo 1), nao tem 12/13 digitos
+# COMECANDO EM "55" (ramo 2 — "1199..." comeca em "11", nao "55") e nao tem
+# 10/11 digitos (ramo 3, e o total aqui e maior). POST/setup deste bloco daria
+# 400 com o valor antigo — medido lendo o codigo-fonte, nao suposto.
+#
+# Novo valor: "55" + "11" (DDD) + 8 digitos derivados de timestamp+RANDOM,
+# SEMPRE com largura fixa (printf %08d) — 12 digitos totais, cai no ramo 2
+# ("55..." com 12/13 digitos), que ARMAZENA O VALOR SEM TRANSFORMAR (candidato
+# = digitos, ver NormalizadorTelefone.cs). Por isso a BUSCA abaixo usa o MESMO
+# $NR_TELEFONE_LUNA que foi enviado no cadastro — nao e "funcionar por
+# coincidencia", e o comportamento medido do ramo 2 (stored == input quando
+# input ja tem DDI embutido sem '+').
 CPF_TUTOR_LUNA=$(gerar_cpf)
-NR_TELEFONE_LUNA="1199${SUFIXO}"
+NR_TELEFONE_LUNA="5511$(printf '%08d' $(( ($(date +%s) * 7919 + RANDOM) % 100000000 )))"
 PAYLOAD_TUTOR_LUNA=$(cat <<JSON
 {
   "nmTutor": "Tutor Luna Smoke $SUFIXO",
   "nrCpf": "$CPF_TUTOR_LUNA",
   "dsEmail": "tutor-luna-smoke-$SUFIXO@kura-smoke.test",
   "nrTelefone": "$NR_TELEFONE_LUNA",
+  "stAvisoPrivacidadeInformado": true,
   "dsCanalConvite": "EMAIL"
 }
 JSON
@@ -572,6 +608,7 @@ chamar "setup/tutores (para checks Luna)" 201 POST "$API/api/v1/tutores" "$PAYLO
 ID_TUTOR_LUNA=$(campo id)
 
 # 12a. GET /api/v1/tutores/telefone/{numero} — tutor conhecido (TutoresController.cs:81-91).
+# Busca pelo MESMO valor gravado (ramo 2 nao transforma — ver comentario acima).
 chamar_apikey "luna/tutores-telefone (tutor conhecido)" 200 GET "$API/api/v1/tutores/telefone/$NR_TELEFONE_LUNA" ''
 
 # 12b. POST /api/v1/luna/interactions — id_tutor conhecido (2xx esperado).
@@ -1080,6 +1117,153 @@ if [ "$CODE_FOTO_SIG_ADULTERADA" != "403" ]; then
 else
   echo "ok     fotos/{chave} (GET com sig adulterada) (403)"
 fi
+
+# ─── 24. REC-05 (KURA_BACKLOG_RECEPCAO.md): cadastro pela recepcao — aviso de ──
+# privacidade obrigatorio, link do convite e reemissao ──────────────────────
+# Payloads contra TutorCreateDto.cs/GeradorLinkConvite.cs/TutoresController.cs
+# (origin/main e33da98) e RegisterInviteRequest/OnboardingService.java
+# (origin/main d1522ee). O TOKEN NUNCA vai para stdout/log — nem no sucesso
+# (so os 4 ultimos digitos, mascarado, mesmo padrao de DEMO_WHATSAPP em
+# seed-demo-luna.sh) nem na falha: as duas chamadas que devolvem token no
+# corpo (24a criacao, 24c reemissao) usam chamar_mascarando_token(), uma
+# variante de chamar() que redige "nrToken"/qualquer GUID antes de imprimir o
+# corpo em caso de FALHA — nunca o head -c 300 cru de chamar().
+chamar_mascarando_token() {  # chamar_mascarando_token <nome> <esperado> <metodo> <url> <payload> <token_auth>
+  local nome=$1 esperado=$2 metodo=$3 url=$4 payload=$5 token_auth=${6:-}
+  printf '%s' "$payload" > "$PAYLOAD_FILE"
+  local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url"
+              -H 'Content-Type: application/json' --data-binary "@$PAYLOAD_FILE")
+  [ -n "$token_auth" ] && args+=(-H "Authorization: Bearer $token_auth")
+  local code; code=$(curl "${args[@]}")
+  if [ "$code" != "$esperado" ]; then
+    echo "FALHA  $nome: esperado $esperado, obtido $code"
+    "$PY" -c '
+import re, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    corpo = f.read()
+# O token e sempre um GUID (Guid.ToString() do .NET) — aparece tanto na chave
+# nrToken (invite.nrToken) quanto embutido na query string de dsLinkConvite
+# (?token=<guid>&clinicaId=...). Um regex de GUID sobre a string INTEIRA pega
+# os dois lugares de uma vez, em vez de andar por chave conhecida (que erraria
+# o caso dentro da URL). Aplicado SEMPRE, nao so no fallback de JSON invalido.
+corpo = re.sub(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+    "***REDACTED-GUID***",
+    corpo,
+)
+sys.stdout.write(corpo[:300])
+' "$BODY_FILE"
+    echo
+    FALHAS=$((FALHAS+1))
+  else
+    echo "ok     $nome ($code)"
+  fi
+}
+
+# Config do convite lida do mesmo .env do compose (ou env var, override) — usada
+# so para decidir se a asserção "dsLinkConvite não-nulo" roda: sem a config
+# setada, GerarLink() devolve sempre null por design (A-8), e afirmar
+# não-nulo seria falso positivo do PRÓPRIO instrumento, não do produto.
+CONVITE_URL_BASE_APP_TUTOR=${CONVITE_URL_BASE_APP_TUTOR:-}
+if [ -z "$CONVITE_URL_BASE_APP_TUTOR" ] && [ -f .env ]; then
+  CONVITE_URL_BASE_APP_TUTOR=$(grep -m1 '^CONVITE_URL_BASE_APP_TUTOR=' .env | cut -d= -f2-)
+fi
+
+# 24a. POST /api/v1/tutores com os campos novos — 201, dsLinkConvite
+# não-nulo QUANDO a config estiver setada (senão, checa só o status e avisa).
+CPF_TUTOR_REC05=$(gerar_cpf)
+NR_TELEFONE_REC05="119$(printf '%08d' $(( ($(date +%s) * 15485863 + RANDOM) % 100000000 )))"
+PAYLOAD_TUTOR_REC05=$(cat <<JSON
+{
+  "nmTutor": "Tutor REC-05 Smoke $SUFIXO",
+  "nrCpf": "$CPF_TUTOR_REC05",
+  "dsEmail": "tutor-rec05-smoke-$SUFIXO@kura-smoke.test",
+  "nrTelefone": "$NR_TELEFONE_REC05",
+  "stAvisoPrivacidadeInformado": true,
+  "dsCanalConvite": "WHATSAPP"
+}
+JSON
+)
+chamar_mascarando_token "rec-05/tutores (POST com aviso — criação + convite)" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_REC05" "$TOKEN"
+ID_TUTOR_REC05=$(campo id)
+INVITE_TOKEN_REC05_V1=$(campo invite.nrToken)
+DS_LINK_CONVITE_V1=$(campo dsLinkConvite)
+if [ -n "$CONVITE_URL_BASE_APP_TUTOR" ]; then
+  if [ "$DS_LINK_CONVITE_V1" != "None" ] && [ -n "$DS_LINK_CONVITE_V1" ]; then
+    echo "ok     rec-05/tutores (dsLinkConvite não-nulo, config setada)"
+  else
+    echo "FALHA  rec-05/tutores (dsLinkConvite): esperado link não-nulo (CONVITE_URL_BASE_APP_TUTOR setada), obtido vazio/null"
+    FALHAS=$((FALHAS+1))
+  fi
+else
+  echo "aviso  CONVITE_URL_BASE_APP_TUTOR não setada nesta execução — pulando asserção de dsLinkConvite não-nulo (null é o esperado sem a config, A-8)"
+fi
+
+# 24b. POST /api/v1/tutores SEM aviso de privacidade — 400 e NENHUMA linha
+# gravada (busca pelo CPF depois confirma lista vazia).
+CPF_TUTOR_REC05_SEM_AVISO=$(gerar_cpf)
+NR_TELEFONE_REC05_SEM_AVISO="119$(printf '%08d' $(( ($(date +%s) * 32452867 + RANDOM) % 100000000 )))"
+PAYLOAD_TUTOR_REC05_SEM_AVISO=$(cat <<JSON
+{
+  "nmTutor": "Tutor REC-05 SemAviso Smoke $SUFIXO",
+  "nrCpf": "$CPF_TUTOR_REC05_SEM_AVISO",
+  "dsEmail": "tutor-rec05-semaviso-smoke-$SUFIXO@kura-smoke.test",
+  "nrTelefone": "$NR_TELEFONE_REC05_SEM_AVISO",
+  "dsCanalConvite": "WHATSAPP"
+}
+JSON
+)
+chamar "rec-05/tutores (POST sem stAvisoPrivacidadeInformado)" 400 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_REC05_SEM_AVISO" "$TOKEN"
+chamar "rec-05/tutores/busca (confirma nenhuma linha gravada apesar do 400)" 200 GET "$API/api/v1/tutores?busca=$CPF_TUTOR_REC05_SEM_AVISO" '' "$TOKEN"
+QTD_TUTOR_SEM_AVISO=$("$PY" -c '
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+sys.stdout.write(str(len(data)))
+' "$BODY_FILE")
+if [ "$QTD_TUTOR_SEM_AVISO" = "0" ]; then
+  echo "ok     rec-05/tutores (sem aviso: confirmado 0 linhas gravadas)"
+else
+  echo "FALHA  rec-05/tutores (sem aviso): esperado 0 linhas, achou $QTD_TUTOR_SEM_AVISO"
+  FALHAS=$((FALHAS+1))
+fi
+
+# 24c. POST /api/v1/tutores/{id}/convite — reemissão (REC-02): 201, token NOVO
+# (nunca comparado/impresso em claro), cancela o invite V1 gerado no 24a.
+chamar_mascarando_token "rec-05/tutores/{id}/convite (reemissão)" 201 POST "$API/api/v1/tutores/$ID_TUTOR_REC05/convite" '' "$TOKEN"
+INVITE_TOKEN_REC05_V2=$(campo invite.nrToken)
+DS_LINK_CONVITE_V2=$(campo dsLinkConvite)
+if [ "$INVITE_TOKEN_REC05_V2" = "$INVITE_TOKEN_REC05_V1" ]; then
+  echo "FALHA  rec-05/tutores/{id}/convite: token reemitido é IGUAL ao anterior (deveria ser novo)"
+  FALHAS=$((FALHAS+1))
+else
+  echo "ok     rec-05/tutores/{id}/convite (token reemitido é novo, diferente do V1)"
+fi
+if [ -n "$CONVITE_URL_BASE_APP_TUTOR" ]; then
+  if [ "$DS_LINK_CONVITE_V2" != "None" ] && [ -n "$DS_LINK_CONVITE_V2" ]; then
+    echo "ok     rec-05/tutores/{id}/convite (dsLinkConvite não-nulo, config setada)"
+  else
+    echo "FALHA  rec-05/tutores/{id}/convite (dsLinkConvite): esperado link não-nulo, obtido vazio/null"
+    FALHAS=$((FALHAS+1))
+  fi
+fi
+
+# 24d. O token V1 (cancelado pela reemissão 24c) é recusado pelo Java em
+# POST /auth/register-invite — 409 "Convite cancelado" (OnboardingService.java,
+# passo 2, isAtivo()==false — NÃO "já utilizado", que seria o passo 3: o V1
+# nunca foi usado, só cancelado). Corpo não carrega token — sem necessidade de
+# chamar_mascarando_token.
+PAYLOAD_REGISTER_INVITE_TOKEN_ANTIGO=$(cat <<JSON
+{
+  "token": "$INVITE_TOKEN_REC05_V1",
+  "senha": "SmokeTest123",
+  "aceites": [
+    { "tipo": "LEMBRETES", "versaoTermo": "v1.0", "aceito": true }
+  ]
+}
+JSON
+)
+chamar "rec-05/tutor/auth/register-invite (token ANTIGO, cancelado pela reemissão)" 409 POST "$TUTOR_API/api/v1/auth/register-invite" "$PAYLOAD_REGISTER_INVITE_TOKEN_ANTIGO"
 
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
