@@ -65,15 +65,29 @@
 #
 # Uso:
 #   cd DevOps-Cloud
-#   DEMO_WHATSAPP=<numero-do-apresentador-com-DDI> bash scripts/seed-demo-luna.sh
+#   DEMO_WHATSAPP=<numero-do-time-com-DDI> bash scripts/seed-demo-luna.sh
 #
-# DEMO_WHATSAPP: numero E.164 (ex.: 5511999998888) do WHATSAPP REAL de quem
-# vai apresentar — NUNCA versionado, NUNCA impresso no log inteiro (so os 4
-# ultimos digitos, ou nada). Sem a variavel: o script AINDA semeia tutor,
-# pet, vacina e as 3 triagens (a fila do app funciona igual), mas avisa
-# claramente que TUTOR.DS_WHATSAPP sai com o PLACEHOLDER (nao o numero real)
-# e a acao "Responder no WhatsApp" nao tem para onde mandar de verdade
-# (ver achado acima — a coluna NAO fica mais null desde a REC-05).
+# DEMO_WHATSAPP: numero do WHATSAPP REAL do time (DDI+DDD+numero, so digitos, ex.: 5511999998888;
+# aceita "+", espacos, "-" e parenteses, que sao removidos) — NUNCA versionado, NUNCA impresso
+# inteiro (so os 4 ultimos digitos).
+#
+# REC-18 — DECISAO: FALHAR, nao pular. Antes (LU-15) a variavel era opcional e, sem ela, o script
+# semeava um placeholder. Isso era toleravel quando o numero so servia ao lembrete de vacina; agora
+# ele e o ELO do percurso de estande: e o numero que a Twilio entrega (13 digitos 55...), o unico
+# que a Luna casa com o tutor (G0 item 4), e o destino do lembrete D-1 e das respostas "1"/"3".
+# Sem ele o tutor da demo fica com um numero falso e o D-1 mandaria WhatsApp para ninguem — uma
+# demo "verde" que falha no palco. Por isso, sem DEMO_WHATSAPP (ou com formato invalido) o script
+# aborta ANTES de qualquer chamada, com `exit 2`. Saida de emergencia explicita, para ambiente sem
+# celular real (CI, ensaio de fila): SEED_SEM_WHATSAPP=1 — mantem o comportamento antigo
+# (placeholder, sem o agendamento D-1).
+#
+# REC-18 — D-1 (bloco 6b): com DEMO_WHATSAPP, cria 1 agendamento de AMANHA 10:00 (POST /agendamentos,
+# REC-10) para o Thor do tutor-demo — que tem consentimento LEMBRETES e DS_WHATSAPP = numero do time,
+# ou seja, e ELEGIVEL ao lembrete de confirmacao D-1. Este e o unico lugar do seed onde o D-1 elegivel
+# nasce (o tutor de scripts/seed-demo.sh nao tem LEMBRETES nem o WhatsApp do time). O job so envia se
+# LEMBRETE_CONFIRMACAO_HABILITADO=true na Luna (default false; ver .env.example) e SO DENTRO DA JANELA
+# DE 24h do sandbox, com o celular do time tendo refeito o `join` (sessao expira em 3 dias — G0 item 10):
+# o seed NAO liga nada disso, so deixa o dado pronto.
 #
 # Pre-requisitos: os mesmos do smoke-contratos.sh — compose de pe (4/4
 # healthy), curl, python (ou python3), docker no PATH. scripts/seed-demo.sh
@@ -212,14 +226,34 @@ AGORA_MAIS_3=$(dt_mais_dias_iso 3)
 
 # ─── 0. DEMO_WHATSAPP — nunca versionado, nunca impresso inteiro ───────────
 DEMO_WHATSAPP=${DEMO_WHATSAPP:-}
+SEED_SEM_WHATSAPP=${SEED_SEM_WHATSAPP:-}
+if [ -n "$DEMO_WHATSAPP" ]; then
+  # Normaliza so a apresentacao (espacos, +, -, parenteses) e VALIDA o formato antes de
+  # interpolar o valor em qualquer JSON — nunca ecoa o valor recebido em mensagem de erro.
+  DEMO_WHATSAPP=$(printf '%s' "$DEMO_WHATSAPP" | tr -d ' +()-')
+  if ! [[ "$DEMO_WHATSAPP" =~ ^55[0-9]{10,11}$ ]]; then
+    echo "erro: DEMO_WHATSAPP em formato invalido — use DDI+DDD+numero, so digitos (12 ou 13 digitos" >&2
+    echo "      comecando em 55; ex.: 5511999998888). O valor recebido nao e impresso." >&2
+    exit 2
+  fi
+fi
 if [ -z "$DEMO_WHATSAPP" ]; then
-  echo "aviso  DEMO_WHATSAPP nao definido — semeando tutor/pet/vacina/triagens SEM numero de"
+  if [ "$SEED_SEM_WHATSAPP" != "1" ]; then
+    echo "erro: DEMO_WHATSAPP nao definido. Este seed precisa do WhatsApp REAL do time (REC-18):" >&2
+    echo "      e o numero que a Twilio entrega, o unico que a Luna casa com o tutor, e o destino do" >&2
+    echo "      lembrete D-1. Rode:" >&2
+    echo "        DEMO_WHATSAPP=<DDI+DDD+numero> bash scripts/seed-demo-luna.sh" >&2
+    echo "      Sem celular real (CI, ensaio de fila), use SEED_SEM_WHATSAPP=1 — placeholder, sem D-1." >&2
+    exit 2
+  fi
+  echo "aviso  SEED_SEM_WHATSAPP=1 — semeando tutor/pet/vacina/triagens SEM numero de"
   echo "       WhatsApp real. TUTOR.DS_WHATSAPP sai com o PLACEHOLDER normalizado"
   echo "       (+5511990000000, REC-05: TutorCreateDto ja nao deixa a coluna null — ver"
   echo "       achado no cabecalho deste script), NAO o numero real: o lembrete de vacina"
   echo "       desta demo tentaria mandar para um numero que nao existe, e a acao"
   echo "       'Responder no WhatsApp' nao tem para onde mandar de verdade. A fila da Luna e"
-  echo "       as triagens funcionam normalmente (nao dependem de WhatsApp)."
+  echo "       as triagens funcionam normalmente (nao dependem de WhatsApp). O agendamento"
+  echo "       D-1 (bloco 6b) NAO sera criado."
   TEM_WHATSAPP="N"
 else
   DEMO_WHATSAPP_MASCARADO="****${DEMO_WHATSAPP: -4}"
@@ -464,6 +498,56 @@ JSON
 fi
 echo
 
+# ─── 6b. REC-18: agendamento de AMANHA elegivel ao lembrete D-1 (so com DEMO_WHATSAPP) ───────
+# Contrato: POST /api/v1/agendamentos (backend-clinica-dotnet origin/main 81d5a58,
+# AgendamentoCreateDto.cs:11-30; dtAgendamento = hora LOCAL da clinica, sem "Z",
+# AgendamentoCreateValidator.cs:71-76). Elegibilidade (LunaService.cs:405+): status AGENDADO, dia =
+# amanha, tutor com DS_WHATSAPP e consentimento LEMBRETES aceito e nao revogado, DT_LEMBRETE nulo —
+# o tutor-demo atende as tres coisas (bloco 2). Offset fixo -03:00 (Brasil sem horario de verao desde
+# 2019; mesma premissa do fallback de RelogioClinica.cs).
+#
+# Idempotencia: se ja existe amanha um agendamento do Thor ainda "virgem" (AGENDADO e sem resposta do
+# tutor), nao cria outro. LIMITE CONHECIDO: o DTO da agenda nao expoe DT_LEMBRETE_CONFIRMACAO, entao um
+# agendamento que ja recebeu o lembrete mas nao foi respondido ainda conta como "virgem" e o seed nao o
+# recria — depois de um ENSAIO que consumiu o lembrete, crie outro agendamento de amanha pelo app (ou
+# um `down -v` + os dois seeds). Um agendamento CONFIRMADO/respondido NAO bloqueia: o seed cria um novo.
+if [ "$TEM_WHATSAPP" = "S" ]; then
+  DATA_AMANHA=$("$PY" -c 'import datetime as d; print((d.datetime.now(d.timezone(d.timedelta(hours=-3)))+d.timedelta(days=1)).strftime("%Y-%m-%d"))')
+  chamar "agenda (amanha, idempotencia do D-1)" 200 GET "$API/api/v1/agenda?dataInicio=$DATA_AMANHA&dataFim=$DATA_AMANHA" '' "$TOKEN"
+  ID_AG_D1=$("$PY" -c '
+import json, sys
+with open(sys.argv[2], "r", encoding="utf-8") as f:
+    d = json.load(f)
+for a in d["agendamentos"]:
+    if str(a.get("idPet")) == sys.argv[1] and a.get("dsStatus") == "AGENDADO" and not a.get("dsRespostaConfirmacao"):
+        sys.stdout.write(str(a["idAgendamento"]))
+        break
+' "$ID_PET_THOR" "$BODY_FILE")
+  if [ -n "$ID_AG_D1" ]; then
+    echo "ok     agendamento D-1 de amanha ja existe (id=$ID_AG_D1) — pulando criacao"
+  else
+    PAYLOAD_AGENDAMENTO_D1=$(cat <<JSON
+{
+  "idTutor": $ID_TUTOR_LUNA,
+  "idPet": $ID_PET_THOR,
+  "idVeterinario": $ID_VETERINARIO,
+  "dtAgendamento": "${DATA_AMANHA}T10:00:00",
+  "duracao": 30,
+  "dsTipo": "CONSULTA",
+  "dsObservacoes": "Consulta de amanha (demo D-1)"
+}
+JSON
+)
+    chamar "agendamentos (amanha 10:00, Thor — elegivel ao D-1)" 201 POST "$API/api/v1/agendamentos" "$PAYLOAD_AGENDAMENTO_D1" "$TOKEN"
+    ID_AG_D1=$(campo idAgendamento)
+    echo "ok     agendamento D-1 criado (id=$ID_AG_D1, amanha $DATA_AMANHA 10:00, tutor $ID_TUTOR_LUNA, WhatsApp final $DEMO_WHATSAPP_MASCARADO)"
+  fi
+else
+  ID_AG_D1=""
+  echo "aviso  SEED_SEM_WHATSAPP=1 — agendamento D-1 NAO criado (sem numero real nao ha D-1 elegivel de verdade)"
+fi
+echo
+
 # ─── 7. Prova final: fila nao vazia (corpo, nao so status) ─────────────────
 chamar "luna/triagens (prova final, corpo)" 200 GET "$API/api/v1/luna/triagens?pageSize=100" '' "$TOKEN"
 QTD_TRIAGENS_DEPOIS=$(contar_triagens_do_tutor "$ID_TUTOR_LUNA")
@@ -480,3 +564,5 @@ echo "Tutor demo Luna: id=$ID_TUTOR_LUNA (CPF marcador $CPF_TUTOR_LUNA)"
 echo "Pet: Thor (id=$ID_PET_THOR)"
 echo "Triagens do tutor na fila: $QTD_TRIAGENS_DEPOIS"
 echo "DS_WHATSAPP e o numero REAL do apresentador (nao o placeholder): $TEM_WHATSAPP"
+echo "Agendamento D-1 de amanha (elegivel ao lembrete; so enviado com LEMBRETE_CONFIRMACAO_HABILITADO=true): ${ID_AG_D1:-nao criado}"
+echo "As 3 triagens acima ficam SEM agendamento de proposito: sao a origem do botao Agendar do card."
