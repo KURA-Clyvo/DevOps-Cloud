@@ -778,6 +778,8 @@ PAYLOAD_LUNA_TRIAGE=$(cat <<JSON
 JSON
 )
 chamar_apikey "luna/triage" 201 POST "$API/api/v1/luna/triage" "$PAYLOAD_LUNA_TRIAGE"
+# REC-18: o bloco 25 reaproveita esta triagem como origem de um agendamento ("Agendar" pelo card).
+ID_TRIAGEM_LUNA=$(campo_opcional id_triagem)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TASK-81 (KURA_BACKLOG_FIX_7). Blocos 13-20: extensao de 22 para ~49 checks.
@@ -1387,6 +1389,249 @@ if [ "$FALHAS" = "$FALHAS_ANTES_24D" ]; then
   fi
 else
   echo "aviso  rec-05/tutor/auth/register-invite (mensagem): status já não bateu o esperado (ver FALHA acima) — pulando checagem da mensagem"
+fi
+
+# ─── 25. REC-18 (KURA_BACKLOG_RECEPCAO.md): agendamento pela recepcao, check-in / ─
+# inicio de atendimento e os 3 endpoints da confirmacao D-1 da Luna ──────────────
+# Contrato lido na fonte (backend-clinica-dotnet origin/main 81d5a58, 2026-10-01):
+#   - POST /api/v1/agendamentos                           AgendaController.cs:73 (REC-10)
+#     corpo = AgendamentoCreateDto.cs:11-30 (camelCase: idTutor, idPet, idVeterinario,
+#     dtAgendamento, duracao, dsTipo, dsObservacoes, idTriagemOrigem). dtAgendamento e
+#     HORA LOCAL DA CLINICA, SEM "Z" (AgendamentoCreateValidator.cs:71-76 recusa Kind != Unspecified).
+#   - POST /api/v1/agendamentos/{id}/checkin|inicio-atendimento  AgendaController.cs:97,120 (REC-11)
+#     corpo = RegistrarEventoRecepcaoDto.cs:10 { "nrVersion": N }.
+#   - GET  /api/v1/luna/agendamentos/confirmacao-pendente?data=   LunaController.cs:127 (REC-15)
+#   - POST /api/v1/luna/agendamentos/{id}/lembrete-enviado        LunaController.cs:144 (sem corpo —
+#     igual a KuraClient.marcar_lembrete_enviado, kura_client.py:231-243 @ kura-luna-ai e011335)
+#   - POST /api/v1/luna/agendamentos/{id}/resposta-confirmacao    LunaController.cs:166
+#     corpo = RespostaConfirmacaoRequestDto.cs:14-18 { "id_tutor", "resposta" } == dtos.py:100-105
+#     (RespostaConfirmacaoRequestDTO) — snake_case, resposta in SIM|CANCELAR|REMARCAR.
+# Regras que os payloads abaixo exercitam (AgendaService.cs @ 81d5a58):
+#   check-in/inicio so a partir de AGENDADO/CONFIRMADO e SO NO DIA do agendamento (:439/:476),
+#   idempotentes (:424/:472), lock por nrVersion (:444/:481), inicio NUNCA inventa dtCheckin
+#   (:484); encaixe: no maximo 15 min no passado (CriarAsync).
+#
+# PRECONDICOES (quem roda precisa saber):
+#   - LEMBRETE_CONFIRMACAO_HABILITADO deve estar false (default do compose). O bloco cria um
+#     agendamento de AMANHA elegivel a D-1 (tutor com DS_WHATSAPP e consentimento LEMBRETES —
+#     o do bloco 9) para provar a listagem; com o job da Luna LIGADO ele tentaria mandar
+#     WhatsApp para o numero ficticio deste smoke.
+#   - `confirmacao-pendente` e GLOBAL (todas as clinicas; API key, sem JWT — LunaService.cs:405):
+#     o check afirma "contem o MEU id", nunca "a lista tem N itens".
+#   - PII: o corpo de confirmacao-pendente carrega ds_whatsapp e nm_tutor. Os checks de corpo
+#     abaixo (afirmar) NUNCA imprimem o corpo; so o nome do check e ok/FALHA. O unico `head -c`
+#     de corpo e o do chamar_apikey em FALHA de status — que, num erro de status, e um
+#     ProblemDetails (sem lista).
+#   - Horarios: relogio da clinica = America/Sao_Paulo; o Brasil nao tem horario de verao desde
+#     2019 (mesma premissa do fallback -03:00 de RelogioClinica.cs), entao o script calcula
+#     "agora/amanha" com offset fixo -03:00, independente do fuso do host.
+#   - Se o smoke rodar colado na virada do dia (23:59:59 -> 00:00) o "hoje" do script e o da
+#     clinica podem divergir por 1 s; re-executar.
+
+# afirmar: avalia uma expressao Python sobre `d` (o JSON do ULTIMO BODY_FILE) e imprime so
+# ok/FALHA + o nome. Expressoes sao literais deste script (nunca vem de dado externo).
+afirmar() {  # afirmar <nome> <expressao sobre d>
+  local r
+  r=$("$PY" -c '
+import json, sys
+try:
+    with open(sys.argv[2], "r", encoding="utf-8") as f:
+        d = json.load(f)
+    sys.stdout.write("1" if eval(sys.argv[1]) else "0")
+except Exception:
+    sys.stdout.write("E")
+' "$2" "$BODY_FILE") || r="E"
+  if [ "$r" = "1" ]; then
+    echo "ok     $1"
+  else
+    echo "FALHA  $1 (assercao sobre o corpo: $r — 0=falsa, E=erro ao avaliar; corpo NAO impresso)"
+    FALHAS=$((FALHAS+1))
+  fi
+}
+
+clinica_agora()    { "$PY" -c 'import datetime as d; print(d.datetime.now(d.timezone(d.timedelta(hours=-3))).strftime("%Y-%m-%dT%H:%M:%S"))'; }
+clinica_min_atras() { "$PY" -c "import datetime as d; print((d.datetime.now(d.timezone(d.timedelta(hours=-3)))-d.timedelta(minutes=$1)).strftime('%Y-%m-%dT%H:%M:%S'))"; }
+clinica_amanha_data() { "$PY" -c 'import datetime as d; print((d.datetime.now(d.timezone(d.timedelta(hours=-3)))+d.timedelta(days=1)).strftime("%Y-%m-%d"))'; }
+
+# payload_agendamento <idTutor> <idPet> <dtAgendamento> <dsTipo> [idTriagemOrigem|null]
+payload_agendamento() {
+  cat <<JSON
+{
+  "idTutor": $1,
+  "idPet": $2,
+  "idVeterinario": $ID_VETERINARIO,
+  "dtAgendamento": "$3",
+  "duracao": 30,
+  "dsTipo": "$4",
+  "dsObservacoes": "Agendamento smoke REC-18 $SUFIXO",
+  "idTriagemOrigem": ${5:-null}
+}
+JSON
+}
+corpo_versao() { printf '{ "nrVersion": %s }' "$1"; }
+
+DT_AGORA_CLINICA=$(clinica_agora)
+DATA_AMANHA=$(clinica_amanha_data)
+INEXISTENTE=999999999
+
+# 25a. POST /agendamentos (RECEPCAO) — AGH1, hoje. Caso feliz + os 4xx esperados.
+chamar "rec-18/agendamentos (POST, hoje, recepcao)" 201 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "$DT_AGORA_CLINICA" CONSULTA)" "$TOKEN"
+ID_AGH1=$(campo_opcional idAgendamento)
+afirmar "rec-18/agendamentos (POST) devolve AGENDADO, versao 0, origem RECEPCAO" \
+  "d['dsStatus']=='AGENDADO' and d['nrVersion']==0 and d['dsOrigem']=='RECEPCAO' and d['dsEtapaRecepcao']=='AGENDADO' and d['dtCheckin'] is None"
+
+chamar "rec-18/agendamentos (POST, dsTipo fora da lista)" 400 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "$DT_AGORA_CLINICA" URGENCIA)" "$TOKEN"
+chamar "rec-18/agendamentos (POST, dtAgendamento com Z)" 400 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "${DT_AGORA_CLINICA}Z" CONSULTA)" "$TOKEN"
+chamar "rec-18/agendamentos (POST, 30 min no passado)" 422 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "$(clinica_min_atras 30)" CONSULTA)" "$TOKEN"
+chamar "rec-18/agendamentos (POST, pet de outro tutor)" 422 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR_LUNA" "$ID_PET" "$DT_AGORA_CLINICA" CONSULTA)" "$TOKEN"
+chamar "rec-18/agendamentos (POST, pet inexistente)" 404 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR" "$INEXISTENTE" "$DT_AGORA_CLINICA" CONSULTA)" "$TOKEN"
+
+if [ -z "$ID_AGH1" ]; then
+  echo "FALHA  rec-18: sem idAgendamento do POST feliz — checks de check-in/inicio/D-1 pulados (a falha acima e a causa)"
+  FALHAS=$((FALHAS+1))
+else
+  # 25b. check-in: 1a chamada grava, 2a e idempotente (mesma dtCheckin, mesma versao, mesmo com
+  # nrVersion velho no corpo — a idempotencia vem ANTES do lock, AgendaService.cs:424-445).
+  chamar "rec-18/agendamentos/{id}/checkin (POST)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/checkin" "$(corpo_versao 0)" "$TOKEN"
+  DT_CHECKIN_1=$(campo_opcional dtCheckin)
+  afirmar "rec-18/checkin grava dtCheckin, etapa CHEGOU, versao 1, status segue AGENDADO (A-2)" \
+    "d['dtCheckin'] is not None and d['dsEtapaRecepcao']=='CHEGOU' and d['nrVersion']==1 and d['dsStatus']=='AGENDADO'"
+  chamar "rec-18/agendamentos/{id}/checkin (POST, 2a chamada idempotente)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/checkin" "$(corpo_versao 0)" "$TOKEN"
+  afirmar "rec-18/2o checkin NAO sobrescreve dtCheckin nem incrementa versao" \
+    "d['dtCheckin']=='$DT_CHECKIN_1' and d['nrVersion']==1"
+
+  # 25c. inicio de atendimento depois do check-in: grava dtInicioAtendimento, nao mexe em dtCheckin.
+  chamar "rec-18/agendamentos/{id}/inicio-atendimento (POST)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/inicio-atendimento" "$(corpo_versao 1)" "$TOKEN"
+  afirmar "rec-18/inicio grava dtInicioAtendimento, etapa EM_ATENDIMENTO, dtCheckin intacta" \
+    "d['dtInicioAtendimento'] is not None and d['dsEtapaRecepcao']=='EM_ATENDIMENTO' and d['dtCheckin']=='$DT_CHECKIN_1' and d['nrVersion']==2"
+
+  chamar "rec-18/agendamentos/{id}/checkin (POST, agendamento inexistente)" 404 POST "$API/api/v1/agendamentos/$INEXISTENTE/checkin" "$(corpo_versao 0)" "$TOKEN"
+
+  # 25d. AGH2: walk-in (entra direto, sem check-in) + versao velha => 409.
+  chamar "rec-18/agendamentos (POST, hoje, walk-in)" 201 POST "$API/api/v1/agendamentos" \
+    "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "$DT_AGORA_CLINICA" CONSULTA)" "$TOKEN"
+  ID_AGH2=$(campo_opcional idAgendamento)
+  if [ -n "$ID_AGH2" ]; then
+    chamar "rec-18/agendamentos/{id}/checkin (POST, versao velha)" 409 POST "$API/api/v1/agendamentos/$ID_AGH2/checkin" "$(corpo_versao 7)" "$TOKEN"
+    chamar "rec-18/agendamentos/{id}/inicio-atendimento (POST, walk-in sem check-in)" 200 POST "$API/api/v1/agendamentos/$ID_AGH2/inicio-atendimento" "$(corpo_versao 0)" "$TOKEN"
+    afirmar "rec-18/walk-in: inicio NAO inventa dtCheckin (A-6)" \
+      "d['dtCheckin'] is None and d['dtInicioAtendimento'] is not None and d['dsEtapaRecepcao']=='EM_ATENDIMENTO'"
+  else
+    echo "FALHA  rec-18: sem idAgendamento do walk-in — checks de 409/walk-in pulados"
+    FALHAS=$((FALHAS+1))
+  fi
+
+  # 25e. AGH3: cancelado => check-in/inicio 422 (so AGENDADO/CONFIRMADO). PATCH /status ja existe
+  # (AgendaController.cs, FM-04) — usado aqui como setup, com seu proprio check.
+  chamar "rec-18/agendamentos (POST, hoje, para cancelar)" 201 POST "$API/api/v1/agendamentos" \
+    "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "$DT_AGORA_CLINICA" CONSULTA)" "$TOKEN"
+  ID_AGH3=$(campo_opcional idAgendamento)
+  if [ -n "$ID_AGH3" ]; then
+    chamar "rec-18/agendamentos/{id}/status (PATCH, cancelar)" 200 PATCH "$API/api/v1/agendamentos/$ID_AGH3/status" \
+      '{ "dsStatus": "CANCELADO", "nrVersion": 0 }' "$TOKEN"
+    chamar "rec-18/agendamentos/{id}/checkin (POST, agendamento CANCELADO)" 422 POST "$API/api/v1/agendamentos/$ID_AGH3/checkin" "$(corpo_versao 1)" "$TOKEN"
+    chamar "rec-18/agendamentos/{id}/inicio-atendimento (POST, agendamento CANCELADO)" 422 POST "$API/api/v1/agendamentos/$ID_AGH3/inicio-atendimento" "$(corpo_versao 1)" "$TOKEN"
+  else
+    echo "FALHA  rec-18: sem idAgendamento do agendamento a cancelar — checks de 422 pulados"
+    FALHAS=$((FALHAS+1))
+  fi
+
+  # 25f. AGD1: amanha 10:00, tutor do bloco 9 (consentimento LEMBRETES aceito + DS_WHATSAPP por
+  # convencao "mesmo numero" da REC-01) => elegivel a D-1. Check-in de amanha e recusado (m-2).
+  chamar "rec-18/agendamentos (POST, amanha, D-1)" 201 POST "$API/api/v1/agendamentos" \
+    "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "${DATA_AMANHA}T10:00:00" CONSULTA)" "$TOKEN"
+  ID_AGD1=$(campo_opcional idAgendamento)
+  if [ -z "$ID_AGD1" ]; then
+    echo "FALHA  rec-18: sem idAgendamento do agendamento de amanha — checks da D-1 pulados"
+    FALHAS=$((FALHAS+1))
+  else
+    chamar "rec-18/agendamentos/{id}/checkin (POST, agendamento de amanha)" 422 POST "$API/api/v1/agendamentos/$ID_AGD1/checkin" "$(corpo_versao 0)" "$TOKEN"
+
+    # 25g. Luna: confirmacao-pendente (API key). Sem a chave => 401.
+    chamar "rec-18/luna/confirmacao-pendente (GET, sem X-Api-Key)" 401 GET "$API/api/v1/luna/agendamentos/confirmacao-pendente?data=$DATA_AMANHA" ''
+    chamar_apikey "rec-18/luna/confirmacao-pendente (GET)" 200 GET "$API/api/v1/luna/agendamentos/confirmacao-pendente?data=$DATA_AMANHA" ''
+    afirmar "rec-18/confirmacao-pendente CONTEM o agendamento de amanha (corpo nao impresso)" \
+      "any(i['id_agendamento']==$ID_AGD1 and i['id_tutor']==$ID_TUTOR and i['ds_whatsapp'] for i in d)"
+
+    # 25h. lembrete-enviado: 1a grava, 2a devolve a MESMA data (idempotente); inexistente => 404.
+    chamar_apikey "rec-18/luna/lembrete-enviado (POST)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/lembrete-enviado" ''
+    DT_LEMBRETE_1=$(campo_opcional dt_lembrete_confirmacao)
+    chamar_apikey "rec-18/luna/lembrete-enviado (POST, 2a chamada idempotente)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/lembrete-enviado" ''
+    afirmar "rec-18/2o lembrete-enviado devolve a mesma dt_lembrete_confirmacao" \
+      "d['id_agendamento']==$ID_AGD1 and d['dt_lembrete_confirmacao']=='$DT_LEMBRETE_1' and '$DT_LEMBRETE_1'!=''"
+    chamar_apikey "rec-18/luna/lembrete-enviado (POST, agendamento inexistente)" 404 POST "$API/api/v1/luna/agendamentos/$INEXISTENTE/lembrete-enviado" ''
+    chamar_apikey "rec-18/luna/confirmacao-pendente (GET, depois do lembrete)" 200 GET "$API/api/v1/luna/agendamentos/confirmacao-pendente?data=$DATA_AMANHA" ''
+    afirmar "rec-18/confirmacao-pendente NAO lista mais o agendamento ja lembrado" \
+      "not any(i['id_agendamento']==$ID_AGD1 for i in d)"
+
+    # 25i. resposta-confirmacao: tutor errado 422, resposta fora do enum 400, inexistente 404,
+    # agendamento CANCELADO 422; SIM => CONFIRMADO; REMARCAR (a partir de CONFIRMADO) NAO muda status.
+    chamar_apikey "rec-18/luna/resposta-confirmacao (POST, tutor que nao e o do agendamento)" 422 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
+      "{ \"id_tutor\": $ID_TUTOR_LUNA, \"resposta\": \"SIM\" }"
+    chamar_apikey "rec-18/luna/resposta-confirmacao (POST, resposta fora do enum)" 400 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
+      "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"TALVEZ\" }"
+    chamar_apikey "rec-18/luna/resposta-confirmacao (POST, agendamento inexistente)" 404 POST "$API/api/v1/luna/agendamentos/$INEXISTENTE/resposta-confirmacao" \
+      "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"SIM\" }"
+    if [ -n "$ID_AGH3" ]; then
+      chamar_apikey "rec-18/luna/resposta-confirmacao (POST, agendamento CANCELADO)" 422 POST "$API/api/v1/luna/agendamentos/$ID_AGH3/resposta-confirmacao" \
+        "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"SIM\" }"
+    fi
+    chamar_apikey "rec-18/luna/resposta-confirmacao (POST, SIM)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
+      "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"SIM\" }"
+    afirmar "rec-18/resposta SIM => ds_status CONFIRMADO" \
+      "d['ds_status']=='CONFIRMADO' and d['ds_resposta_confirmacao']=='SIM'"
+    chamar_apikey "rec-18/luna/resposta-confirmacao (POST, REMARCAR)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
+      "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"REMARCAR\" }"
+    afirmar "rec-18/resposta REMARCAR NAO muda o status (A-10/b)" \
+      "d['ds_status']=='CONFIRMADO' and d['ds_resposta_confirmacao']=='REMARCAR'"
+
+    # 25j. O que a clinica enxerga na agenda de amanha (REC-09/REC-17): resposta do tutor + origem.
+    chamar "rec-18/agenda (GET, amanha, resposta da D-1 visivel)" 200 GET "$API/api/v1/agenda?dataInicio=$DATA_AMANHA&dataFim=$DATA_AMANHA" '' "$TOKEN"
+    afirmar "rec-18/agenda de amanha mostra dsRespostaConfirmacao=REMARCAR e origem RECEPCAO" \
+      "any(a['idAgendamento']==$ID_AGD1 and a['dsRespostaConfirmacao']=='REMARCAR' and a['dsOrigem']=='RECEPCAO' and a['dsStatus']=='CONFIRMADO' for a in d['agendamentos'])"
+  fi
+fi
+
+# 25k. "Agendar" pelo card da triagem (REC-14): agendamento com idTriagemOrigem => origem
+# TRIAGEM_LUNA + urgencia da triagem no item. Usa a triagem do bloco 12d (tutor Luna, MEDIA) e um pet
+# proprio desse tutor (o bloco 12 so cria o tutor).
+if [ -z "${ID_TRIAGEM_LUNA:-}" ]; then
+  echo "FALHA  rec-18: bloco 12d nao devolveu id_triagem — check de origem TRIAGEM_LUNA pulado"
+  FALHAS=$((FALHAS+1))
+else
+  PAYLOAD_PET_TUTOR_LUNA=$(cat <<JSON
+{
+  "idEspecie": 1,
+  "idRaca": 1,
+  "nmPet": "Pet Luna Smoke $SUFIXO",
+  "dtNascimento": "2022-01-01T00:00:00Z",
+  "sgSexo": "F",
+  "sgPorte": "M",
+  "idTutor": $ID_TUTOR_LUNA,
+  "stPrincipal": true,
+  "dsVinculo": "PROPRIETARIO"
+}
+JSON
+)
+  chamar "rec-18/setup/pets (pet do tutor da triagem)" 201 POST "$API/api/v1/pets" "$PAYLOAD_PET_TUTOR_LUNA" "$TOKEN"
+  ID_PET_TUTOR_LUNA=$(campo_opcional id)
+  if [ -n "$ID_PET_TUTOR_LUNA" ]; then
+    chamar "rec-18/agendamentos (POST, a partir de triagem)" 201 POST "$API/api/v1/agendamentos" \
+      "$(payload_agendamento "$ID_TUTOR_LUNA" "$ID_PET_TUTOR_LUNA" "${DATA_AMANHA}T11:00:00" CONSULTA "$ID_TRIAGEM_LUNA")" "$TOKEN"
+    afirmar "rec-18/agendamento da triagem: origem TRIAGEM_LUNA e urgencia MEDIA no item" \
+      "d['dsOrigem']=='TRIAGEM_LUNA' and d['dsNivelUrgenciaOrigem']=='MEDIA'"
+    chamar "rec-18/agendamentos (POST, triagem de outro tutor)" 422 POST "$API/api/v1/agendamentos" \
+      "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "${DATA_AMANHA}T12:00:00" CONSULTA "$ID_TRIAGEM_LUNA")" "$TOKEN"
+  else
+    echo "FALHA  rec-18: sem id do pet do tutor da triagem — checks de origem TRIAGEM_LUNA pulados"
+    FALHAS=$((FALHAS+1))
+  fi
 fi
 
 # ─── resultado ─────────────────────────────────────────────────────────────
