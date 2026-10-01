@@ -1492,120 +1492,104 @@ chamar "rec-18/agendamentos (POST, pet de outro tutor)" 422 POST "$API/api/v1/ag
 chamar "rec-18/agendamentos (POST, pet inexistente)" 404 POST "$API/api/v1/agendamentos" \
   "$(payload_agendamento "$ID_TUTOR" "$INEXISTENTE" "$DT_AGORA_CLINICA" CONSULTA)" "$TOKEN"
 
-if [ -z "$ID_AGH1" ]; then
-  echo "FALHA  rec-18: sem idAgendamento do POST feliz — checks de check-in/inicio/D-1 pulados (a falha acima e a causa)"
-  FALHAS=$((FALHAS+1))
-else
-  # 25b. check-in: 1a chamada grava, 2a e idempotente (mesma dtCheckin, mesma versao, mesmo com
-  # nrVersion velho no corpo — a idempotencia vem ANTES do lock, AgendaService.cs:424-445).
-  chamar "rec-18/agendamentos/{id}/checkin (POST)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/checkin" "$(corpo_versao 0)" "$TOKEN"
-  DT_CHECKIN_1=$(campo_opcional dtCheckin)
-  afirmar "rec-18/checkin grava dtCheckin, etapa CHEGOU, versao 1, status segue AGENDADO (A-2)" \
-    "d['dtCheckin'] is not None and d['dsEtapaRecepcao']=='CHEGOU' and d['nrVersion']==1 and d['dsStatus']=='AGENDADO'"
-  chamar "rec-18/agendamentos/{id}/checkin (POST, 2a chamada idempotente)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/checkin" "$(corpo_versao 0)" "$TOKEN"
-  afirmar "rec-18/2o checkin NAO sobrescreve dtCheckin nem incrementa versao" \
-    "d['dtCheckin']=='$DT_CHECKIN_1' and d['nrVersion']==1"
+# Guardas SEM aninhamento (coluna 0): `extrairNomesDeCheck` (mobile-clinica-rn,
+# discover-network-consumers.ts:712) so reconhece `chamar*` no INICIO da linha (`^chamar`, /m) —
+# um check dentro de if/else, indentado, fica INVISIVEL ao gate smoke-coverage (medido na REC-18:
+# 3 de 4 entradas `coberto` falharam enquanto os checks estavam indentados). Por isso o bloco e
+# plano: se um id nao veio, o FALHA abaixo e a causa, e os checks seguintes caem em cascata
+# (URL com id vazio => 4xx/404 => mais FALHA), nunca em silencio.
+[ -n "$ID_AGH1" ] || { echo "FALHA  rec-18: sem idAgendamento do POST feliz (hoje) — causa dos FALHA em cascata abaixo"; FALHAS=$((FALHAS+1)); }
 
-  # 25c. inicio de atendimento depois do check-in: grava dtInicioAtendimento, nao mexe em dtCheckin.
-  chamar "rec-18/agendamentos/{id}/inicio-atendimento (POST)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/inicio-atendimento" "$(corpo_versao 1)" "$TOKEN"
-  afirmar "rec-18/inicio grava dtInicioAtendimento, etapa EM_ATENDIMENTO, dtCheckin intacta" \
-    "d['dtInicioAtendimento'] is not None and d['dsEtapaRecepcao']=='EM_ATENDIMENTO' and d['dtCheckin']=='$DT_CHECKIN_1' and d['nrVersion']==2"
+# 25b. check-in: 1a chamada grava, 2a e idempotente (mesma dtCheckin, mesma versao, mesmo com
+# nrVersion velho no corpo — a idempotencia vem ANTES do lock, AgendaService.cs:424-445).
+chamar "rec-18/agendamentos/{id}/checkin (POST)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/checkin" "$(corpo_versao 0)" "$TOKEN"
+DT_CHECKIN_1=$(campo_opcional dtCheckin)
+afirmar "rec-18/checkin grava dtCheckin, etapa CHEGOU, versao 1, status segue AGENDADO (A-2)" \
+  "d['dtCheckin'] is not None and d['dsEtapaRecepcao']=='CHEGOU' and d['nrVersion']==1 and d['dsStatus']=='AGENDADO'"
+chamar "rec-18/agendamentos/{id}/checkin (POST, 2a chamada idempotente)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/checkin" "$(corpo_versao 0)" "$TOKEN"
+afirmar "rec-18/2o checkin NAO sobrescreve dtCheckin nem incrementa versao" \
+  "d['dtCheckin']=='$DT_CHECKIN_1' and d['nrVersion']==1"
 
-  chamar "rec-18/agendamentos/{id}/checkin (POST, agendamento inexistente)" 404 POST "$API/api/v1/agendamentos/$INEXISTENTE/checkin" "$(corpo_versao 0)" "$TOKEN"
+# 25c. inicio de atendimento depois do check-in: grava dtInicioAtendimento, nao mexe em dtCheckin.
+chamar "rec-18/agendamentos/{id}/inicio-atendimento (POST)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/inicio-atendimento" "$(corpo_versao 1)" "$TOKEN"
+afirmar "rec-18/inicio grava dtInicioAtendimento, etapa EM_ATENDIMENTO, dtCheckin intacta" \
+  "d['dtInicioAtendimento'] is not None and d['dsEtapaRecepcao']=='EM_ATENDIMENTO' and d['dtCheckin']=='$DT_CHECKIN_1' and d['nrVersion']==2"
 
-  # 25d. AGH2: walk-in (entra direto, sem check-in) + versao velha => 409.
-  chamar "rec-18/agendamentos (POST, hoje, walk-in)" 201 POST "$API/api/v1/agendamentos" \
-    "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "$DT_AGORA_CLINICA" CONSULTA)" "$TOKEN"
-  ID_AGH2=$(campo_opcional idAgendamento)
-  if [ -n "$ID_AGH2" ]; then
-    chamar "rec-18/agendamentos/{id}/checkin (POST, versao velha)" 409 POST "$API/api/v1/agendamentos/$ID_AGH2/checkin" "$(corpo_versao 7)" "$TOKEN"
-    chamar "rec-18/agendamentos/{id}/inicio-atendimento (POST, walk-in sem check-in)" 200 POST "$API/api/v1/agendamentos/$ID_AGH2/inicio-atendimento" "$(corpo_versao 0)" "$TOKEN"
-    afirmar "rec-18/walk-in: inicio NAO inventa dtCheckin (A-6)" \
-      "d['dtCheckin'] is None and d['dtInicioAtendimento'] is not None and d['dsEtapaRecepcao']=='EM_ATENDIMENTO'"
-  else
-    echo "FALHA  rec-18: sem idAgendamento do walk-in — checks de 409/walk-in pulados"
-    FALHAS=$((FALHAS+1))
-  fi
+chamar "rec-18/agendamentos/{id}/checkin (POST, agendamento inexistente)" 404 POST "$API/api/v1/agendamentos/$INEXISTENTE/checkin" "$(corpo_versao 0)" "$TOKEN"
 
-  # 25e. AGH3: cancelado => check-in/inicio 422 (so AGENDADO/CONFIRMADO). PATCH /status ja existe
-  # (AgendaController.cs, FM-04) — usado aqui como setup, com seu proprio check.
-  chamar "rec-18/agendamentos (POST, hoje, para cancelar)" 201 POST "$API/api/v1/agendamentos" \
-    "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "$DT_AGORA_CLINICA" CONSULTA)" "$TOKEN"
-  ID_AGH3=$(campo_opcional idAgendamento)
-  if [ -n "$ID_AGH3" ]; then
-    chamar "rec-18/agendamentos/{id}/status (PATCH, cancelar)" 200 PATCH "$API/api/v1/agendamentos/$ID_AGH3/status" \
-      '{ "dsStatus": "CANCELADO", "nrVersion": 0 }' "$TOKEN"
-    chamar "rec-18/agendamentos/{id}/checkin (POST, agendamento CANCELADO)" 422 POST "$API/api/v1/agendamentos/$ID_AGH3/checkin" "$(corpo_versao 1)" "$TOKEN"
-    chamar "rec-18/agendamentos/{id}/inicio-atendimento (POST, agendamento CANCELADO)" 422 POST "$API/api/v1/agendamentos/$ID_AGH3/inicio-atendimento" "$(corpo_versao 1)" "$TOKEN"
-  else
-    echo "FALHA  rec-18: sem idAgendamento do agendamento a cancelar — checks de 422 pulados"
-    FALHAS=$((FALHAS+1))
-  fi
+# 25d. AGH2: walk-in (entra direto, sem check-in) + versao velha => 409.
+chamar "rec-18/agendamentos (POST, hoje, walk-in)" 201 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "$DT_AGORA_CLINICA" CONSULTA)" "$TOKEN"
+ID_AGH2=$(campo_opcional idAgendamento)
+chamar "rec-18/agendamentos/{id}/checkin (POST, versao velha)" 409 POST "$API/api/v1/agendamentos/$ID_AGH2/checkin" "$(corpo_versao 7)" "$TOKEN"
+chamar "rec-18/agendamentos/{id}/inicio-atendimento (POST, walk-in sem check-in)" 200 POST "$API/api/v1/agendamentos/$ID_AGH2/inicio-atendimento" "$(corpo_versao 0)" "$TOKEN"
+afirmar "rec-18/walk-in: inicio NAO inventa dtCheckin (A-6)" \
+  "d['dtCheckin'] is None and d['dtInicioAtendimento'] is not None and d['dsEtapaRecepcao']=='EM_ATENDIMENTO'"
 
-  # 25f. AGD1: amanha 10:00, tutor do bloco 9 (consentimento LEMBRETES aceito + DS_WHATSAPP por
-  # convencao "mesmo numero" da REC-01) => elegivel a D-1. Check-in de amanha e recusado (m-2).
-  chamar "rec-18/agendamentos (POST, amanha, D-1)" 201 POST "$API/api/v1/agendamentos" \
-    "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "${DATA_AMANHA}T10:00:00" CONSULTA)" "$TOKEN"
-  ID_AGD1=$(campo_opcional idAgendamento)
-  if [ -z "$ID_AGD1" ]; then
-    echo "FALHA  rec-18: sem idAgendamento do agendamento de amanha — checks da D-1 pulados"
-    FALHAS=$((FALHAS+1))
-  else
-    chamar "rec-18/agendamentos/{id}/checkin (POST, agendamento de amanha)" 422 POST "$API/api/v1/agendamentos/$ID_AGD1/checkin" "$(corpo_versao 0)" "$TOKEN"
+# 25e. AGH3: cancelado => check-in/inicio 422 (so AGENDADO/CONFIRMADO). PATCH /status ja existe
+# (AgendaController.cs, FM-04) — usado aqui como setup, com seu proprio check.
+chamar "rec-18/agendamentos (POST, hoje, para cancelar)" 201 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "$DT_AGORA_CLINICA" CONSULTA)" "$TOKEN"
+ID_AGH3=$(campo_opcional idAgendamento)
+chamar "rec-18/agendamentos/{id}/status (PATCH, cancelar)" 200 PATCH "$API/api/v1/agendamentos/$ID_AGH3/status" \
+  '{ "dsStatus": "CANCELADO", "nrVersion": 0 }' "$TOKEN"
+chamar "rec-18/agendamentos/{id}/checkin (POST, agendamento CANCELADO)" 422 POST "$API/api/v1/agendamentos/$ID_AGH3/checkin" "$(corpo_versao 1)" "$TOKEN"
+chamar "rec-18/agendamentos/{id}/inicio-atendimento (POST, agendamento CANCELADO)" 422 POST "$API/api/v1/agendamentos/$ID_AGH3/inicio-atendimento" "$(corpo_versao 1)" "$TOKEN"
 
-    # 25g. Luna: confirmacao-pendente (API key). Sem a chave => 401.
-    chamar "rec-18/luna/confirmacao-pendente (GET, sem X-Api-Key)" 401 GET "$API/api/v1/luna/agendamentos/confirmacao-pendente?data=$DATA_AMANHA" ''
-    chamar_apikey "rec-18/luna/confirmacao-pendente (GET)" 200 GET "$API/api/v1/luna/agendamentos/confirmacao-pendente?data=$DATA_AMANHA" ''
-    afirmar "rec-18/confirmacao-pendente CONTEM o agendamento de amanha (corpo nao impresso)" \
-      "any(i['id_agendamento']==$ID_AGD1 and i['id_tutor']==$ID_TUTOR and i['ds_whatsapp'] for i in d)"
+# 25f. AGD1: amanha 10:00, tutor do bloco 9 (consentimento LEMBRETES aceito + DS_WHATSAPP por
+# convencao "mesmo numero" da REC-01) => elegivel a D-1. Check-in de amanha e recusado (m-2).
+chamar "rec-18/agendamentos (POST, amanha, D-1)" 201 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "${DATA_AMANHA}T10:00:00" CONSULTA)" "$TOKEN"
+ID_AGD1=$(campo_opcional idAgendamento)
+[ -n "$ID_AGD1" ] || { echo "FALHA  rec-18: sem idAgendamento do agendamento de amanha — causa dos FALHA em cascata da D-1"; FALHAS=$((FALHAS+1)); }
+chamar "rec-18/agendamentos/{id}/checkin (POST, agendamento de amanha)" 422 POST "$API/api/v1/agendamentos/$ID_AGD1/checkin" "$(corpo_versao 0)" "$TOKEN"
 
-    # 25h. lembrete-enviado: 1a grava, 2a devolve a MESMA data (idempotente); inexistente => 404.
-    chamar_apikey "rec-18/luna/lembrete-enviado (POST)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/lembrete-enviado" ''
-    DT_LEMBRETE_1=$(campo_opcional dt_lembrete_confirmacao)
-    chamar_apikey "rec-18/luna/lembrete-enviado (POST, 2a chamada idempotente)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/lembrete-enviado" ''
-    afirmar "rec-18/2o lembrete-enviado devolve a mesma dt_lembrete_confirmacao" \
-      "d['id_agendamento']==$ID_AGD1 and d['dt_lembrete_confirmacao']=='$DT_LEMBRETE_1' and '$DT_LEMBRETE_1'!=''"
-    chamar_apikey "rec-18/luna/lembrete-enviado (POST, agendamento inexistente)" 404 POST "$API/api/v1/luna/agendamentos/$INEXISTENTE/lembrete-enviado" ''
-    chamar_apikey "rec-18/luna/confirmacao-pendente (GET, depois do lembrete)" 200 GET "$API/api/v1/luna/agendamentos/confirmacao-pendente?data=$DATA_AMANHA" ''
-    afirmar "rec-18/confirmacao-pendente NAO lista mais o agendamento ja lembrado" \
-      "not any(i['id_agendamento']==$ID_AGD1 for i in d)"
+# 25g. Luna: confirmacao-pendente (API key). Sem a chave => 401.
+chamar "rec-18/luna/confirmacao-pendente (GET, sem X-Api-Key)" 401 GET "$API/api/v1/luna/agendamentos/confirmacao-pendente?data=$DATA_AMANHA" ''
+chamar_apikey "rec-18/luna/confirmacao-pendente (GET)" 200 GET "$API/api/v1/luna/agendamentos/confirmacao-pendente?data=$DATA_AMANHA" ''
+afirmar "rec-18/confirmacao-pendente CONTEM o agendamento de amanha (corpo nao impresso)" \
+  "any(i['id_agendamento']==$ID_AGD1 and i['id_tutor']==$ID_TUTOR and i['ds_whatsapp'] for i in d)"
 
-    # 25i. resposta-confirmacao: tutor errado 422, resposta fora do enum 400, inexistente 404,
-    # agendamento CANCELADO 422; SIM => CONFIRMADO; REMARCAR (a partir de CONFIRMADO) NAO muda status.
-    chamar_apikey "rec-18/luna/resposta-confirmacao (POST, tutor que nao e o do agendamento)" 422 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
-      "{ \"id_tutor\": $ID_TUTOR_LUNA, \"resposta\": \"SIM\" }"
-    chamar_apikey "rec-18/luna/resposta-confirmacao (POST, resposta fora do enum)" 400 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
-      "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"TALVEZ\" }"
-    chamar_apikey "rec-18/luna/resposta-confirmacao (POST, agendamento inexistente)" 404 POST "$API/api/v1/luna/agendamentos/$INEXISTENTE/resposta-confirmacao" \
-      "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"SIM\" }"
-    if [ -n "$ID_AGH3" ]; then
-      chamar_apikey "rec-18/luna/resposta-confirmacao (POST, agendamento CANCELADO)" 422 POST "$API/api/v1/luna/agendamentos/$ID_AGH3/resposta-confirmacao" \
-        "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"SIM\" }"
-    fi
-    chamar_apikey "rec-18/luna/resposta-confirmacao (POST, SIM)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
-      "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"SIM\" }"
-    afirmar "rec-18/resposta SIM => ds_status CONFIRMADO" \
-      "d['ds_status']=='CONFIRMADO' and d['ds_resposta_confirmacao']=='SIM'"
-    chamar_apikey "rec-18/luna/resposta-confirmacao (POST, REMARCAR)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
-      "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"REMARCAR\" }"
-    afirmar "rec-18/resposta REMARCAR NAO muda o status (A-10/b)" \
-      "d['ds_status']=='CONFIRMADO' and d['ds_resposta_confirmacao']=='REMARCAR'"
+# 25h. lembrete-enviado: 1a grava, 2a devolve a MESMA data (idempotente); inexistente => 404.
+chamar_apikey "rec-18/luna/lembrete-enviado (POST)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/lembrete-enviado" ''
+DT_LEMBRETE_1=$(campo_opcional dt_lembrete_confirmacao)
+chamar_apikey "rec-18/luna/lembrete-enviado (POST, 2a chamada idempotente)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/lembrete-enviado" ''
+afirmar "rec-18/2o lembrete-enviado devolve a mesma dt_lembrete_confirmacao" \
+  "d['id_agendamento']==$ID_AGD1 and d['dt_lembrete_confirmacao']=='$DT_LEMBRETE_1' and '$DT_LEMBRETE_1'!=''"
+chamar_apikey "rec-18/luna/lembrete-enviado (POST, agendamento inexistente)" 404 POST "$API/api/v1/luna/agendamentos/$INEXISTENTE/lembrete-enviado" ''
+chamar_apikey "rec-18/luna/confirmacao-pendente (GET, depois do lembrete)" 200 GET "$API/api/v1/luna/agendamentos/confirmacao-pendente?data=$DATA_AMANHA" ''
+afirmar "rec-18/confirmacao-pendente NAO lista mais o agendamento ja lembrado" \
+  "not any(i['id_agendamento']==$ID_AGD1 for i in d)"
 
-    # 25j. O que a clinica enxerga na agenda de amanha (REC-09/REC-17): resposta do tutor + origem.
-    chamar "rec-18/agenda (GET, amanha, resposta da D-1 visivel)" 200 GET "$API/api/v1/agenda?dataInicio=$DATA_AMANHA&dataFim=$DATA_AMANHA" '' "$TOKEN"
-    afirmar "rec-18/agenda de amanha mostra dsRespostaConfirmacao=REMARCAR e origem RECEPCAO" \
-      "any(a['idAgendamento']==$ID_AGD1 and a['dsRespostaConfirmacao']=='REMARCAR' and a['dsOrigem']=='RECEPCAO' and a['dsStatus']=='CONFIRMADO' for a in d['agendamentos'])"
-  fi
-fi
+# 25i. resposta-confirmacao: tutor errado 422, resposta fora do enum 400, inexistente 404,
+# agendamento CANCELADO 422; SIM => CONFIRMADO; REMARCAR (a partir de CONFIRMADO) NAO muda status.
+chamar_apikey "rec-18/luna/resposta-confirmacao (POST, tutor que nao e o do agendamento)" 422 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
+  "{ \"id_tutor\": $ID_TUTOR_LUNA, \"resposta\": \"SIM\" }"
+chamar_apikey "rec-18/luna/resposta-confirmacao (POST, resposta fora do enum)" 400 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
+  "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"TALVEZ\" }"
+chamar_apikey "rec-18/luna/resposta-confirmacao (POST, agendamento inexistente)" 404 POST "$API/api/v1/luna/agendamentos/$INEXISTENTE/resposta-confirmacao" \
+  "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"SIM\" }"
+chamar_apikey "rec-18/luna/resposta-confirmacao (POST, agendamento CANCELADO)" 422 POST "$API/api/v1/luna/agendamentos/$ID_AGH3/resposta-confirmacao" \
+  "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"SIM\" }"
+chamar_apikey "rec-18/luna/resposta-confirmacao (POST, SIM)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
+  "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"SIM\" }"
+afirmar "rec-18/resposta SIM => ds_status CONFIRMADO" \
+  "d['ds_status']=='CONFIRMADO' and d['ds_resposta_confirmacao']=='SIM'"
+chamar_apikey "rec-18/luna/resposta-confirmacao (POST, REMARCAR)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/resposta-confirmacao" \
+  "{ \"id_tutor\": $ID_TUTOR, \"resposta\": \"REMARCAR\" }"
+afirmar "rec-18/resposta REMARCAR NAO muda o status (A-10/b)" \
+  "d['ds_status']=='CONFIRMADO' and d['ds_resposta_confirmacao']=='REMARCAR'"
+
+# 25j. O que a clinica enxerga na agenda de amanha (REC-09/REC-17): resposta do tutor + origem.
+chamar "rec-18/agenda (GET, amanha, resposta da D-1 visivel)" 200 GET "$API/api/v1/agenda?dataInicio=$DATA_AMANHA&dataFim=$DATA_AMANHA" '' "$TOKEN"
+afirmar "rec-18/agenda de amanha mostra dsRespostaConfirmacao=REMARCAR e origem RECEPCAO" \
+  "any(a['idAgendamento']==$ID_AGD1 and a['dsRespostaConfirmacao']=='REMARCAR' and a['dsOrigem']=='RECEPCAO' and a['dsStatus']=='CONFIRMADO' for a in d['agendamentos'])"
 
 # 25k. "Agendar" pelo card da triagem (REC-14): agendamento com idTriagemOrigem => origem
 # TRIAGEM_LUNA + urgencia da triagem no item. Usa a triagem do bloco 12d (tutor Luna, MEDIA) e um pet
 # proprio desse tutor (o bloco 12 so cria o tutor).
-if [ -z "${ID_TRIAGEM_LUNA:-}" ]; then
-  echo "FALHA  rec-18: bloco 12d nao devolveu id_triagem — check de origem TRIAGEM_LUNA pulado"
-  FALHAS=$((FALHAS+1))
-else
-  PAYLOAD_PET_TUTOR_LUNA=$(cat <<JSON
+[ -n "${ID_TRIAGEM_LUNA:-}" ] || { echo "FALHA  rec-18: bloco 12d nao devolveu id_triagem — causa dos FALHA em cascata da origem TRIAGEM_LUNA"; FALHAS=$((FALHAS+1)); }
+PAYLOAD_PET_TUTOR_LUNA=$(cat <<JSON
 {
   "idEspecie": 1,
   "idRaca": 1,
@@ -1619,20 +1603,14 @@ else
 }
 JSON
 )
-  chamar "rec-18/setup/pets (pet do tutor da triagem)" 201 POST "$API/api/v1/pets" "$PAYLOAD_PET_TUTOR_LUNA" "$TOKEN"
-  ID_PET_TUTOR_LUNA=$(campo_opcional id)
-  if [ -n "$ID_PET_TUTOR_LUNA" ]; then
-    chamar "rec-18/agendamentos (POST, a partir de triagem)" 201 POST "$API/api/v1/agendamentos" \
-      "$(payload_agendamento "$ID_TUTOR_LUNA" "$ID_PET_TUTOR_LUNA" "${DATA_AMANHA}T11:00:00" CONSULTA "$ID_TRIAGEM_LUNA")" "$TOKEN"
-    afirmar "rec-18/agendamento da triagem: origem TRIAGEM_LUNA e urgencia MEDIA no item" \
-      "d['dsOrigem']=='TRIAGEM_LUNA' and d['dsNivelUrgenciaOrigem']=='MEDIA'"
-    chamar "rec-18/agendamentos (POST, triagem de outro tutor)" 422 POST "$API/api/v1/agendamentos" \
-      "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "${DATA_AMANHA}T12:00:00" CONSULTA "$ID_TRIAGEM_LUNA")" "$TOKEN"
-  else
-    echo "FALHA  rec-18: sem id do pet do tutor da triagem — checks de origem TRIAGEM_LUNA pulados"
-    FALHAS=$((FALHAS+1))
-  fi
-fi
+chamar "rec-18/setup/pets (pet do tutor da triagem)" 201 POST "$API/api/v1/pets" "$PAYLOAD_PET_TUTOR_LUNA" "$TOKEN"
+ID_PET_TUTOR_LUNA=$(campo_opcional id)
+chamar "rec-18/agendamentos (POST, a partir de triagem)" 201 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR_LUNA" "$ID_PET_TUTOR_LUNA" "${DATA_AMANHA}T11:00:00" CONSULTA "${ID_TRIAGEM_LUNA:-null}")" "$TOKEN"
+afirmar "rec-18/agendamento da triagem: origem TRIAGEM_LUNA e urgencia MEDIA no item" \
+  "d['dsOrigem']=='TRIAGEM_LUNA' and d['dsNivelUrgenciaOrigem']=='MEDIA'"
+chamar "rec-18/agendamentos (POST, triagem de outro tutor)" 422 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "${DATA_AMANHA}T12:00:00" CONSULTA "${ID_TRIAGEM_LUNA:-null}")" "$TOKEN"
 
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
