@@ -235,6 +235,21 @@ CONVITE_URL_BASE_APP_TUTOR="${CONVITE_URL_BASE_APP_TUTOR:-https://kura-tutor.ver
 guardar_url_publica_https CONVITE_URL_BASE_APP_TUTOR "$CONVITE_URL_BASE_APP_TUTOR"
 TWILIO_FROM_NUMBER="${TWILIO_FROM_NUMBER:-+14155238886}"
 WEBHOOK_PUBLIC_URL="${WEBHOOK_PUBLIC_URL:-https://kura-webhook-nao-configurado.invalid/webhook/twilio/whatsapp}"
+# REC-18 (KURA_BACKLOG_RECEPCAO.md, A-10). Lembrete de confirmacao D-1 da Luna
+# (settings.py: LEMBRETE_CONFIRMACAO_HABILITADO / LEMBRETE_CONFIRMACAO_HORA). Default
+# DESLIGADO: ligar dispara WhatsApp de verdade, todo dia, para os tutores de amanha.
+# Validado aqui porque o valor entra num manifesto YAML e a Luna (pydantic) so recusa
+# valor invalido na partida do container - melhor falhar antes do deploy.
+LEMBRETE_CONFIRMACAO_HABILITADO="${LEMBRETE_CONFIRMACAO_HABILITADO:-false}"
+LEMBRETE_CONFIRMACAO_HORA="${LEMBRETE_CONFIRMACAO_HORA:-9}"
+case "$LEMBRETE_CONFIRMACAO_HABILITADO" in
+    true|false) ;;
+    *) echo "❌ ERRO: LEMBRETE_CONFIRMACAO_HABILITADO deve ser true ou false (veio '"$LEMBRETE_CONFIRMACAO_HABILITADO"')."; exit 1 ;;
+esac
+case "$LEMBRETE_CONFIRMACAO_HORA" in
+    [0-9]|1[0-9]|2[0-3]) ;;
+    *) echo "❌ ERRO: LEMBRETE_CONFIRMACAO_HORA deve ser um inteiro de 0 a 23 (veio '"$LEMBRETE_CONFIRMACAO_HORA"')."; exit 1 ;;
+esac
 
 # ─── Tabela de segredos gerenciados no Key Vault ─────────────────────────────
 #   VARIAVEL_DE_AMBIENTE|nome-no-cofre|modo
@@ -1156,7 +1171,9 @@ if quer_servico luna-ai; then
         "TWILIO_TOKEN=$TWILIO_TOKEN" \
         "TWILIO_FROM_NUMBER=$TWILIO_FROM_NUMBER" \
         "OPENAI_API_KEY=$OPENAI_API_KEY" \
-        "WEBHOOK_PUBLIC_URL=$WEBHOOK_PUBLIC_URL"
+        "WEBHOOK_PUBLIC_URL=$WEBHOOK_PUBLIC_URL" \
+        "LEMBRETE_CONFIRMACAO_HABILITADO=$LEMBRETE_CONFIRMACAO_HABILITADO" \
+        "LEMBRETE_CONFIRMACAO_HORA=$LEMBRETE_CONFIRMACAO_HORA"
     recriar_container_group "$ACI_LUNA_NAME" "$GERADOS_DIR/aci-luna-ai.yaml"
     echo "  Aguardando health..."
     if ! aguardar_http_ok "http://$LUNA_FQDN:8000/health" 30 20; then

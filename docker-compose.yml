@@ -313,6 +313,16 @@ services:
       # LUNA_SCHEDULER_HORA=8) — aqui so tornamos explicito e configuravel via .env.
       LUNA_SCHEDULER_ENABLED: ${LUNA_SCHEDULER_ENABLED:-false}
       LUNA_SCHEDULER_HORA: ${LUNA_SCHEDULER_HORA:-8}
+      # REC-16/REC-18: lembrete de CONFIRMACAO de consulta na vespera (D-1) por WhatsApp.
+      # Flag e job PROPRIOS, independentes do scheduler de vacina acima (a Luna le a flag em
+      # src/config/settings.py: LEMBRETE_CONFIRMACAO_HABILITADO=False, LEMBRETE_CONFIRMACAO_HORA=9).
+      # Desligado por padrao pelo mesmo motivo do scheduler de vacina: ligar dispara Twilio de
+      # verdade, no horario abaixo, para todo agendamento de amanha cujo tutor tenha WhatsApp e
+      # consentimento LEMBRETES. Ligar so no dia da demo, com o celular do time ja dentro da
+      # sessao do sandbox (join refeito: expira em 3 dias) e dentro da janela de 24h.
+      # LEMBRETE_CONFIRMACAO_HORA e a hora local (0-23) do tick diario.
+      LEMBRETE_CONFIRMACAO_HABILITADO: ${LEMBRETE_CONFIRMACAO_HABILITADO:-false}
+      LEMBRETE_CONFIRMACAO_HORA: ${LEMBRETE_CONFIRMACAO_HORA:-9}
       LOG_LEVEL: INFO
       PYTHONPATH: /app
     depends_on:
