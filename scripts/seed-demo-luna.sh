@@ -89,6 +89,14 @@
 # DE 24h do sandbox, com o celular do time tendo refeito o `join` (sessao expira em 3 dias — G0 item 10):
 # o seed NAO liga nada disso, so deixa o dado pronto.
 #
+# ⚠️ HORA DO TICK (G2 REC-18, m-2): o job D-1 roda UMA vez por dia, em LEMBRETE_CONFIRMACAO_HORA (default 9,
+# hora de Sao Paulo) e mira o dia SEGUINTE (kura-luna-ai confirmacao_d1_service.py: hoje + 1 dia). NAO ha
+# gatilho manual do D-1 (so existe /jobs/lembrete-vacina/executar). Logo: este seed deve rodar ANTES da
+# hora do tick do dia anterior a demo. Rodado DEPOIS dessa hora, o agendamento de amanha ja perdeu o tick de
+# hoje (que miraria amanha) e so seria visto pelo tick de amanha, que mira DEPOIS de amanha: o D-1 fica
+# SEM lembrete. Para o percurso de estande: semeie antes das 9h, ou suba a Luna com LEMBRETE_CONFIRMACAO_HORA
+# uns minutos a frente do horario atual (e confira o log do tick).
+#
 # Pre-requisitos: os mesmos do smoke-contratos.sh — compose de pe (4/4
 # healthy), curl, python (ou python3), docker no PATH. scripts/seed-demo.sh
 # ja deve ter rodado (este script reaproveita a clinica dele).

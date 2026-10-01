@@ -155,6 +155,33 @@ sys.stdout.write(str(len(data)))
 agora_iso() { "$PY" -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))'; }
 AGORA=$(agora_iso)
 
+# ─── Guarda de horario (G2 REC-18, m-1) — ANTES de criar qualquer coisa ──────────────────────
+# O bloco 6b ("dia de clinica") agenda Rex em "agora - 10 min" e Mimi em "agora - 5 min" e depois faz
+# check-in neles; o check-in so e aceito NO DIA do agendamento (AgendaService.cs:439). Entre 00:00 e
+# ~00:10 (America/Sao_Paulo) esses dois horarios caem em ONTEM: o POST passa (encaixe <= 15 min) mas o
+# check-in da 422 FATAL — depois de a clinica ja existir, e a guarda da TASK-58 (abaixo) impede
+# reexecutar: o unico caminho seria `down -v`. Medido por sonda (G2): 00:00:30, 00:04:30 e 00:09:30
+# quebram; 00:11:30 em diante nao. Por isso o script RECUSA rodar de 00:00 a 00:10 (11 min de folga),
+# com mensagem clara, antes de qualquer chamada. Offset fixo -03:00 (Brasil sem horario de verao desde
+# 2019 — mesma premissa do fallback de RelogioClinica.cs). SEED_AGORA_CLINICA_TESTE=HH:MM existe so para
+# testar a guarda sem esperar a meia-noite; nao use em demo real.
+MIN_DESDE_MEIA_NOITE=$("$PY" -c '
+import datetime as d, os, sys
+t = os.environ.get("SEED_AGORA_CLINICA_TESTE")
+if t:
+    h, m = t.split(":")
+    print(int(h) * 60 + int(m))
+else:
+    n = d.datetime.now(d.timezone(d.timedelta(hours=-3)))
+    print(n.hour * 60 + n.minute)
+')
+if [ "$MIN_DESDE_MEIA_NOITE" -lt 11 ]; then
+  echo "erro: sao 00:00-00:10 no horario da clinica (America/Sao_Paulo). O bloco 'dia de clinica' agenda" >&2
+  echo "      'agora - 10 min' (ONTEM nesta janela) e o check-in so vale no dia do agendamento — o seed" >&2
+  echo "      abortaria no meio, com a clinica ja criada, e so um 'down -v' desfaria. Rode depois das 00:11." >&2
+  exit 2
+fi
+
 # ─── credenciais e dados fixos da demo ─────────────────────────────────────
 EMAIL_ACESSO="demo@kura.local"
 SENHA_CLINICA="SenhaDemo123!"
@@ -391,6 +418,8 @@ ID_DOCUMENTO_RECEITUARIO=$(campo id)
 #                                                      que e quem cria o tutor com LEMBRETES + DEMO_WHATSAPP)
 #   + 1 triagem da Luna SEM agendamento (tutor 1) — a origem do botao "Agendar" do card.
 # Horarios: hora LOCAL da clinica (America/Sao_Paulo), sem "Z" (AgendamentoCreateValidator.cs:71-76).
+# JANELA PROIBIDA: de 00:00 a ~00:10 (SP) "agora - 10 min" cai em ontem e o check-in recusaria (422, so no
+# dia). A guarda de horario no inicio do script (antes de criar a clinica) recusa rodar nessa janela.
 # O Brasil nao tem horario de verao desde 2019 (mesma premissa do fallback -03:00 do RelogioClinica.cs),
 # entao o script usa offset fixo -03:00, independente do fuso da maquina.
 # "Check-in agora" e do relogio da clinica no servidor (nao se pode retrodatar): por isso o "esperando ha N
