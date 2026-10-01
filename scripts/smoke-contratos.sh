@@ -1430,6 +1430,10 @@ fi
 
 # afirmar: avalia uma expressao Python sobre `d` (o JSON do ULTIMO BODY_FILE) e imprime so
 # ok/FALHA + o nome. Expressoes sao literais deste script (nunca vem de dado externo).
+# TIMESTAMPS (G2 REC-18, I-1): a 1a resposta de check-in/lembrete e o valor EM MEMORIA do .NET
+# (7 casas); a 2a em diante e RELIDA do Oracle (TIMESTAMP(6), V23:34,35,37). Por isso: (a) 1a x 2a
+# compara com ts() e tolerancia de 1 ms (um overwrite real difere em dezenas de ms; arredondamento
+# de 7->6 casas difere em <= 1 us); (b) 2a x 3a, as duas do banco, comparam a STRING exata.
 afirmar() {  # afirmar <nome> <expressao sobre d>
   local r
   r=$("$PY" -c '
@@ -1437,6 +1441,12 @@ import json, sys
 try:
     with open(sys.argv[2], "r", encoding="utf-8") as f:
         d = json.load(f)
+    import datetime as _dt, re as _re
+    def ts(x):
+        # TIMESTAMP do Oracle tem 6 casas; o .NET em memoria tem 7 (tick de 100 ns). Corta a
+        # fracao em 6 digitos antes de parsear — comparar a STRING crua entre uma resposta
+        # em memoria (1a) e uma relida do banco (2a/3a) da falso FALHA (G2 REC-18, I-1).
+        return _dt.datetime.fromisoformat(_re.sub(r"(\.\d{6})\d+", r"\1", x))
     sys.stdout.write("1" if eval(sys.argv[1]) else "0")
 except Exception:
     sys.stdout.write("E")
@@ -1507,13 +1517,17 @@ DT_CHECKIN_1=$(campo_opcional dtCheckin)
 afirmar "rec-18/checkin grava dtCheckin, etapa CHEGOU, versao 1, status segue AGENDADO (A-2)" \
   "d['dtCheckin'] is not None and d['dsEtapaRecepcao']=='CHEGOU' and d['nrVersion']==1 and d['dsStatus']=='AGENDADO'"
 chamar "rec-18/agendamentos/{id}/checkin (POST, 2a chamada idempotente)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/checkin" "$(corpo_versao 0)" "$TOKEN"
-afirmar "rec-18/2o checkin NAO sobrescreve dtCheckin nem incrementa versao" \
-  "d['dtCheckin']=='$DT_CHECKIN_1' and d['nrVersion']==1"
+DT_CHECKIN_2=$(campo_opcional dtCheckin)
+afirmar "rec-18/2o checkin NAO sobrescreve dtCheckin (1a x 2a, tolerancia 1 ms) nem incrementa versao" \
+  "abs((ts(d['dtCheckin'])-ts('$DT_CHECKIN_1')).total_seconds())<0.001 and d['nrVersion']==1"
+chamar "rec-18/agendamentos/{id}/checkin (POST, 3a chamada idempotente)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/checkin" "$(corpo_versao 0)" "$TOKEN"
+afirmar "rec-18/3o checkin devolve a MESMA dtCheckin da 2a (as duas relidas do banco, string exata)" \
+  "d['dtCheckin']=='$DT_CHECKIN_2' and d['nrVersion']==1"
 
 # 25c. inicio de atendimento depois do check-in: grava dtInicioAtendimento, nao mexe em dtCheckin.
 chamar "rec-18/agendamentos/{id}/inicio-atendimento (POST)" 200 POST "$API/api/v1/agendamentos/$ID_AGH1/inicio-atendimento" "$(corpo_versao 1)" "$TOKEN"
 afirmar "rec-18/inicio grava dtInicioAtendimento, etapa EM_ATENDIMENTO, dtCheckin intacta" \
-  "d['dtInicioAtendimento'] is not None and d['dsEtapaRecepcao']=='EM_ATENDIMENTO' and d['dtCheckin']=='$DT_CHECKIN_1' and d['nrVersion']==2"
+  "d['dtInicioAtendimento'] is not None and d['dsEtapaRecepcao']=='EM_ATENDIMENTO' and d['dtCheckin']=='$DT_CHECKIN_2' and d['nrVersion']==2"
 
 chamar "rec-18/agendamentos/{id}/checkin (POST, agendamento inexistente)" 404 POST "$API/api/v1/agendamentos/$INEXISTENTE/checkin" "$(corpo_versao 0)" "$TOKEN"
 
@@ -1554,8 +1568,12 @@ afirmar "rec-18/confirmacao-pendente CONTEM o agendamento de amanha (corpo nao i
 chamar_apikey "rec-18/luna/lembrete-enviado (POST)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/lembrete-enviado" ''
 DT_LEMBRETE_1=$(campo_opcional dt_lembrete_confirmacao)
 chamar_apikey "rec-18/luna/lembrete-enviado (POST, 2a chamada idempotente)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/lembrete-enviado" ''
-afirmar "rec-18/2o lembrete-enviado devolve a mesma dt_lembrete_confirmacao" \
-  "d['id_agendamento']==$ID_AGD1 and d['dt_lembrete_confirmacao']=='$DT_LEMBRETE_1' and '$DT_LEMBRETE_1'!=''"
+DT_LEMBRETE_2=$(campo_opcional dt_lembrete_confirmacao)
+afirmar "rec-18/2o lembrete-enviado devolve a mesma dt_lembrete_confirmacao (1a x 2a, tolerancia 1 ms)" \
+  "d['id_agendamento']==$ID_AGD1 and '$DT_LEMBRETE_1'!='' and abs((ts(d['dt_lembrete_confirmacao'])-ts('$DT_LEMBRETE_1')).total_seconds())<0.001"
+chamar_apikey "rec-18/luna/lembrete-enviado (POST, 3a chamada idempotente)" 200 POST "$API/api/v1/luna/agendamentos/$ID_AGD1/lembrete-enviado" ''
+afirmar "rec-18/3o lembrete-enviado devolve a MESMA dt da 2a (as duas relidas do banco, string exata)" \
+  "d['dt_lembrete_confirmacao']=='$DT_LEMBRETE_2' and '$DT_LEMBRETE_2'!=''"
 chamar_apikey "rec-18/luna/lembrete-enviado (POST, agendamento inexistente)" 404 POST "$API/api/v1/luna/agendamentos/$INEXISTENTE/lembrete-enviado" ''
 chamar_apikey "rec-18/luna/confirmacao-pendente (GET, depois do lembrete)" 200 GET "$API/api/v1/luna/agendamentos/confirmacao-pendente?data=$DATA_AMANHA" ''
 afirmar "rec-18/confirmacao-pendente NAO lista mais o agendamento ja lembrado" \
