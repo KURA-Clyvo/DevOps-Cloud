@@ -498,6 +498,20 @@ com mensagem clara**, orientando a resetar o ambiente (`docker compose down -v &
 antes de rodar de novo. Requer `curl` e `python`/`python3` no PATH, mesmos pré-requisitos
 do smoke. Não roda no CI pelo mesmo motivo do smoke (exige Oracle real).
 
+**Dia de clínica e D-1 (REC-18, ciclo Recepção).** O `seed-demo.sh` também cria o "dia de clínica"
+(agendamentos de hoje em etapas diferentes — em atendimento, chegou, agendado —, um de amanhã e uma
+triagem da Luna sem agendamento), pelos endpoints da recepção. Dois cuidados operacionais:
+
+- **Janela proibida 00:00–00:10 (America/Sao_Paulo):** nela "agora − 10 min" cai em ontem e o
+  check-in (só vale no dia do agendamento) seria recusado no meio do seed. O script **recusa rodar
+  nessa janela** (`exit 2`, antes de criar a clínica); rode depois das 00:11.
+- **D-1:** o D-1 elegível (tutor com consentimento `LEMBRETES` e o WhatsApp do time) nasce em
+  `DEMO_WHATSAPP=<DDI+DDD+numero> bash scripts/seed-demo-luna.sh` (obrigatório; `SEED_SEM_WHATSAPP=1`
+  para ensaio sem celular). O lembrete só sai com `LEMBRETE_CONFIRMACAO_HABILITADO=true` e roda **uma
+  vez por dia em `LEMBRETE_CONFIRMACAO_HORA` (default 9h, SP), mirando o dia seguinte, sem gatilho
+  manual**: semear **depois** dessa hora deixa o D-1 sem lembrete naquele dia. Semeie antes, ou suba
+  a Luna com a hora alguns minutos à frente.
+
 ---
 
 ## 6. Docker Compose — Detalhamento

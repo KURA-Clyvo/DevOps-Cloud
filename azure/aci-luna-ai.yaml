@@ -111,6 +111,12 @@ properties:
             value: "8000"
           - name: WEBHOOK_PUBLIC_URL
             value: __WEBHOOK_PUBLIC_URL__
+          # REC-16/REC-18: lembrete de confirmacao D-1 por WhatsApp. Desligado por
+          # padrao (deploy.sh default "false") - ligar dispara Twilio de verdade.
+          - name: LEMBRETE_CONFIRMACAO_HABILITADO
+            value: "__LEMBRETE_CONFIRMACAO_HABILITADO__"
+          - name: LEMBRETE_CONFIRMACAO_HORA
+            value: "__LEMBRETE_CONFIRMACAO_HORA__"
           - name: LOG_LEVEL
             value: INFO
           - name: PYTHONPATH

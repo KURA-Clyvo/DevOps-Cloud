@@ -39,7 +39,21 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 API=${API:-http://localhost:8080}
 TUTOR_API=${TUTOR_API:-http://localhost:8081}
 BODY_FILE=$(mktemp)
-trap 'rm -f "$BODY_FILE"' EXIT
+PAYLOAD_FILE=$(mktemp)
+trap 'rm -f "$BODY_FILE" "$PAYLOAD_FILE"' EXIT
+
+# REC-18: a triagem sem agendamento do "dia de clinica" (bloco 6b) e escrita pelos mesmos endpoints
+# que a Luna usa (X-Api-Key, nao Bearer). Mesma leitura de smoke-contratos.sh / seed-demo-luna.sh:
+# env var, senao o .env deste repo (o mesmo arquivo que o compose usa). Checado ANTES de qualquer POST
+# — faltar a chave no meio do fluxo deixaria a demo pela metade.
+LUNA_API_KEY=${LUNA_API_KEY:-}
+if [ -z "$LUNA_API_KEY" ] && [ -f .env ]; then
+  LUNA_API_KEY=$(grep -m1 '^LUNA_API_KEY=' .env | cut -d= -f2- || true)
+fi
+if [ -z "$LUNA_API_KEY" ]; then
+  echo "erro: LUNA_API_KEY nao definido (nem env var, nem .env deste repo) — necessario para semear a triagem do dia de clinica (bloco 6b)." >&2
+  exit 2
+fi
 
 PY=python
 command -v python >/dev/null 2>&1 || PY=python3
@@ -58,8 +72,33 @@ fi
 chamar() {  # chamar <nome> <esperado> <metodo> <url> <payload> [token]
   local nome=$1 esperado=$2 metodo=$3 url=$4 payload=$5 token=${6:-}
   local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url"
-              -H 'Content-Type: application/json' -d "$payload")
+              -H 'Content-Type: application/json')
+  # REC-18: corpo por ARQUIVO, nunca por argumento (-d "$payload" corrompe byte nao-ASCII no Git Bash
+  # do Windows — mesmo achado do G4 do FIX_7, ver smoke-contratos.sh). Sem corpo (GET), nada e enviado.
+  if [ -n "$payload" ]; then
+    printf '%s' "$payload" > "$PAYLOAD_FILE"
+    args+=(--data-binary "@$PAYLOAD_FILE")
+  fi
   [ -n "$token" ] && args+=(-H "Authorization: Bearer $token")
+  local code; code=$(curl "${args[@]}")
+  if [ "$code" != "$esperado" ]; then
+    echo "ERRO   $nome: esperado $esperado, obtido $code" >&2
+    head -c 500 "$BODY_FILE" >&2; echo >&2
+    exit 1
+  fi
+  echo "ok     $nome ($code)"
+}
+
+# REC-18: variante de chamar() para os endpoints server-a-servidor da Luna (X-Api-Key, nao Bearer —
+# LunaApiKeyAuthFilter.cs). FATAL como chamar().
+chamar_apikey() {  # chamar_apikey <nome> <esperado> <metodo> <url> <payload>
+  local nome=$1 esperado=$2 metodo=$3 url=$4 payload=$5
+  local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url"
+              -H 'Content-Type: application/json' -H "X-Api-Key: $LUNA_API_KEY")
+  if [ -n "$payload" ]; then
+    printf '%s' "$payload" > "$PAYLOAD_FILE"
+    args+=(--data-binary "@$PAYLOAD_FILE")
+  fi
   local code; code=$(curl "${args[@]}")
   if [ "$code" != "$esperado" ]; then
     echo "ERRO   $nome: esperado $esperado, obtido $code" >&2
@@ -115,6 +154,33 @@ sys.stdout.write(str(len(data)))
 
 agora_iso() { "$PY" -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))'; }
 AGORA=$(agora_iso)
+
+# ─── Guarda de horario (G2 REC-18, m-1) — ANTES de criar qualquer coisa ──────────────────────
+# O bloco 6b ("dia de clinica") agenda Rex em "agora - 10 min" e Mimi em "agora - 5 min" e depois faz
+# check-in neles; o check-in so e aceito NO DIA do agendamento (AgendaService.cs:439). Entre 00:00 e
+# ~00:10 (America/Sao_Paulo) esses dois horarios caem em ONTEM: o POST passa (encaixe <= 15 min) mas o
+# check-in da 422 FATAL — depois de a clinica ja existir, e a guarda da TASK-58 (abaixo) impede
+# reexecutar: o unico caminho seria `down -v`. Medido por sonda (G2): 00:00:30, 00:04:30 e 00:09:30
+# quebram; 00:11:30 em diante nao. Por isso o script RECUSA rodar de 00:00 a 00:10 (11 min de folga),
+# com mensagem clara, antes de qualquer chamada. Offset fixo -03:00 (Brasil sem horario de verao desde
+# 2019 — mesma premissa do fallback de RelogioClinica.cs). SEED_AGORA_CLINICA_TESTE=HH:MM existe so para
+# testar a guarda sem esperar a meia-noite; nao use em demo real.
+MIN_DESDE_MEIA_NOITE=$("$PY" -c '
+import datetime as d, os, sys
+t = os.environ.get("SEED_AGORA_CLINICA_TESTE")
+if t:
+    h, m = t.split(":")
+    print(int(h) * 60 + int(m))
+else:
+    n = d.datetime.now(d.timezone(d.timedelta(hours=-3)))
+    print(n.hour * 60 + n.minute)
+')
+if [ "$MIN_DESDE_MEIA_NOITE" -lt 11 ]; then
+  echo "erro: sao 00:00-00:10 no horario da clinica (America/Sao_Paulo). O bloco 'dia de clinica' agenda" >&2
+  echo "      'agora - 10 min' (ONTEM nesta janela) e o check-in so vale no dia do agendamento — o seed" >&2
+  echo "      abortaria no meio, com a clinica ja criada, e so um 'down -v' desfaria. Rode depois das 00:11." >&2
+  exit 2
+fi
 
 # ─── credenciais e dados fixos da demo ─────────────────────────────────────
 EMAIL_ACESSO="demo@kura.local"
@@ -333,6 +399,126 @@ ID_EVENTO_PRESCRICAO=$(campo idEventoClinico)
 chamar "eventos-clinicos/{id}/receituario" 200 POST "$API/api/v1/eventos-clinicos/$ID_EVENTO_PRESCRICAO/receituario" '{}' "$TOKEN"
 ID_DOCUMENTO_RECEITUARIO=$(campo id)
 
+# ─── 6b. REC-18: "dia de clinica" — a tela "Hoje" da recepcao nao nasce vazia ─────────
+# Tudo pelos endpoints REAIS da recepcao (nunca SQL, nunca migration — a regra do cabecalho vale
+# aqui tambem): POST /api/v1/agendamentos (REC-10) e POST .../checkin | .../inicio-atendimento
+# (REC-11), contrato lido em backend-clinica-dotnet origin/main 81d5a58 (AgendamentoCreateDto.cs:11-30,
+# RegistrarEventoRecepcaoDto.cs:10; AgendaService.cs: check-in/inicio so NO DIA do agendamento, :439/:476;
+# encaixe: no maximo 15 min no passado). A PK vem da SEQ_AGENDAMENTO pelo mapeamento do EF (REC-10/V23)
+# — este script nao escolhe id nenhum.
+#
+# O que a tela "Hoje" mostra depois deste bloco (etapas = DsEtapaRecepcao):
+#   Rex     (hoje, "agora - 10 min")  EM_ATENDIMENTO  (check-in + inicio)
+#   Mimi    (hoje, "agora - 5 min")   CHEGOU          ("esperando ha N min" cresce durante a demo)
+#   Bolinha (hoje, "agora")           AGENDADO
+#   Rex     (hoje, "agora + 2 h")     AGENDADO        (retorno; limitado a 23:59 de hoje)
+#   Bolinha (AMANHA 09:30)            AGENDADO        (aparece na visao Semana; NAO e D-1: o tutor 2
+#                                                      nao tem consentimento LEMBRETES nem WhatsApp do
+#                                                      time. O D-1 elegivel nasce em seed-demo-luna.sh,
+#                                                      que e quem cria o tutor com LEMBRETES + DEMO_WHATSAPP)
+#   + 1 triagem da Luna SEM agendamento (tutor 1) — a origem do botao "Agendar" do card.
+# Horarios: hora LOCAL da clinica (America/Sao_Paulo), sem "Z" (AgendamentoCreateValidator.cs:71-76).
+# JANELA PROIBIDA: de 00:00 a ~00:10 (SP) "agora - 10 min" cai em ontem e o check-in recusaria (422, so no
+# dia). A guarda de horario no inicio do script (antes de criar a clinica) recusa rodar nessa janela.
+# O Brasil nao tem horario de verao desde 2019 (mesma premissa do fallback -03:00 do RelogioClinica.cs),
+# entao o script usa offset fixo -03:00, independente do fuso da maquina.
+# "Check-in agora" e do relogio da clinica no servidor (nao se pode retrodatar): por isso o "esperando ha N
+# min" de Mimi comeca em ~0 no instante do seed e cresce ate a demo.
+clinica_delta_min() { "$PY" -c "import datetime as d; print((d.datetime.now(d.timezone(d.timedelta(hours=-3)))+d.timedelta(minutes=$1)).strftime('%Y-%m-%dT%H:%M:%S'))"; }
+clinica_hoje_mais_tarde() {  # agora + 2 h, mas nunca depois das 23:59 de HOJE
+  "$PY" -c '
+import datetime as d
+n = d.datetime.now(d.timezone(d.timedelta(hours=-3)))
+t = n + d.timedelta(hours=2)
+if t.date() != n.date():
+    t = n.replace(hour=23, minute=59, second=0, microsecond=0)
+print(t.strftime("%Y-%m-%dT%H:%M:%S"))'
+}
+clinica_amanha_hora() { "$PY" -c "import datetime as d; print((d.datetime.now(d.timezone(d.timedelta(hours=-3)))+d.timedelta(days=1)).strftime('%Y-%m-%dT$1'))"; }
+
+payload_agendamento() {  # payload_agendamento <idTutor> <idPet> <dtAgendamento> <dsTipo> <observacao>
+  cat <<JSON
+{
+  "idTutor": $1,
+  "idPet": $2,
+  "idVeterinario": $ID_VETERINARIO,
+  "dtAgendamento": "$3",
+  "duracao": 30,
+  "dsTipo": "$4",
+  "dsObservacoes": "$5"
+}
+JSON
+}
+
+# Rex: em atendimento (check-in, depois inicio — versao 0 -> 1 -> 2)
+chamar "agendamentos (hoje, Rex, em atendimento)" 201 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR_1" "$ID_PET_1" "$(clinica_delta_min -10)" CONSULTA "Consulta de rotina (demo)")" "$TOKEN"
+ID_AG_REX=$(campo idAgendamento)
+chamar "agendamentos/{id}/checkin (Rex)" 200 POST "$API/api/v1/agendamentos/$ID_AG_REX/checkin" '{ "nrVersion": 0 }' "$TOKEN"
+chamar "agendamentos/{id}/inicio-atendimento (Rex)" 200 POST "$API/api/v1/agendamentos/$ID_AG_REX/inicio-atendimento" '{ "nrVersion": 1 }' "$TOKEN"
+
+# Mimi: chegou (so check-in)
+chamar "agendamentos (hoje, Mimi, chegou)" 201 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR_1" "$ID_PET_2" "$(clinica_delta_min -5)" CONSULTA "Pele irritada (demo)")" "$TOKEN"
+ID_AG_MIMI=$(campo idAgendamento)
+chamar "agendamentos/{id}/checkin (Mimi)" 200 POST "$API/api/v1/agendamentos/$ID_AG_MIMI/checkin" '{ "nrVersion": 0 }' "$TOKEN"
+
+# Bolinha: agendado agora; Rex: retorno mais tarde hoje; Bolinha: amanha (visao Semana, NAO e D-1)
+chamar "agendamentos (hoje, Bolinha, agendado)" 201 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR_2" "$ID_PET_3" "$(clinica_delta_min 0)" CONSULTA "Primeira consulta (demo)")" "$TOKEN"
+chamar "agendamentos (hoje, Rex, retorno mais tarde)" 201 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR_1" "$ID_PET_1" "$(clinica_hoje_mais_tarde)" RETORNO "Retorno (demo)")" "$TOKEN"
+chamar "agendamentos (amanha 09:30, Bolinha)" 201 POST "$API/api/v1/agendamentos" \
+  "$(payload_agendamento "$ID_TUTOR_2" "$ID_PET_3" "$(clinica_amanha_hora 09:30:00)" VACINA "Vacina (demo)")" "$TOKEN"
+
+# Triagem da Luna SEM agendamento (tutor 1) — mesmo par de endpoints que o InboundMessageService chama
+# (X-Api-Key). Mensagem/urgencia/score/sintomas/versao: a triagem MEDIA do seed-demo-luna.sh (que
+# documenta te-los obtido do motor real, TriageEngine.classificar, regras 1.3) — nao inventei valor novo.
+PAYLOAD_INTERACAO_TRIAGEM=$(cat <<JSON
+{
+  "id_tutor": $ID_TUTOR_1,
+  "ds_canal": "WHATSAPP",
+  "ds_direcao": "INBOUND",
+  "ds_conteudo": "meu cachorro vomitou de manha, mas parece bem",
+  "dt_recebimento": "$AGORA",
+  "ds_metadados": null
+}
+JSON
+)
+chamar_apikey "luna/interactions (triagem sem agendamento, tutor 1)" 201 POST "$API/api/v1/luna/interactions" "$PAYLOAD_INTERACAO_TRIAGEM"
+ID_INTERACAO_TRIAGEM=$(campo id_interacao)
+PAYLOAD_TRIAGEM=$(cat <<JSON
+{
+  "id_interacao": $ID_INTERACAO_TRIAGEM,
+  "id_tutor": $ID_TUTOR_1,
+  "sintomas": ["vomitou"],
+  "ds_urgencia": "MEDIA",
+  "nr_score": 3,
+  "ds_recomendacao": "Classificacao heuristica (DS_REGRAS_VERSAO=1.3) - nao substitui avaliacao veterinaria.",
+  "regras_versao": "1.3"
+}
+JSON
+)
+chamar_apikey "luna/triage (MEDIA, sem agendamento, tutor 1)" 201 POST "$API/api/v1/luna/triage" "$PAYLOAD_TRIAGEM"
+ID_TRIAGEM_SEM_AGENDAMENTO=$(campo id_triagem)
+
+# Prova pelo CORPO (nao so status): a agenda de hoje tem as 3 etapas esperadas.
+DATA_HOJE_CLINICA=$("$PY" -c 'import datetime as d; print(d.datetime.now(d.timezone(d.timedelta(hours=-3))).strftime("%Y-%m-%d"))')
+chamar "agenda (verificacao do dia de clinica)" 200 GET "$API/api/v1/agenda?dataInicio=$DATA_HOJE_CLINICA&dataFim=$DATA_HOJE_CLINICA" '' "$TOKEN"
+ETAPAS_HOJE=$("$PY" -c '
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    d = json.load(f)
+e = sorted(a["dsEtapaRecepcao"] for a in d["agendamentos"])
+sys.stdout.write(",".join(e))
+' "$BODY_FILE")
+if [ "$ETAPAS_HOJE" != "AGENDADO,AGENDADO,CHEGOU,EM_ATENDIMENTO" ]; then
+  echo "ERRO: etapas da agenda de hoje = '$ETAPAS_HOJE', esperado 'AGENDADO,AGENDADO,CHEGOU,EM_ATENDIMENTO' (2 agendados, 1 chegou, 1 em atendimento)." >&2
+  exit 1
+fi
+echo "ok     agenda de hoje tem as etapas esperadas: $ETAPAS_HOJE"
+echo
+
 # ─── 7. Verificacao final: login "normal" (nao o token de registro) + pets nao vazio ──
 # Simula o que um operador faria numa proxima sessao de demo: logar, nao reusar o token
 # do registro. Confirma via GET /api/v1/pets (nao so presume pela resposta dos POSTs
@@ -393,4 +579,6 @@ echo "\"Gerar novo convite\" (QR/link prontos pro app do tutor) — OU use o val
 echo "salvo em ./$CONVITES_LOCAL_FILE (arquivo local, gitignored, nunca impresso aqui)."
 echo "Pets: Rex (id $ID_PET_1), Mimi (id $ID_PET_2), Bolinha (id $ID_PET_3)"
 echo "Consulta: idEventoClinico $ID_EVENTO_CONSULTA"
+echo "Dia de clinica (REC-18): hoje 4 agendamentos ($ETAPAS_HOJE) + 1 amanha (Bolinha 09:30, sem D-1) + triagem $ID_TRIAGEM_SEM_AGENDAMENTO sem agendamento (tutor 1)"
+echo "D-1 elegivel (tutor com LEMBRETES + WhatsApp do time): rode DEMO_WHATSAPP=<numero> bash scripts/seed-demo-luna.sh em seguida"
 echo "Prescricao + receituario: idEventoClinico $ID_EVENTO_PRESCRICAO, idDocumento $ID_DOCUMENTO_RECEITUARIO"
