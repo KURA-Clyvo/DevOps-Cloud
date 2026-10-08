@@ -37,9 +37,10 @@ TUTOR_API=${TUTOR_API:-http://localhost:8081}
 # no kura-api e KURA_API_KEY no luna-ai (docker-compose.yml:109/210) — nao duplicada.
 # Aceita override por env var (padrao API/TUTOR_API acima); sem override, le do .env
 # deste repo, que e o mesmo arquivo que o compose usa.
+. ./scripts/lib-env.sh   # ler_chave_env: leitura tolerante do .env (G4-I1)
 LUNA_API_KEY=${LUNA_API_KEY:-}
 if [ -z "$LUNA_API_KEY" ] && [ -f .env ]; then
-  LUNA_API_KEY=$(grep -m1 '^LUNA_API_KEY=' .env | cut -d= -f2-)
+  LUNA_API_KEY=$(ler_chave_env LUNA_API_KEY .env)
 fi
 if [ -z "$LUNA_API_KEY" ]; then
   echo "erro: LUNA_API_KEY nao definido (nem env var, nem .env deste repo) — necessario para os checks server-a-servidor da Luna (ver chamar_apikey)." >&2
@@ -57,7 +58,7 @@ fi
 LUNA_URL=${LUNA_URL:-http://localhost:8000}
 LUNA_INBOUND_API_KEY=${LUNA_INBOUND_API_KEY:-}
 if [ -z "$LUNA_INBOUND_API_KEY" ] && [ -f .env ]; then
-  LUNA_INBOUND_API_KEY=$(grep -m1 '^LUNA_INBOUND_API_KEY=' .env | cut -d= -f2-)
+  LUNA_INBOUND_API_KEY=$(ler_chave_env LUNA_INBOUND_API_KEY .env)
 fi
 
 FALHAS=0
