@@ -338,3 +338,22 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 5. TUNNEL-GATEWAY — REC-05b (KURA_BACKLOG_RECEPCAO.md). OPCIONAL: so sobe com
+  #    `--profile tunnel` (scripts/tunnel-up.sh). nginx unico que multiplexa as 3
+  #    APIs por prefixo (/clinica, /tutor, /luna) para caber num hostname
+  #    de quick tunnel. NAO roteia o Oracle. Porta so em 127.0.0.1 (o cloudflared roda no host).
+  #    EXPOE as 3 APIs ao publico enquanto o tunel estiver ligado.
+  # ───────────────────────────────────────────────────────────────────────────
+  tunnel-gateway:
+    image: nginx:1.27-alpine
+    container_name: kura_tunnel_gateway
+    profiles: ["tunnel"]
+    restart: "no"
+    ports:
+      - "127.0.0.1:8088:8088"
+    volumes:
+      - ./tunnel/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - kura-net

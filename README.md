@@ -670,6 +670,69 @@ YOLO_WEIGHTS_PATH      → caminho dos pesos YOLOv8n
 
 ---
 
+## 6b. Túnel Cloudflare para os apps hospedados na Vercel (REC-05b)
+
+Os apps `kura-clinica.vercel.app` e `kura-tutor.vercel.app` chamam as APIs por rewrites
+`/proxy/clinica|tutor|luna/*` (`vercel.json` de cada app). Sem um backend público, a tela abre
+e criar conta/login dá `502`. O destino público é **este compose, na máquina da demo, atrás de
+um Cloudflare *quick tunnel* grátis** (sem conta, sem login) — ligado só nos dias de demo.
+
+```
+celular/navegador → Vercel (/proxy/tutor/x) → https://<aleatorio>.trycloudflare.com/tutor/x
+   → cloudflared → 127.0.0.1:8088 (tunnel-gateway, nginx) → kura-tutor:8081 /x
+```
+
+O `tunnel-gateway` (profile `tunnel`, `tunnel/nginx.conf`) multiplexa as 3 APIs por prefixo
+(`/clinica`→`kura-api:8080`, `/tutor`→`kura-tutor:8081`, `/luna`→`luna-ai:8000`, prefixo
+removido) porque o túnel tem **um** hostname. Qualquer outro path é `404`. **O Oracle não
+é roteado** (nem `stream{}`, nem porta publicada; o gateway só escuta em `127.0.0.1:8088`).
+Sem `--profile tunnel` o serviço nem existe (`docker compose config --services` mostra 5).
+
+### Passo a passo
+
+1. **Uma vez por máquina:** baixar o `cloudflared` (release do GitHub `cloudflare/cloudflared`,
+   `cloudflared-windows-amd64.exe`) para uma pasta do `PATH`. Nenhuma conta, nenhum login.
+2. Compose de pé e `healthy` (`docker compose up -d`).
+3. `bash scripts/tunnel-up.sh` — sobe só o gateway (`--no-deps`, não recria os `kura_*`), abre o
+   quick tunnel, espera a URL responder e **reescreve os `/proxy/*` dos `vercel.json`** dos
+   checkouts `../mobile-clinica-rn` e `../mobile-tutor-rn` (outros caminhos:
+   `CLINICA_APP_DIR`/`TUTOR_APP_DIR`). Não commita e não faz deploy.
+4. **Deploy (manual):** em cada app, a partir do checkout com o `vercel.json` reescrito,
+   `vercel deploy --prod` (requer `vercel login` e o projeto linkado — `.vercel/project.json`;
+   no `mobile-clinica-rn` existe, no `mobile-tutor-rn` rode `vercel link` antes). A **URL muda a
+   cada subida**, então são 2 deploys por demo. Efeito colateral: um deploy disparado por *push*
+   no git volta a usar o `vercel.json` **commitado** (placeholder `SUBSTITUIR-PELO-TUNEL`), ou
+   seja, desfaz o apontamento — redeploy manual depois de qualquer push.
+5. **Obrigatório com o túnel:** em `.env`, `FOTO_URL_BASE=https://kura-clinica.vercel.app/proxy/clinica`
+   e `CONVITE_URL_BASE_APP_TUTOR=https://kura-tutor.vercel.app`, depois
+   `docker compose up -d kura-api kura-tutor` (recria só esses 2). Não é só para a foto abrir:
+   sem `FOTO_URL_BASE` o `.NET` deriva `http://<host-do-túnel>/api/v1/fotos/…` (sem `/clinica`,
+   foto `404`) **e devolve o hostname do túnel no JSON de `/pets` para qualquer cliente**.
+6. Ao terminar: `bash scripts/tunnel-up.sh down` (derruba cloudflared + gateway; `kura_*`
+   intocados) e `git checkout -- vercel.json` nos 2 apps para descartar a reescrita local.
+
+### Limites e cuidados
+
+- 🔴 **Senha da clínica demo é pública** (`seed-demo.sh`, repo público). `tunnel-up.sh` **recusa subir**
+  se `demo@kura.local` ainda logar com ela: defina `DEMO_SENHA` (env ou `.env`) e re-semeie
+  (`seed-demo.sh` e `seed-demo-luna.sh` leem `DEMO_SENHA`; sem ela, usam o default de sempre), ou
+  `docker compose down -v`. Aceitar o risco: `TUNNEL_ACEITA_SENHA_PUBLICA=1`. Com cadastro real de
+  tutores na recepção, nunca ligue o túnel com a senha pública.
+- 🔴 **NÃO coloque `EXPO_PUBLIC_LUNA_API_KEY` na Vercel.** O bundle hospedado não leva `X-API-Key` para
+  `/proxy/luna`, então **pelo túnel só `/luna/health` funciona no app hospedado** (o resto dá 401).
+  "Consertar" isso publicaria no bundle a chave que, pelo túnel, autoriza `POST /luna/whatsapp/enviar`
+  com a Twilio real do compose.
+- O gateway repassa a URI **decodificada** ao backend (`%2F` vira `/`). Nenhum service dos apps usa
+  segmento de path codificado hoje; quem criar rota assim precisa saber disso.
+- Reexecutar `tunnel-up.sh` gera URL nova (e mata o túnel anterior que o próprio script abriu): o app já
+  deployado com a URL velha perde o backend até o próximo deploy. O `down` só mata o cloudflared que o
+  script iniciou (PID em arquivo no diretório temporário); outro cloudflared da máquina não é tocado.
+- 🔴 **Enquanto ligado, as 3 APIs ficam públicas** (qualquer um com a URL). Ligue para a demo, desligue depois.
+- Quick tunnel não tem SLA nem garantia de uptime; suficiente para demo, não para produção.
+- **Por que não ngrok:** o plano grátis responde a `GET` com `User-Agent` de navegador (inclusive o
+  `<img>` da foto do pet, que não manda header custom) com uma página HTML de aviso em vez da API.
+  Cloudflare quick tunnel não tem essa página (medido: 200 `application/json` e `image/png`).
+
 ## 7. Deploy em ACR/ACI (produção)
 
 Produção roda em **Azure Container Instances**: um container group por serviço, imagens

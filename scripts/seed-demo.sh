@@ -184,7 +184,16 @@ fi
 
 # ─── credenciais e dados fixos da demo ─────────────────────────────────────
 EMAIL_ACESSO="demo@kura.local"
-SENHA_CLINICA="SenhaDemo123!"
+SENHA_CLINICA="${DEMO_SENHA:-}"
+if [ -z "$SENHA_CLINICA" ] && [ -f "$(dirname "$0")/../.env" ]; then
+  # le SO esta chave do .env (sem `source`: nao exporta segredo nenhum)
+  SENHA_CLINICA=$(grep -E '^DEMO_SENHA=' "$(dirname "$0")/../.env" | tail -1 | cut -d= -f2- | tr -d '\r"')
+fi
+# REC-05b (I-1 do G2): este default esta num repo PUBLICO. Com o tunel ligado ele vira login
+# remoto na clinica demo — para a demo ao vivo defina DEMO_SENHA (env ou .env) ANTES de semear.
+# O default segue so para nao quebrar quem ja usa; scripts/tunnel-up.sh recusa subir se o
+# login com ele ainda funcionar.
+SENHA_CLINICA="${SENHA_CLINICA:-SenhaDemo123!}"
 
 # CNPJ valido (formato 00.000.000/0000-00, exigido por RegisterClinicaValidator.NrCnpj),
 # pre-computado uma unica vez com o mesmo algoritmo (modulo 11, filial 0001) de
