@@ -46,6 +46,15 @@
 # `https://kura-clinica.vercel.app/proxy/clinica` (default em deploy.sh,
 # sobrescrevível por env/`.env`). MESMO valor no aci-java-api.yaml — ver o
 # achado sobre a rota do tutor lá.
+#
+# REC-05 (KURA_BACKLOG_RECEPCAO.md, A-8) — __CONVITE_URL_BASE_APP_TUTOR__:
+# NÃO é segredo (`value` puro, mesma família de __FOTO_URL_BASE__ acima). Só
+# este container (Convite__UrlBaseAppTutor ← GeradorLinkConvite.cs) — o Java
+# não usa. Diferente de __FOTO_URL_BASE__: aponta para o APP DO TUTOR
+# hospedado (mobile-tutor-rn na Vercel), nunca para este próprio ACI nem para
+# o app da clínica — o link do convite (QR/WhatsApp) é aberto pelo celular do
+# tutor fora de qualquer request a esta API. Default em deploy.sh:
+# `https://kura-tutor.vercel.app`.
 # =============================================================================
 apiVersion: '2021-10-01'
 location: __LOCATION__
@@ -116,6 +125,10 @@ properties:
           # Ver cabeçalho: NÃO é segredo, e NÃO usa o default do compose local.
           - name: Foto__UrlBase
             value: __FOTO_URL_BASE__
+          # REC-05 (A-8) — ver cabeçalho: NÃO é segredo, aponta para o app do
+          # tutor hospedado (Vercel), não para este ACI.
+          - name: Convite__UrlBaseAppTutor
+            value: __CONVITE_URL_BASE_APP_TUTOR__
         volumeMounts:
           # Equivalente ao named volume kura_storage_documentos do compose: os
           # PDFs são dado de negócio e não podem viver na camada gravável do

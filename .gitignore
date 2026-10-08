@@ -5,3 +5,7 @@ CLAUDE.md
 # azure/deploy.sh gera isto antes de chamar `az container create`; o conteúdo
 # leva segredo em texto e é recriado a cada execução.
 azure/.generated/
+
+# REC-05 (fix wave G2, m-seed): token/link de convite em texto puro, gerado
+# por scripts/seed-demo.sh a cada execução — nunca versionar.
+seed-demo-convites.local.txt
