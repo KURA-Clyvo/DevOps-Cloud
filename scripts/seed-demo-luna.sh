@@ -102,6 +102,7 @@
 # ja deve ter rodado (este script reaproveita a clinica dele).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+. ./scripts/lib-env.sh   # ler_chave_env: leitura tolerante do .env (G4-I1)
 
 API=${API:-http://localhost:8080}
 TUTOR_API=${TUTOR_API:-http://localhost:8081}
@@ -110,7 +111,7 @@ TUTOR_API=${TUTOR_API:-http://localhost:8081}
 # senao le do .env deste repo (mesmo arquivo que o compose usa).
 LUNA_API_KEY=${LUNA_API_KEY:-}
 if [ -z "$LUNA_API_KEY" ] && [ -f .env ]; then
-  LUNA_API_KEY=$(grep -m1 '^LUNA_API_KEY=' .env | cut -d= -f2-)
+  LUNA_API_KEY=$(ler_chave_env LUNA_API_KEY .env)
 fi
 if [ -z "$LUNA_API_KEY" ]; then
   echo "erro: LUNA_API_KEY nao definido (nem env var, nem .env) — necessario para semear as triagens." >&2
@@ -273,9 +274,10 @@ echo
 # ─── credenciais fixas da clinica de demo (scripts/seed-demo.sh) ───────────
 EMAIL_ACESSO="demo@kura.local"
 SENHA_CLINICA="${DEMO_SENHA:-}"
-if [ -z "$SENHA_CLINICA" ] && [ -f "$(dirname "$0")/../.env" ]; then
-  # le SO esta chave do .env (sem `source`: nao exporta segredo nenhum)
-  SENHA_CLINICA=$(grep -E '^DEMO_SENHA=' "$(dirname "$0")/../.env" | tail -1 | cut -d= -f2- | tr -d '\r"')
+if [ -z "$SENHA_CLINICA" ]; then
+  # le SO esta chave do .env (sem `source`: nao exporta segredo nenhum). Tolerante: sem a chave
+  # (caso padrao — o .env.example a traz comentada) devolve vazio e cai no default abaixo (G4-I1).
+  SENHA_CLINICA=$(ler_chave_env DEMO_SENHA)
 fi
 # REC-05b (I-1 do G2): este default esta num repo PUBLICO. Com o tunel ligado ele vira login
 # remoto na clinica demo — para a demo ao vivo defina DEMO_SENHA (env ou .env) ANTES de semear.

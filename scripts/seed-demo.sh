@@ -35,6 +35,7 @@
 # de operar: para gerar uma demo nova, resete o ambiente primeiro (ver mensagem de erro).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+. ./scripts/lib-env.sh   # ler_chave_env: leitura tolerante do .env (G4-I1)
 
 API=${API:-http://localhost:8080}
 TUTOR_API=${TUTOR_API:-http://localhost:8081}
@@ -185,9 +186,10 @@ fi
 # ─── credenciais e dados fixos da demo ─────────────────────────────────────
 EMAIL_ACESSO="demo@kura.local"
 SENHA_CLINICA="${DEMO_SENHA:-}"
-if [ -z "$SENHA_CLINICA" ] && [ -f "$(dirname "$0")/../.env" ]; then
-  # le SO esta chave do .env (sem `source`: nao exporta segredo nenhum)
-  SENHA_CLINICA=$(grep -E '^DEMO_SENHA=' "$(dirname "$0")/../.env" | tail -1 | cut -d= -f2- | tr -d '\r"')
+if [ -z "$SENHA_CLINICA" ]; then
+  # le SO esta chave do .env (sem `source`: nao exporta segredo nenhum). Tolerante: sem a chave
+  # (caso padrao — o .env.example a traz comentada) devolve vazio e cai no default abaixo (G4-I1).
+  SENHA_CLINICA=$(ler_chave_env DEMO_SENHA)
 fi
 # REC-05b (I-1 do G2): este default esta num repo PUBLICO. Com o tunel ligado ele vira login
 # remoto na clinica demo — para a demo ao vivo defina DEMO_SENHA (env ou .env) ANTES de semear.

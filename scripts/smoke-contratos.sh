@@ -37,9 +37,10 @@ TUTOR_API=${TUTOR_API:-http://localhost:8081}
 # no kura-api e KURA_API_KEY no luna-ai (docker-compose.yml:109/210) — nao duplicada.
 # Aceita override por env var (padrao API/TUTOR_API acima); sem override, le do .env
 # deste repo, que e o mesmo arquivo que o compose usa.
+. ./scripts/lib-env.sh   # ler_chave_env: leitura tolerante do .env (G4-I1)
 LUNA_API_KEY=${LUNA_API_KEY:-}
 if [ -z "$LUNA_API_KEY" ] && [ -f .env ]; then
-  LUNA_API_KEY=$(grep -m1 '^LUNA_API_KEY=' .env | cut -d= -f2-)
+  LUNA_API_KEY=$(ler_chave_env LUNA_API_KEY .env)
 fi
 if [ -z "$LUNA_API_KEY" ]; then
   echo "erro: LUNA_API_KEY nao definido (nem env var, nem .env deste repo) — necessario para os checks server-a-servidor da Luna (ver chamar_apikey)." >&2
@@ -57,7 +58,7 @@ fi
 LUNA_URL=${LUNA_URL:-http://localhost:8000}
 LUNA_INBOUND_API_KEY=${LUNA_INBOUND_API_KEY:-}
 if [ -z "$LUNA_INBOUND_API_KEY" ] && [ -f .env ]; then
-  LUNA_INBOUND_API_KEY=$(grep -m1 '^LUNA_INBOUND_API_KEY=' .env | cut -d= -f2-)
+  LUNA_INBOUND_API_KEY=$(ler_chave_env LUNA_INBOUND_API_KEY .env)
 fi
 
 FALHAS=0
@@ -1102,7 +1103,39 @@ fi
 #     entao nenhum envio acontece mesmo com a chave certa. So roda se
 #     LUNA_INBOUND_API_KEY estiver disponivel (env ou .env); sem ela, so (a).
 chamar "jobs/lembrete-vacina/executar (POST, sem X-API-Key)" 401 POST "$LUNA_URL/jobs/lembrete-vacina/executar" '' ""
-if [ -n "$LUNA_INBOUND_API_KEY" ]; then
+
+# REC-19 fix wave (G4-I2): a precondicao "Twilio vazio" acima era so comentario — no G4 da REC-19 o
+# smoke rodou com a Luna COM credencial e o sub-check (b) mandou um WhatsApp REAL (NOTIFICACAO
+# ST_ENVIO=ENVIADA). Agora o script MEDE antes: envio real e possivel se a Luna que vai receber a
+# chamada tem TWILIO_SID *e* TWILIO_TOKEN preenchidos. Fonte, em ordem: (1) o container
+# kura_luna_ai em execucao (o que de fato roda: o shell do `up` > .env ja foi resolvido la);
+# (2) sem container legivel, o env do shell, depois o .env deste repo (o que o compose leria).
+# Possivel => (b) e PULADO (nem ok nem falha; vai para o resumo). Override consciente e
+# explicito: SMOKE_PERMITE_ENVIO_REAL=1 (NUNCA contra um ambiente com numero real semeado).
+# Nunca imprime valor de credencial (so o tamanho > 0).
+twilio_envio_real_possivel() {
+  local sid tok
+  if [ "$(docker inspect -f '{{.State.Running}}' kura_luna_ai 2>/dev/null | tr -d '\r')" = "true" ]; then
+    sid=$(docker exec kura_luna_ai printenv TWILIO_SID 2>/dev/null | tr -d '\r' || true)
+    tok=$(docker exec kura_luna_ai printenv TWILIO_TOKEN 2>/dev/null | tr -d '\r' || true)
+  else
+    sid=${TWILIO_SID:-}; tok=${TWILIO_TOKEN:-}
+    [ -n "$sid" ] || sid=$(ler_chave_env TWILIO_SID .env)
+    [ -n "$tok" ] || tok=$(ler_chave_env TWILIO_TOKEN .env)
+  fi
+  [ -n "$sid" ] && [ -n "$tok" ]
+}
+PULADOS=0
+LISTA_PULADOS=""
+PULAR_22B=""
+if [ -n "$LUNA_INBOUND_API_KEY" ] && [ "${SMOKE_PERMITE_ENVIO_REAL:-}" != "1" ] && twilio_envio_real_possivel; then
+  PULAR_22B=1
+fi
+if [ -n "$PULAR_22B" ]; then
+  echo "PULADO jobs/lembrete-vacina/executar (POST, com X-API-Key): a Luna tem TWILIO_SID/TWILIO_TOKEN preenchidos — o job ENVIARIA WhatsApp real. Para rodar: suba a luna com Twilio vazio (TWILIO_SID= TWILIO_TOKEN= docker compose up -d luna-ai) ou SMOKE_PERMITE_ENVIO_REAL=1 (so em ambiente sem numero real semeado)."
+  PULADOS=$((PULADOS+1))
+  LISTA_PULADOS="jobs/lembrete-vacina/executar (com X-API-Key) [22b]"
+elif [ -n "$LUNA_INBOUND_API_KEY" ]; then
   chamar_luna_inbound() {  # chamar_luna_inbound <nome> <esperado> <metodo> <url>
     local nome=$1 esperado=$2 metodo=$3 url=$4
     local args=(-s -o "$BODY_FILE" -w '%{http_code}' -X "$metodo" "$url" -H "X-API-Key: $LUNA_INBOUND_API_KEY")
@@ -1632,6 +1665,9 @@ chamar "rec-18/agendamentos (POST, triagem de outro tutor)" 422 POST "$API/api/v
 
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
+if [ "$PULADOS" -gt 0 ]; then
+  echo "=== $PULADOS check(s) PULADO(S) (nao contam como ok nem como falha): $LISTA_PULADOS ==="
+fi
 if [ "$FALHAS" -eq 0 ]; then
   echo "=== smoke-contratos.sh: TUDO OK (0 falhas) ==="
 else
