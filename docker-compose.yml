@@ -105,7 +105,11 @@ services:
     networks:
       - kura-net
     healthcheck:
-      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand('ping').ok\" | grep -qx 1"]
+      # --host "$(hostname)" (IP do container) e DE PROPOSITO, nao localhost: no 1o boot a
+      # imagem sobe um mongod temporario so em 127.0.0.1 para criar o root e rodar initdb;
+      # um ping em localhost ficaria healthy nessa fase e o mongo-init pegaria ECONNREFUSED
+      # (medido na LOJA-02). O IP do container so responde quando o mongod definitivo sobe.
+      test: ["CMD-SHELL", "mongosh --quiet --host \"$$(hostname)\" --eval \"db.adminCommand('ping').ok\" | grep -qx 1"]
       interval: 10s
       timeout: 5s
       retries: 10
