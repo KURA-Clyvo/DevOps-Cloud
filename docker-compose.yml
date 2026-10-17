@@ -18,6 +18,11 @@ volumes:
   # (não precisa de `-v` para sumir: a troca de container já é suficiente).
   kura-storage-documentos:
     name: kura_storage_documentos
+  # S4-LOJA-02: dados do MongoDB da Loja (catalogo_loja, carrinho, pedidos_loja...).
+  # NUNCA remover com `down -v` num ambiente com pedido real: o mongo-init recria role
+  # e usuario sozinho, mas nao recria dado.
+  kura-mongo-data:
+    name: kura_mongo_data
 
 # ─── Rede Interna ─────────────────────────────────────────────────────────────
 networks:
@@ -79,6 +84,57 @@ services:
       STORAGE_BASE_PATH: ${STORAGE_BASE_PATH:-/data/kura/receituarios}
     volumes:
       - kura-storage-documentos:${STORAGE_BASE_PATH:-/data/kura/receituarios}
+    networks:
+      - kura-net
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1.6. MONGODB 7.0 — banco de documentos da Loja (S4-LOJA-02)
+  #      Sem `ports:` de proposito: so a rede kura-net alcanca o Mongo (host nao).
+  #      Root so serve ao mongo-init; o Java usa o usuario kura_java (role
+  #      kura_java_runtime, privilegio por colecao). Ver README, secao MongoDB.
+  # ───────────────────────────────────────────────────────────────────────────
+  kura-mongo:
+    image: mongo:7.0.45-jammy
+    container_name: kura_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${KURA_MONGO_ROOT_USER:-kura_root}
+      MONGO_INITDB_ROOT_PASSWORD: ${KURA_MONGO_ROOT_PASSWORD:?defina KURA_MONGO_ROOT_PASSWORD no .env (openssl rand -hex 24)}
+    volumes:
+      - kura-mongo-data:/data/db
+    networks:
+      - kura-net
+    healthcheck:
+      # --host "$(hostname)" (IP do container) e DE PROPOSITO, nao localhost: no 1o boot a
+      # imagem sobe um mongod temporario so em 127.0.0.1 para criar o root e rodar initdb;
+      # um ping em localhost ficaria healthy nessa fase e o mongo-init pegaria ECONNREFUSED
+      # (medido na LOJA-02). O IP do container so responde quando o mongod definitivo sobe.
+      test: ["CMD-SHELL", "mongosh --quiet --host \"$$(hostname)\" --eval \"db.adminCommand('ping').ok\" | grep -qx 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # One-shot (padrao do kura-storage-init): roda a cada `up`, aplica SO role e usuario
+  # (idempotente), sai 0. Schema e indices sao do runner do Java (LOJA-03).
+  # NINGUEM depende deste servico — nem o kura-tutor: com o Mongo fora ele falha, e um
+  # depends_on service_completed_successfully impediria o kura-tutor de subir (classe S3D-10).
+  mongo-init:
+    image: mongo:7.0.45-jammy
+    container_name: kura_mongo_init
+    restart: "no"
+    depends_on:
+      kura-mongo:
+        condition: service_healthy
+    environment:
+      KURA_MONGO_ROOT_USER: ${KURA_MONGO_ROOT_USER:-kura_root}
+      KURA_MONGO_ROOT_PASSWORD: ${KURA_MONGO_ROOT_PASSWORD:?defina KURA_MONGO_ROOT_PASSWORD no .env (openssl rand -hex 24)}
+      KURA_MONGO_JAVA_PASSWORD: ${KURA_MONGO_JAVA_PASSWORD:?defina KURA_MONGO_JAVA_PASSWORD no .env (openssl rand -hex 24)}
+    volumes:
+      - ./mongo/init:/scripts:ro
+    entrypoint: ["sh", "-c"]
+    command:
+      - "exec mongosh --host kura-mongo --quiet -u \"$$KURA_MONGO_ROOT_USER\" -p \"$$KURA_MONGO_ROOT_PASSWORD\" --authenticationDatabase admin --file /scripts/01-roles-usuarios.js"
     networks:
       - kura-net
 
@@ -235,6 +291,12 @@ services:
       # base divergente não invalida a URL; manter a mesma aqui é só conveniência.
       FOTO_URL_BASE: ${FOTO_URL_BASE:-http://localhost:8080}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://localhost:19006}
+      # S4-LOJA-02: Mongo da Loja. Usuario kura_java vive em kura_docs (authSource).
+      # serverSelectionTimeoutMS curto: Mongo fora falha rapido em vez de pendurar 30 s.
+      # A senha e hex (openssl rand -hex 24) para dispensar URL-encode.
+      # SEM depends_on no kura-mongo/mongo-init de proposito (S3D-10): o Mongo fora nao
+      # pode impedir o kura-tutor de subir; o runner do Java tolera e reaplica no proximo boot.
+      SPRING_DATA_MONGODB_URI: mongodb://kura_java:${KURA_MONGO_JAVA_PASSWORD:?defina KURA_MONGO_JAVA_PASSWORD no .env (openssl rand -hex 24)}@kura-mongo:27017/kura_docs?authSource=kura_docs&serverSelectionTimeoutMS=2000
     depends_on:
       oracle-db:
         condition: service_healthy
