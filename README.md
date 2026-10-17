@@ -670,6 +670,35 @@ YOLO_WEIGHTS_PATH      → caminho dos pesos YOLOv8n
 
 ---
 
+## 6a. MongoDB da Loja (S4-LOJA-02)
+
+O compose sobe um MongoDB 7.0 (`kura-mongo`, volume nomeado `kura_mongo_data`) para a Loja do
+tutor. Ele **não publica porta no host**: só os containers da rede `kura-net` o alcançam. Um
+serviço one-shot, `mongo-init`, roda a cada `up`, aplica **só** a role e o usuário do Java
+(idempotente) e sai com `0`; schema e índices são do próprio `backend-tutor-java`.
+**Nenhum serviço depende do `mongo-init`** (nem o `kura-tutor`): com o Mongo fora, o `kura-tutor`
+sobe do mesmo jeito.
+
+| Variável (`.env`) | Para quê |
+|---|---|
+| `KURA_MONGO_ROOT_USER` | usuário root (default `kura_root`) |
+| `KURA_MONGO_ROOT_PASSWORD` | senha do root; obrigatória (`openssl rand -hex 24`) |
+| `KURA_MONGO_JAVA_PASSWORD` | senha do usuário `kura_java`; obrigatória; hex, para dispensar URL-encode na URI |
+
+O usuário `kura_java` vive no database `kura_docs` (`authSource=kura_docs`) e tem a role
+`kura_java_runtime`: privilégios **por coleção** (`catalogo_loja`, `carrinho`, `pedidos_loja`,
+`documentos_tutor`), só leitura em `laudos` (dono: `.NET`), sem `drop*`. Conferir a role:
+
+```bash
+docker exec -it kura_mongo mongosh -u "$KURA_MONGO_ROOT_USER" --authenticationDatabase admin kura_docs   --eval 'db.getRole("kura_java_runtime", {showPrivileges: true})'   # pede a senha do root
+```
+
+Mudar um privilégio: editar `mongo/init/01-roles-usuarios.js` e `docker compose up -d mongo-init`
+(sem apagar o volume). Rotacionar a senha do Java: trocar `KURA_MONGO_JAVA_PASSWORD` e
+`docker compose up -d mongo-init kura-tutor`.
+
+---
+
 ## 6b. Túnel Cloudflare para os apps hospedados na Vercel (REC-05b)
 
 Os apps `kura-clinica.vercel.app` e `kura-tutor.vercel.app` chamam as APIs por rewrites
