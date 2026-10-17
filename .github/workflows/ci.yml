@@ -74,6 +74,8 @@ jobs:
           JAVA_JWT_SECRET=ci-dummy-java-jwt-secret-not-a-real-secret-00000000000000000000
           WEBHOOK_PUBLIC_URL=https://ci-dummy.invalid/webhook
           FOTO_URL_SECRET=ci-dummy-foto-url-secret-at-least-32-bytes-0000
+          KURA_MONGO_ROOT_PASSWORD=ci-dummy-mongo-root-password
+          KURA_MONGO_JAVA_PASSWORD=ci-dummy-mongo-java-password
           EOF
 
       - name: docker compose config (with dummy .env)
