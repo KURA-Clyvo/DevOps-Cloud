@@ -1663,6 +1663,14 @@ afirmar "rec-18/agendamento da triagem: origem TRIAGEM_LUNA e urgencia MEDIA no 
 chamar "rec-18/agendamentos (POST, triagem de outro tutor)" 422 POST "$API/api/v1/agendamentos" \
   "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "${DATA_AMANHA}T12:00:00" CONSULTA "${ID_TRIAGEM_LUNA:-null}")" "$TOKEN"
 
+# ─── 26. tutor/loja/catalogo (S4-LOJA-04) ───────────────────────────────────
+# Origem: LojaCatalogoController (GET /v1/loja/catalogo, context-path /api) @ java-backend 98fb53e.
+# 200 com lista VAZIA nao cumpre o contrato: o Mongo fora do ar da 503, mas o seed desligado da
+# 200 + content=[]; por isso a asserção exige >= 1 produto E o aviso LITERAL (D-S4-6,
+# LojaAviso.java; o texto e escrito aqui de proposito, nao lido da API).
+chamar "tutor/loja/catalogo (GET)" 200 GET "$TUTOR_API/api/v1/loja/catalogo" '' "$TUTOR_TOKEN"
+afirmar "tutor/loja/catalogo: >= 1 produto e aviso literal de pre-lancamento" "len(d['content'])>=1 and d['aviso']=='Pré-lançamento: pagamento e entrega serão ativados quando os parceiros logísticos concluírem a integração. Nenhuma cobrança é feita.'"
+
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
 if [ "$PULADOS" -gt 0 ]; then

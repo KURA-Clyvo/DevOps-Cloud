@@ -297,6 +297,10 @@ services:
       # SEM depends_on no kura-mongo/mongo-init de proposito (S3D-10): o Mongo fora nao
       # pode impedir o kura-tutor de subir; o runner do Java tolera e reaplica no proximo boot.
       SPRING_DATA_MONGODB_URI: mongodb://kura_java:${KURA_MONGO_JAVA_PASSWORD:?defina KURA_MONGO_JAVA_PASSWORD no .env (openssl rand -hex 24)}@kura-mongo:27017/kura_docs?authSource=kura_docs&serverSelectionTimeoutMS=2000
+      # S4-LOJA-04 (m-5): runner de schema/indices e seed de exemplo vem DESLIGADOS no Java
+      # (dev/teste nao tocam o Mongo); so o compose liga. Seed = D-LOJA-10 (catalogo exemplo=true).
+      KURA_LOJA_MONGO_INIT_ENABLED: "true"
+      KURA_LOJA_SEED_EXEMPLO_ENABLED: "true"
     depends_on:
       oracle-db:
         condition: service_healthy
