@@ -53,7 +53,7 @@ c=$(login_tutor "$EMAIL_PRINCIPAL" "$SENHA_PRINCIPAL")
 if [ "$c" = "200" ]; then
   echo "pula   principal ($EMAIL_PRINCIPAL): login ja devolve 200"
 elif [ "$c" = "423" ]; then
-  echo "ERRO: conta principal BLOQUEADA (423: 5 senhas erradas, janela de 15 min). Aguarde e rode de novo; nao reemito convite." >&2; exit 1
+  echo "AVISO  principal BLOQUEADA (423: 5 senhas erradas, janela de 15 min) — nao reemito convite; a verificacao final vai falhar ate destravar"
 else
   echo "info   principal: login devolveu $c — reemitindo convite e registrando"
   : > "$PAY"; c=$(http GET "$API/api/v1/tutores" "$TOKEN")
