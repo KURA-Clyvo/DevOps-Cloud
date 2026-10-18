@@ -1664,12 +1664,41 @@ chamar "rec-18/agendamentos (POST, triagem de outro tutor)" 422 POST "$API/api/v
   "$(payload_agendamento "$ID_TUTOR" "$ID_PET" "${DATA_AMANHA}T12:00:00" CONSULTA "${ID_TRIAGEM_LUNA:-null}")" "$TOKEN"
 
 # ─── 26. tutor/loja/catalogo (S4-LOJA-04) ───────────────────────────────────
-# Origem: LojaCatalogoController (GET /v1/loja/catalogo, context-path /api) @ java-backend 98fb53e.
+# Origem: LojaCatalogoController (GET /v1/loja/catalogo, context-path /api) @ java-backend 98fb53e (NX-04 abaixo).
 # 200 com lista VAZIA nao cumpre o contrato: o Mongo fora do ar da 503, mas o seed desligado da
 # 200 + content=[]; por isso a asserção exige >= 1 produto E o aviso LITERAL (D-S4-6,
 # LojaAviso.java; o texto e escrito aqui de proposito, nao lido da API).
 chamar "tutor/loja/catalogo (GET)" 200 GET "$TUTOR_API/api/v1/loja/catalogo" '' "$TUTOR_TOKEN"
 afirmar "tutor/loja/catalogo: >= 1 produto e aviso literal de pre-lancamento" "len(d['content'])>=1 and d['aviso']=='Pré-lançamento: pagamento e entrega serão ativados quando os parceiros logísticos concluírem a integração. Nenhuma cobrança é feita.'"
+
+# NX-04 (foto do produto): TODO item do catalogo traz imagem{url,urlThumb,alt} e o arquivo e servido SEM token
+# (o <Image> do app nao manda Authorization) com 200 e content-type image/webp, nas duas variantes. O catalogo
+# em si continua 401 sem token (so a imagem e publica). Origem: ItemCatalogoResponse.Imagem @ java-backend
+# (branch feat/nx-04-imagem-produto); a URL e RELATIVA a base da API, montada no Java.
+afirmar "tutor/loja/catalogo (NX-04): todo item traz imagem{url,urlThumb,alt} com alt e caminho /api/loja/imagens/"   "len(d['content'])>=1 and all(i.get('imagem') and i['imagem']['url'].startswith('/api/loja/imagens/') and i['imagem']['urlThumb'].endswith('_256.webp') and len(i['imagem']['alt'])>=5 for i in d['content'])"
+chamar "tutor/loja/catalogo (GET sem token => 401, so a imagem e publica)" 401 GET "$TUTOR_API/api/v1/loja/catalogo" ''
+IMAGENS_LOJA=$("$PY" -c "
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    d = json.load(f)
+sys.stdout.write(d['imagem']['url'] + ' ' + d['imagem']['urlThumb'])
+" <(curl -s "$TUTOR_API/api/v1/loja/catalogo?size=1" -H "Authorization: Bearer $TUTOR_TOKEN" | "$PY" -c "import json,sys; print(json.dumps(json.load(sys.stdin)['content'][0]))") 2>/dev/null) || IMAGENS_LOJA=""
+if [ -z "$IMAGENS_LOJA" ]; then
+  echo "FALHA  tutor/loja/imagens: o 1o item do catalogo nao tem imagem.url (nao ha o que baixar)"
+  FALHAS=$((FALHAS+1))
+else
+  for caminho in $IMAGENS_LOJA; do
+    CODE_IMG=$(curl -s -o "$BODY_FILE" -D "$BODY_FILE.hdr" -w '%{http_code}' "$TUTOR_API$caminho")
+    TIPO_IMG=$(grep -i '^content-type:' "$BODY_FILE.hdr" | tr -d '' | head -1 | sed 's/^[^:]*: *//')
+    if [ "$CODE_IMG" = "200" ] && [ "$TIPO_IMG" = "image/webp" ] && [ -s "$BODY_FILE" ]; then
+      echo "ok     tutor/loja/imagens GET sem token $caminho (200, $TIPO_IMG, $(wc -c < "$BODY_FILE") bytes)"
+    else
+      echo "FALHA  tutor/loja/imagens GET sem token $caminho: esperado 200 image/webp, obtido $CODE_IMG '$TIPO_IMG'"
+      FALHAS=$((FALHAS+1))
+    fi
+  done
+  rm -f "$BODY_FILE.hdr"
+fi
 
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
