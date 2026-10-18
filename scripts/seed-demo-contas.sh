@@ -46,12 +46,14 @@ login_tutor() { printf '{ "email": "%s", "senha": "%s" }' "$1" "$2" > "$PAY"; ht
 
 printf '{ "dsEmail": "%s", "dsSenha": "%s" }' "$EMAIL_CLINICA" "$SENHA_CLINICA" > "$PAY"
 [ "$(http POST "$API/api/v1/auth/login")" = "200" ] || { echo "ERRO: login da clinica $EMAIL_CLINICA falhou. Rode antes: bash scripts/seed-demo.sh" >&2; exit 1; }
-TOKEN=$(json accessToken)
+TOKEN=$(json accessToken); ID_VETERINARIO=$(json usuario.id)
 
 # --- principal -----------------------------------------------------------------
 c=$(login_tutor "$EMAIL_PRINCIPAL" "$SENHA_PRINCIPAL")
 if [ "$c" = "200" ]; then
   echo "pula   principal ($EMAIL_PRINCIPAL): login ja devolve 200"
+elif [ "$c" = "423" ]; then
+  echo "ERRO: conta principal BLOQUEADA (423: 5 senhas erradas, janela de 15 min). Aguarde e rode de novo; nao reemito convite." >&2; exit 1
 else
   echo "info   principal: login devolveu $c — reemitindo convite e registrando"
   : > "$PAY"; c=$(http GET "$API/api/v1/tutores" "$TOKEN")
@@ -71,8 +73,36 @@ for t in d:
   else echo "ERRO: register-invite devolveu $c" >&2; head -c 300 "$BODY" >&2; echo >&2; exit 1; fi
 fi
 
-# --- verificacao final das duas contas ------------------------------------------
+# --- NX-08: vacina a vencer para Rex (+10 dias) e Mimi (+20 dias) -----------------
+# A aba Saude do app do tutor le GET /api/v1/tutor/pets/{id}/vacinas (VW_VACINAS_VENCENDO: proxima dose nos
+# proximos 30 dias, por pet). Sem vacina semeada a aba abre vazia. A data e' RELATIVA a hoje (UTC), por isso
+# o seed precisa ser re-rodado no dia do evento. Pela API do .NET, como a clinica registra: POST
+# /eventos-clinicos/vacinas. IDEMPOTENTE: se o pet ja tem proxima dose futura (GET /pets/{id}/proximas-vacinas
+# nao vazio), nao cria outra.
 FALHAS=0
+vacina_pet() { # vacina_pet <nome_pet> <dias> <nome_vacina>
+  local nome=$1 dias=$2 vac=$3 c id n dt agora payload
+  : > "$PAY"; c=$(http GET "$API/api/v1/pets?pageSize=100" "$TOKEN")
+  [ "$c" = "200" ] || { echo "FALHA  vacina $nome: GET /pets HTTP $c"; FALHAS=$((FALHAS+1)); return; }
+  id=$("$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1],encoding="utf-8"))
+for p in d:
+    if p.get("nmPet")==sys.argv[2] and any(t.get("nmTutor")==sys.argv[3] for t in p.get("tutores",[])): print(p["id"]); break' "$(nat "$BODY")" "$nome" "$NOME_PRINCIPAL")
+  [ -n "$id" ] || { echo "FALHA  vacina: pet $nome do tutor '$NOME_PRINCIPAL' nao existe (rode seed-demo.sh)"; FALHAS=$((FALHAS+1)); return; }
+  : > "$PAY"; c=$(http GET "$API/api/v1/pets/$id/proximas-vacinas" "$TOKEN")
+  n=$("$PY" -c 'import json,sys; print(len(json.load(open(sys.argv[1],encoding="utf-8"))))' "$(nat "$BODY")" 2>/dev/null)
+  if [ "$c" = "200" ] && [ "${n:-0}" -gt 0 ]; then echo "pula   vacina $nome (pet $id): ja tem $n proxima(s) dose(s)"; return; fi
+  agora=$("$PY" -c 'import datetime as d; print(d.datetime.now(d.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))')
+  dt=$("$PY" -c "import datetime as d; print((d.datetime.now(d.timezone.utc)+d.timedelta(days=$dias)).strftime('%Y-%m-%dT%H:%M:%S.%fZ'))")
+  printf '{ "idPet": %s, "idVeterinario": %s, "dtEvento": "%s", "dsObservacao": "Reforco anual - demo do estande (NX-08).", "nmVacina": "%s", "nrLote": "LOTE-DEMO-NX08", "dsFabricante": "Fabricante Demo", "dtProximaDose": "%s" }'     "$id" "$ID_VETERINARIO" "$agora" "$vac" "$dt" > "$PAY"
+  c=$(http POST "$API/api/v1/eventos-clinicos/vacinas" "$TOKEN")
+  if [ "$c" = "201" ]; then echo "ok     vacina $vac em $nome (pet $id): proxima dose em $dias dias"
+  else echo "FALHA  vacina $nome: POST /eventos-clinicos/vacinas HTTP $c"; FALHAS=$((FALHAS+1)); fi
+}
+vacina_pet Rex 10 V10
+vacina_pet Mimi 20 Triplice-Felina
+
+# --- verificacao final das duas contas ------------------------------------------
 verifica() { # verifica <rotulo> <email> <senha>
   local rot=$1 c tk r n nf nomes id urlfoto
   c=$(login_tutor "$2" "$3")

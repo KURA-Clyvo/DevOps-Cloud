@@ -47,11 +47,12 @@ for n in kura_oracle_db kura_dotnet_api kura_java_tutor kura_luna_ai kura_mongo;
 done
 
 # 2. contas de tutor + pets com foto
+TK_PRINCIPAL=""
 conta_tutor() { # conta_tutor <rotulo> <email> <senha>
   local c tk r id url
   c=$(login_tutor "$2" "$3")
   if [ "$c" != "200" ]; then bad "conta $1 ($2): login HTTP $c"; return; fi
-  ok "conta $1 ($2): login 200"; tk=$(json accessToken)
+  ok "conta $1 ($2): login 200"; tk=$(json accessToken); [ "$1" = principal ] && TK_PRINCIPAL=$tk
   : > "$PAY"; c=$(http GET "$TUTOR_API/api/v1/tutor/pets" "$tk")
   r=$("$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8")); d=d.get("content") or [] if isinstance(d,dict) else d
@@ -71,7 +72,8 @@ printf '{ "dsEmail": "demo@kura.local", "dsSenha": "%s" }' "$SENHA_CLINICA" > "$
 c=$(http POST "$API/api/v1/auth/login"); TKC=""; if [ "$c" = "200" ]; then ok "login da clinica demo@kura.local 200"; TKC=$(json accessToken); else bad "login da clinica demo@kura.local HTTP $c"; fi
 
 # 4. Loja (com o token da conta principal)
-TK=""; c=$(login_tutor "$EMAIL_PRINCIPAL" "$SENHA_PRINCIPAL"); [ "$c" = "200" ] && TK=$(json accessToken)
+# reaproveita o token do login da secao 2: NAO loga de novo (cada login errado conta para o bloqueio de 5 / 15 min)
+TK=${TK_PRINCIPAL:-}
 : > "$PAY"; c=$(http GET "$TUTOR_API/api/v1/loja/catalogo?size=50" "$TK")
 if [ "$c" != "200" ]; then bad "catalogo da Loja: HTTP $c (Mongo fora?)"; IMG=""
 else
