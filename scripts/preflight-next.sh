@@ -130,9 +130,9 @@ done
 # e pode servir resposta diferente da do 127.0.0.1; "localhost" resolve para ::1 primeiro em alguns clientes.
 if command -v netstat >/dev/null 2>&1; then
   for porta in 8080 8081; do
-    pid=$(netstat -ano 2>/dev/null | tr -d '' | grep -E "\[::1\]:${porta}[[:space:]].*LISTENING" | awk '{print $NF}' | head -1)
+    pid=$(netstat -ano 2>/dev/null | sed 's/[[:cntrl:]]$//' | grep -E "\[::1\]:${porta}[[:space:]].*LISTENING" | awk '{print $NF}' | head -1)
     [ -z "$pid" ] && continue
-    nome=$(tasklist //FI "PID eq $pid" //NH 2>/dev/null | tr -d '' | awk 'NF{print $1; exit}')
+    nome=$(tasklist //FI "PID eq $pid" //NH 2>/dev/null | sed 's/[[:cntrl:]]$//' | awk 'NF{print $1; exit}')
     case "$nome" in
       com.docker*|docker*|vpnkit*) ;;
       *) echo "AVISO   [::1]:$porta ouvido por '${nome:-pid $pid}' (nao e' o Docker): suba os apps com EXPO_PUBLIC_API_BASE_URL=http://127.0.0.1:$porta" ;;
