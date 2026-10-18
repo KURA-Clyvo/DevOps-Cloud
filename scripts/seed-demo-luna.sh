@@ -285,6 +285,13 @@ fi
 # login com ele ainda funcionar.
 SENHA_CLINICA="${SENHA_CLINICA:-SenhaDemo123!}"
 
+# NX-08: senha da conta RESERVA de tutor (tutor-demo-luna@kura.local) — env ou .env, mesmo padrao das
+# outras. O default (DemoLuna123) e' so fallback e esta num repo PUBLICO: defina DEMO_SENHA_TUTOR_RESERVA
+# antes de semear para o evento (o preflight-next.sh falha se ela nao estiver definida). Nunca impressa.
+SENHA_RESERVA="${DEMO_SENHA_TUTOR_RESERVA:-}"
+if [ -z "$SENHA_RESERVA" ]; then SENHA_RESERVA=$(ler_chave_env DEMO_SENHA_TUTOR_RESERVA); fi
+SENHA_RESERVA="${SENHA_RESERVA:-DemoLuna123}"
+
 # CPF marcador — faixa 99000, mesmo algoritmo (modulo 11) de
 # smoke-contratos.sh:gerar_cpf, a partir da raiz fixa [9,9,0,0,0,1,2,3,4].
 # Fixo de proposito (idempotencia): 2a execucao busca por este CPF antes de
@@ -387,7 +394,7 @@ JSON
   PAYLOAD_REGISTER_INVITE=$(cat <<JSON
 {
   "token": "$INVITE_TOKEN",
-  "senha": "DemoLuna123",
+  "senha": "$SENHA_RESERVA",
   "aceites": [
     { "tipo": "LEMBRETES", "versaoTermo": "v1.0", "aceito": true }
   ]

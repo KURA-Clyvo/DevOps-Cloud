@@ -47,11 +47,12 @@ for n in kura_oracle_db kura_dotnet_api kura_java_tutor kura_luna_ai kura_mongo;
 done
 
 # 2. contas de tutor + pets com foto
+TK_PRINCIPAL=""
 conta_tutor() { # conta_tutor <rotulo> <email> <senha>
   local c tk r id url
   c=$(login_tutor "$2" "$3")
   if [ "$c" != "200" ]; then bad "conta $1 ($2): login HTTP $c"; return; fi
-  ok "conta $1 ($2): login 200"; tk=$(json accessToken)
+  ok "conta $1 ($2): login 200"; tk=$(json accessToken); [ "$1" = principal ] && TK_PRINCIPAL=$tk
   : > "$PAY"; c=$(http GET "$TUTOR_API/api/v1/tutor/pets" "$tk")
   r=$("$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8")); d=d.get("content") or [] if isinstance(d,dict) else d
@@ -68,10 +69,11 @@ conta_tutor reserva "$EMAIL_RESERVA" "$SENHA_RESERVA"
 
 # 3. clinica
 printf '{ "dsEmail": "demo@kura.local", "dsSenha": "%s" }' "$SENHA_CLINICA" > "$PAY"
-c=$(http POST "$API/api/v1/auth/login"); if [ "$c" = "200" ]; then ok "login da clinica demo@kura.local 200"; else bad "login da clinica demo@kura.local HTTP $c"; fi
+c=$(http POST "$API/api/v1/auth/login"); TKC=""; if [ "$c" = "200" ]; then ok "login da clinica demo@kura.local 200"; TKC=$(json accessToken); else bad "login da clinica demo@kura.local HTTP $c"; fi
 
 # 4. Loja (com o token da conta principal)
-TK=""; c=$(login_tutor "$EMAIL_PRINCIPAL" "$SENHA_PRINCIPAL"); [ "$c" = "200" ] && TK=$(json accessToken)
+# reaproveita o token do login da secao 2: NAO loga de novo (cada login errado conta para o bloqueio de 5 / 15 min)
+TK=${TK_PRINCIPAL:-}
 : > "$PAY"; c=$(http GET "$TUTOR_API/api/v1/loja/catalogo?size=50" "$TK")
 if [ "$c" != "200" ]; then bad "catalogo da Loja: HTTP $c (Mongo fora?)"; IMG=""
 else
@@ -97,7 +99,50 @@ if [ -z "$DEMO_SENHA_REAL" ]; then bad "DEMO_SENHA nao definida: a clinica usa a
 elif [ "$DEMO_SENHA_REAL" = "$SENHA_PUBLICA" ]; then bad "DEMO_SENHA igual a senha publica padrao"
 else ok "DEMO_SENHA do evento difere da senha publica padrao"; fi
 
-# 7. smoke opcional
+# 7. NX-08 (I-1): o DIA da clinica — o Hoje precisa de >= 4 agendamentos na data de hoje (fuso SP = UTC-3, sem horario de
+# verao desde 2019). PREFLIGHT_DATA_HOJE=AAAA-MM-DD existe so' para provar por mutacao que o check morde (nao altera dado).
+HOJE=${PREFLIGHT_DATA_HOJE:-$(date -u -d '3 hours ago' +%F)}
+if [ -z "$TKC" ]; then bad "Hoje da clinica: sem token (login da clinica falhou)"
+else
+  : > "$PAY"; c=$(http GET "$API/api/v1/agenda?dataInicio=$HOJE&dataFim=$HOJE" "$TKC")
+  n=$("$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1],encoding="utf-8"))
+print(len([a for a in d.get("agendamentos",[]) if a.get("dsStatus")!="CANCELADO"]))' "$(nat "$BODY")" 2>/dev/null)
+  if [ "$c" = "200" ] && [ "${n:-0}" -ge 4 ] 2>/dev/null; then ok "Hoje da clinica ($HOJE): $n agendamentos (>= 4)"
+  else bad "Hoje da clinica ($HOJE): HTTP $c, ${n:-?} agendamentos (esperado >= 4) — rode seed-demo.sh no dia"; fi
+  # fila da Luna: mesmo intervalo do chip de 7 dias do app (inicio = hoje-6, fim = hoje+1, exclusivo)
+  INI7=$(date -u -d "$HOJE -6 days" +%F); FIM7=$(date -u -d "$HOJE +1 day" +%F)
+  : > "$PAY"; c=$(http GET "$API/api/v1/luna/triagens?dataInicio=$INI7&dataFim=$FIM7&pageSize=100" "$TKC")
+  n=$("$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1],encoding="utf-8")); print(len(d.get("items",[])))' "$(nat "$BODY")" 2>/dev/null)
+  if [ "$c" = "200" ] && [ "${n:-0}" -ge 1 ] 2>/dev/null; then ok "fila da Luna ($INI7..$HOJE): $n triagem(ns) (>= 1)"
+  else bad "fila da Luna ($INI7..$HOJE): HTTP $c, ${n:-?} triagens (esperado >= 1) — rode seed-demo-luna.sh"; fi
+fi
+
+# 8. NX-08 (I-2): senhas dos tutores definidas e diferentes do default publico. Compara strings; NAO tenta login com o
+# default (cada login errado conta para o bloqueio de 5 tentativas / 15 min). Nada e' impresso.
+for par in "DEMO_SENHA_TUTOR:DemoTutor123" "DEMO_SENHA_TUTOR_RESERVA:DemoLuna123"; do
+  k=${par%%:*}; def=${par#*:}; v=$(cfg "$k" "")
+  if [ -z "$v" ]; then bad "$k nao definida (env/.env): a conta usaria a senha padrao publica"
+  elif [ "$v" = "$def" ]; then bad "$k igual a senha padrao publica do script"
+  else ok "$k definida e diferente do default"; fi
+done
+
+# 9. AVISO (nao conta como falha): listener em [::1]:8080/8081 que nao e' o Docker. No Windows o wslrelay escuta em ::1
+# e pode servir resposta diferente da do 127.0.0.1; "localhost" resolve para ::1 primeiro em alguns clientes.
+if command -v netstat >/dev/null 2>&1; then
+  for porta in 8080 8081; do
+    pid=$(netstat -ano 2>/dev/null | sed 's/[[:cntrl:]]$//' | grep -E "\[::1\]:${porta}[[:space:]].*LISTENING" | awk '{print $NF}' | head -1)
+    [ -z "$pid" ] && continue
+    nome=$(tasklist //FI "PID eq $pid" //NH 2>/dev/null | sed 's/[[:cntrl:]]$//' | awk 'NF{print $1; exit}')
+    case "$nome" in
+      com.docker*|docker*|vpnkit*) ;;
+      *) echo "AVISO   [::1]:$porta ouvido por '${nome:-pid $pid}' (nao e' o Docker): suba os apps com EXPO_PUBLIC_API_BASE_URL=http://127.0.0.1:$porta" ;;
+    esac
+  done
+fi
+
+# 10. smoke opcional
 if [ "$COM_SMOKE" = 1 ]; then
   out=$(bash scripts/smoke-contratos.sh 2>&1); rc=$?
   linha=$(printf '%s\n' "$out" | grep -E 'smoke-contratos.sh: ' | tail -1)
