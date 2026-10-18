@@ -1677,12 +1677,14 @@ afirmar "tutor/loja/catalogo: >= 1 produto e aviso literal de pre-lancamento" "l
 # (branch feat/nx-04-imagem-produto); a URL e RELATIVA a base da API, montada no Java.
 afirmar "tutor/loja/catalogo (NX-04): todo item traz imagem{url,urlThumb,alt} com alt e caminho /api/loja/imagens/"   "len(d['content'])>=1 and all(i.get('imagem') and i['imagem']['url'].startswith('/api/loja/imagens/') and i['imagem']['urlThumb'].endswith('_256.webp') and len(i['imagem']['alt'])>=5 for i in d['content'])"
 chamar "tutor/loja/catalogo (GET sem token => 401, so a imagem e publica)" 401 GET "$TUTOR_API/api/v1/loja/catalogo" ''
+curl -s -o "$BODY_FILE.cat" "$TUTOR_API/api/v1/loja/catalogo?size=1" -H "Authorization: Bearer $TUTOR_TOKEN" || true
 IMAGENS_LOJA=$("$PY" -c "
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as f:
-    d = json.load(f)
-sys.stdout.write(d['imagem']['url'] + ' ' + d['imagem']['urlThumb'])
-" <(curl -s "$TUTOR_API/api/v1/loja/catalogo?size=1" -H "Authorization: Bearer $TUTOR_TOKEN" | "$PY" -c "import json,sys; print(json.dumps(json.load(sys.stdin)['content'][0]))") 2>/dev/null) || IMAGENS_LOJA=""
+    d = json.load(f)['content'][0]['imagem']
+sys.stdout.write(d['url'] + ' ' + d['urlThumb'])
+" "$BODY_FILE.cat" 2>/dev/null) || IMAGENS_LOJA=""
+rm -f "$BODY_FILE.cat"
 if [ -z "$IMAGENS_LOJA" ]; then
   echo "FALHA  tutor/loja/imagens: o 1o item do catalogo nao tem imagem.url (nao ha o que baixar)"
   FALHAS=$((FALHAS+1))
