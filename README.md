@@ -519,6 +519,17 @@ triagem da Luna sem agendamento), pelos endpoints da recepção. Dois cuidados o
 
 ---
 
+### Pré-voo do estande (`scripts/seed-demo-contas.sh` + `scripts/preflight-next.sh`)
+
+Duas contas de tutor para o estande NEXT, ambas com pet com foto: **principal** = Tutor Demo Um (`tutor1-demo@kura.local`, Rex e Mimi, senha em `DEMO_SENHA_TUTOR`, default no cabeçalho do script) e **reserva** = Tutor Demo Luna (`tutor-demo-luna@kura.local`, Thor, senha em `DEMO_SENHA_TUTOR_RESERVA`). O compose tem de estar de pé e `seed-demo.sh`, `seed-demo-luna.sh` e `seed-demo-fotos.sh` já rodados.
+
+```bash
+bash scripts/seed-demo-contas.sh          # idempotente: registra o convite do principal se faltar; confere as 2 contas
+bash scripts/preflight-next.sh            # PASSOU/FALHOU por item, sai != 0 se algum falhar (~6 s); --com-smoke inclui o smoke
+```
+
+Janela de bloqueio do tutor (medida na NX-06): **5 senhas erradas seguidas bloqueiam a conta por 15 min** (`AUTH_JANELA_BLOQUEIO_MINUTOS`, default 15; o compose não sobrescreve). Se travar no estande, troque para a conta reserva. Defina `DEMO_SENHA` própria do evento no `.env`: o pré-voo falha se ela estiver ausente ou igual à senha pública.
+
 ## 6. Docker Compose — Detalhamento
 
 ### Topologia dos containers
