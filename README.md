@@ -530,6 +530,25 @@ bash scripts/preflight-next.sh            # PASSOU/FALHOU por item, sai != 0 se 
 
 Janela de bloqueio do tutor (medida na NX-06): **5 senhas erradas seguidas bloqueiam a conta por 15 min** (`AUTH_JANELA_BLOQUEIO_MINUTOS`, default 15; o compose não sobrescreve). Se travar no estande, troque para a conta reserva. Defina `DEMO_SENHA` própria do evento no `.env`: o pré-voo falha se ela estiver ausente ou igual à senha pública.
 
+#### Dia do evento (NX-08) — ordem, itens do pré-voo e a regra do `127.0.0.1`
+
+Ordem dos seeds, depois do reset do dia (as senhas do evento devem estar no `.env` **antes** de semear: `DEMO_SENHA`, `DEMO_SENHA_TUTOR`, `DEMO_SENHA_TUTOR_RESERVA`):
+
+```bash
+docker compose down -v && docker compose up -d      # reset do dia (espere os 5 serviços healthy)
+bash scripts/seed-demo.sh                           # clínica, tutores, pets, agenda de hoje
+bash scripts/seed-demo-luna.sh                      # Thor + tutor-demo-luna (senha = DEMO_SENHA_TUTOR_RESERVA) + 3 triagens
+bash scripts/seed-demo-fotos.sh                     # fotos dos pets
+bash scripts/seed-demo-contas.sh                    # conta principal + vacinas a vencer de Rex (+10 d) e Mimi (+20 d), relativas a hoje
+bash scripts/preflight-next.sh                      # PASSOU/FALHOU; só então ensaie
+```
+
+O pré-voo confere, além dos itens de contas/Loja/flag: **Hoje da clínica com ≥ 4 agendamentos** na data de hoje (fuso SP, `GET /api/v1/agenda`); **fila da Luna com ≥ 1 triagem nos últimos 7 dias** (mesmo intervalo do chip de 7 dias do app; triagem semeada envelhece: no dia do evento, semeie de novo); **`DEMO_SENHA_TUTOR` e `DEMO_SENHA_TUTOR_RESERVA` definidas e diferentes do default público** (comparação de strings, sem tentar login com a senha padrão e sem imprimir nada); e um **`AVISO`** (não conta como falha) quando `[::1]:8080`/`[::1]:8081` é ouvido por um processo que não é o Docker (no Windows, `wslrelay`).
+
+- **Regra do `127.0.0.1`:** com esse `AVISO`, `localhost` pode resolver para `::1` e cair no `wslrelay` em vez do container. Suba os apps com `EXPO_PUBLIC_API_BASE_URL=http://127.0.0.1:<porta>` (8080 clínica, 8081 tutor).
+- **Senha do `.env` x conta já existente:** o Java **não tem endpoint de troca de senha** do tutor (só `login`/`refresh`/`logout`/`register-invite`). Uma conta criada com a senha padrão **só passa a usar a do `.env` depois do `down -v` + seeds**. Até lá o pré-voo falha no login — e **cada rodada com a senha errada gasta 1 das 5 tentativas** (bloqueio de 15 min): não rode o pré-voo em loop contra contas com senha desatualizada.
+- A vacina semeada aparece na aba Saúde do tutor por `GET /api/v1/tutor/pets/{id}/vacinas` (próxima dose nos próximos 30 dias); o seed é idempotente (pet que já tem próxima dose futura é pulado).
+
 ## 6. Docker Compose — Detalhamento
 
 ### Topologia dos containers
