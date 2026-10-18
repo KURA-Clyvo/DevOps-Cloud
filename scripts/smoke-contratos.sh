@@ -1691,7 +1691,7 @@ if [ -z "$IMAGENS_LOJA" ]; then
 else
   for caminho in $IMAGENS_LOJA; do
     CODE_IMG=$(curl -s -o "$BODY_FILE" -D "$BODY_FILE.hdr" -w '%{http_code}' "$TUTOR_API$caminho")
-    TIPO_IMG=$(grep -i '^content-type:' "$BODY_FILE.hdr" | tr -d '' | head -1 | sed 's/^[^:]*: *//')
+    TIPO_IMG=$(grep -i '^content-type:' "$BODY_FILE.hdr" | tr -d '\r' | head -1 | sed 's/^[^:]*: *//')
     if [ "$CODE_IMG" = "200" ] && [ "$TIPO_IMG" = "image/webp" ] && [ -s "$BODY_FILE" ]; then
       echo "ok     tutor/loja/imagens GET sem token $caminho (200, $TIPO_IMG, $(wc -c < "$BODY_FILE") bytes)"
     else
