@@ -489,6 +489,11 @@ sentinela "Sem observações") + o receituário PDF gerado a partir dela. Termin
 imprimindo um bloco copiável com as credenciais, os UUIDs de convite dos 2 tutores e os
 IDs de cada entidade criada.
 
+**Fotos dos pets de demo (NX-03).** `bash scripts/seed-demo-fotos.sh` envia a foto real de Rex, Mimi, Bolinha e Thor
+(`scripts/assets/pets/`, créditos em `CREDITOS.md`) pelo endpoint real `POST /api/v1/pets/{id}/foto`. É standalone e
+**idempotente** (só envia para pet sem foto; falha de um pet não derruba os outros, e o exit é 1 se algum falhou).
+Rode depois dos seeds de demo (`seed-demo.sh` e `seed-demo-luna.sh`, que cria o Thor); não precisa de `down -v`.
+
 **Idempotência — decisão documentada:** o script **não** é idempotente por escolha.
 Como CNPJ/CPF são fixos (não gerados por sufixo aleatório, ao contrário do smoke), uma
 segunda execução contra o mesmo ambiente encontraria a clínica de demo já cadastrada; em
