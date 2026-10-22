@@ -404,6 +404,38 @@ JSON
   chamar "tutor/auth/register-invite (consentimento LEMBRETES)" 201 POST "$TUTOR_API/api/v1/auth/register-invite" "$PAYLOAD_REGISTER_INVITE"
   echo "ok     tutor criado e registrado (id=$ID_TUTOR_LUNA)"
 fi
+
+# ─── 2b. Conta RESERVA registrada? (NEXT 22/10) ────────────────────────────
+# Achado do reset de 22/10: se uma rodada anterior criou o tutor e morreu ANTES do
+# register-invite (ex.: senha sem numero -> 400), o ramo de idempotencia acima pula
+# o registro para sempre e a conta reserva nunca loga. Aqui: se o login da reserva
+# nao da 200, reemite o convite e registra de novo. 423 (conta travada) so avisa.
+PAYLOAD_LOGIN_RESERVA=$(cat <<JSON
+{ "email": "tutor-demo-luna@kura.local", "senha": "$SENHA_RESERVA" }
+JSON
+)
+chamar_ok "tutor/auth/login (conta reserva)" POST "$TUTOR_API/api/v1/auth/login" "$PAYLOAD_LOGIN_RESERVA" ""
+case "$ULTIMO_CODIGO" in
+  200) echo "ok     conta reserva loga" ;;
+  423) echo "aviso  conta reserva TRAVADA (423, 5 senhas erradas) — espere 15 min" ;;
+  *)
+    echo "aviso  conta reserva nao loga ($ULTIMO_CODIGO) — reemitindo convite e registrando"
+    chamar "tutores/{id}/convite (reemitir para a reserva)" 201 POST "$API/api/v1/tutores/$ID_TUTOR_LUNA/convite" '' "$TOKEN"
+    INVITE_TOKEN=$(campo invite.nrToken)
+    PAYLOAD_REGISTER_INVITE=$(cat <<JSON
+{
+  "token": "$INVITE_TOKEN",
+  "senha": "$SENHA_RESERVA",
+  "aceites": [
+    { "tipo": "LEMBRETES", "versaoTermo": "v1.0", "aceito": true }
+  ]
+}
+JSON
+)
+    chamar "tutor/auth/register-invite (reserva, 2a tentativa)" 201 POST "$TUTOR_API/api/v1/auth/register-invite" "$PAYLOAD_REGISTER_INVITE"
+    echo "ok     conta reserva registrada"
+    ;;
+esac
 echo
 
 # ─── 3. DS_WHATSAPP ────────────────────────────────────────────────────────
