@@ -64,8 +64,10 @@ properties:
           requests:
             # Mais memória que as outras duas APIs porque carrega os pesos do
             # YOLOv8n e do classificador de raça em processo.
-            cpu: 2
-            memoryInGb: 4
+            # NEXT 22/10: 1 vCPU. A cota de ACI da assinatura e 6 vCPUs/regiao (Oracle 2 +
+            # .NET 1 + Java 1 + Mongo 0,5 = 4,5) e a imagem atual da Luna e a enxuta (~365 MB).
+            cpu: 1
+            memoryInGb: 3
         ports:
           - port: 8000
             protocol: TCP
