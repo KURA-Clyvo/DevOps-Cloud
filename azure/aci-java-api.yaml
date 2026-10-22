@@ -130,6 +130,23 @@ properties:
           # do tutor até o .NET (achado desta task).
           - name: FOTO_URL_BASE
             value: __FOTO_URL_BASE__
+          # NEXT (22/10): Mongo da Loja como SIDECAR deste container group. Containers
+          # do mesmo group dividem localhost, entao o Mongo nao ganha porta publica.
+          # Sem auth de proposito: so este group alcanca a porta 27017. Dado efemero
+          # (sem volume): a Loja da demo e catalogo de exemplo, recriado no boot.
+          - name: SPRING_DATA_MONGODB_URI
+            value: mongodb://localhost:27017/kura_docs?serverSelectionTimeoutMS=2000
+          - name: KURA_LOJA_MONGO_INIT_ENABLED
+            value: "true"
+          - name: KURA_LOJA_SEED_EXEMPLO_ENABLED
+            value: "true"
+    - name: kura-mongo
+      properties:
+        image: mongo:7.0.45-jammy
+        resources:
+          requests:
+            cpu: 0.5
+            memoryInGb: 1
   ipAddress:
     type: Public
     dnsNameLabel: __JAVA_ACI_NAME__
