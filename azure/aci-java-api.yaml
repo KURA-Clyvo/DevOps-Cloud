@@ -142,7 +142,8 @@ properties:
             value: "true"
     - name: kura-mongo
       properties:
-        image: mongo:7.0.45-jammy
+        # Espelhada no ACR: o pull anonimo do Docker Hub pelo ACI falha (RegistryErrorResponse).
+        image: __ACR_LOGIN_SERVER__/kura/mongo:7.0.45-jammy
         resources:
           requests:
             cpu: 0.5
