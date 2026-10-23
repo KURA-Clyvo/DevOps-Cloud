@@ -7,3 +7,9 @@
 [submodule "luna-ia"]
 	path = luna-ia
 	url = https://github.com/KURA-Clyvo/kura-luna-ai.git
+[submodule "mobile-tutor-rn"]
+	path = mobile-tutor-rn
+	url = https://github.com/KURA-Clyvo/mobile-tutor-rn
+[submodule "mobile-clinica-rn"]
+	path = mobile-clinica-rn
+	url = https://github.com/KURA-Clyvo/mobile-clinica-rn

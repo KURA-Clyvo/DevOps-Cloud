@@ -1,1124 +1,300 @@
-# KURA — Infraestrutura Cloud & DevOps
+# Kura — DevOps-Cloud
 
-> **FIAP Challenge 2026 · 2TDS · Disciplina: DevOps Tools & Cloud Computing**
-> Parceiro: **Clyvo Vet**
+Provisiona e implanta o Kura no **Azure** por linha de comando: **App Service** (as 3 APIs), **Oracle e MongoDB em
+containers numa VM**, **Key Vault** (segredos) e **Static Web Apps** (web dos apps React Native).
+Todos os comandos Azure estão em [`azure/deploy.sh`](azure/deploy.sh); este repositório cobre o **deploy inicial** dos
+5 serviços (3 APIs e 2 apps web).
 
----
-
-## Equip
-
-| Membro | Função |
-|---|---|
-| **Felipe Ferrete** *(líder técnico)* | .NET · IoT/IA |
-| **Nikolas Brisola** | Java · Backend Tutor |
-| **Guilherme Sola** | Mobile Tutor · UX |
-| **Gustavo Bosak** | Mobile Clínica · QA |
-| **Clayton** | DevOps · BD |
-
----
+```mermaid
+flowchart LR
+  dev["Seu terminal<br/>azure/deploy.sh"] -->|"az CLI"| rg
+  subgraph rg ["Resource Group rg-kura"]
+    kv[("Key Vault")]
+    subgraph app ["App Service B2 · snet-app"]
+      cl["clinica-api .NET 10"]
+      tu["tutor-api Java 21"]
+      lu["luna-ai Python 3.12"]
+    end
+    subgraph data ["VM Ubuntu · snet-data · NSG"]
+      or[("Oracle XE")]
+      mg[("MongoDB")]
+    end
+    swa1["SWA clínica"]
+    swa2["SWA tutor"]
+  end
+  app -->|"1521 e 27017 pela VNet"| data
+  app -.->|"Key Vault references"| kv
+  swa1 -->|"HTTPS + CORS"| app
+  swa2 -->|"HTTPS + CORS"| app
+```
 
 ## Índice
 
-1. [Descrição do Projeto](#1-descrição-do-projeto)
-2. [Benefícios para o Negócio](#2-benefícios-para-o-negócio)
-3. [Arquitetura Macro (Desenho)](#3-arquitetura-macro)
-4. [Rotas da API](#4-rotas-da-api)
-5. [Como Instalar e Executar (How To)](#5-como-instalar-e-executar)
-6. [Docker Compose — Detalhamento](#6-docker-compose--detalhamento)
-7. [Deploy em ACR/ACI (produção)](#7-deploy-em-acraci-produção)
-8. [Segredos no Azure Key Vault](#8-segredos-no-azure-key-vault)
+- [O que este repositório entrega](#o-que-este-repositório-entrega)
+- [Pré-requisitos](#pré-requisitos)
+- [Passo a passo do deploy inicial](#passo-a-passo-do-deploy-inicial)
+  - [Passo 1: Baixar o repositório e os submódulos](#passo-1-baixar-o-repositório-e-os-submódulos)
+  - [Passo 2: Entrar no Azure](#passo-2-entrar-no-azure)
+  - [Passo 3: Ajustar a configuração (opcional)](#passo-3-ajustar-a-configuração-opcional)
+  - [Passo 4: Criar a infraestrutura](#passo-4-criar-a-infraestrutura)
+  - [Passo 5: Compilar as APIs](#passo-5-compilar-as-apis)
+  - [Passo 6: Implantar as APIs](#passo-6-implantar-as-apis)
+  - [Passo 7: Compilar e publicar os apps web](#passo-7-compilar-e-publicar-os-apps-web)
+  - [Passo 8: Conferir o resultado](#passo-8-conferir-o-resultado)
+- [Atalho: tudo de uma vez](#atalho-tudo-de-uma-vez)
+- [Atualizar uma versão depois do deploy inicial](#atualizar-uma-versão-depois-do-deploy-inicial)
+- [Configuração](#configuração)
+- [Segredos (Key Vault)](#segredos-key-vault)
+- [Operação](#operação)
+- [Seeds e smoke](#seeds-e-smoke)
+- [CI no GitHub Actions](#ci-no-github-actions)
+- [Solução de problemas](#solução-de-problemas)
+- [Remover o ambiente](#remover-o-ambiente)
 
----
+## O que este repositório entrega
 
-## 1. Descrição do Projeto
+| Caminho | Para quê |
+|---|---|
+| `azure/deploy.sh` | Todos os comandos `az`: fases `infra`, `build`, `apps`, `web`, `urls`, `all` e `destroy` |
+| `azure/staticwebapp.config.json` | Fallback de SPA, cache e headers dos 2 Static Web Apps |
+| `mongo/init/` | Role/usuário do Java no MongoDB (enviado à VM pelo `deploy.sh`) |
+| `scripts/` | Seeds de demonstração, `preflight-next.sh` e `smoke-contratos.sh` (ver [Seeds e smoke](#seeds-e-smoke)) |
+| `docs/ARQUITETURA.md` | Arquitetura, rede, segredos e decisões |
+| `.github/workflows/ci.yml` | CI: valida os scripts e confere se os submódulos estão no `main` mais recente |
+| `.gitmodules` | 5 submódulos: 3 APIs e 2 apps RN. **O SHA gravado é a versão que o `build` compila** |
+| `.gitattributes` | Força LF (os scripts rodam em Linux) |
 
-O **KURA** é um sistema de gestão veterinária digital desenvolvido para a **Clyvo Vet**, com foco em **continuidade do cuidado e engajamento na jornada de saúde do pet**.
+## Pré-requisitos
 
-O sistema resolve um problema central da veterinária moderna: a jornada do pet é **episódica e reativa**. O tutor só interage com a clínica em momentos de crise. O Kura transforma isso em uma experiência **contínua, preventiva e inteligente**.
+Em Linux, macOS ou Windows com **WSL2** (os scripts são bash):
 
-### Microsserviços que compõem o sistema
-
-| Serviço | Tecnologia | Responsabilidade |
+| Ferramenta | Usada em | Observação |
 |---|---|---|
-| **kura-api** (.NET) | ASP.NET Core 10 + EF Core | Backend clínico: veterinários, pets, eventos clínicos, IoT, dashboard |
-| **kura-tutor** (Java) | Spring Boot 3.2 + Java 21 | Portal do tutor: auth JWT, agendamentos, timeline, LGPD |
-| **luna-ai** (Python) | FastAPI + YOLOv8n + MobileNetV3 | IA de triagem, lembretes de vacinas via WhatsApp, identificação de raça por foto |
-| **oracle-db** | Oracle XE 21c (slim) | Banco de dados relacional único compartilhado pelos serviços |
+| `git`, `bash`, `python3`, `curl` | todas as fases | |
+| Azure CLI (`az`) | todas as fases | recente; o `deploy.sh` foi conferido contra a 2.91 |
+| .NET SDK 10, JDK 21, `zip` | `build` | o script confere as versões |
+| Node.js 22 LTS (`npm`, `npx`) | `web` | o script exige Node 20 ou superior |
 
----
+Na subscription, a identidade que executa precisa de **Owner**, ou **Contributor + User Access Administrator**: o
+`deploy.sh` concede papéis do Key Vault às identidades dos Web Apps e da VM. Confirme também que a região escolhida tem
+cota para o plano **B2** do App Service e para a VM **Standard_B2ms**.
 
-## 2. Benefícios para o Negócio
+## Passo a passo do deploy inicial
 
-### Para o Tutor (responsável pelo pet)
-- **Lembretes automáticos** de vacinas via WhatsApp antes do vencimento, eliminando o esquecimento
-- **Portal digital** para acompanhar a timeline de saúde, agendamentos e exames do pet
-- **Identificação de raça por foto** com recomendações preventivas personalizadas para a raça
+Rode tudo a partir da raiz do repositório. Cada fase pode ser repetida: o script só cria o que ainda não existe.
 
-### Para a Clínica Veterinária
-- **Dashboard operacional** com alertas de temperatura (IoT/ESP32), agenda do dia e métricas
-- **Triagem inteligente** via IA: tutores que enviam mensagens recebem classificação automática do nível de urgência antes de falar com o veterinário
-- **Maior recorrência e fidelização**: o sistema mantém contato proativo entre consultas, aumentando o LTV
-
-### Para a Clyvo Vet (plataforma B2B)
-- **Diferencial competitivo** com stack de IA própria (visão computacional + NLP)
-- **Dados longitudinais** de saúde por raça viabilizam analytics preditivos e expansão de produto
-- **Modelo de receita recorrente**: SaaS mensal por clínica
-
----
-
-## 3. Arquitetura Macro
-
-O sistema roda em **dois ambientes**, com os mesmos quatro serviços e as mesmas portas.
-O que muda é o isolamento entre eles — e, por consequência, como um encontra o outro.
-
-**Produção — Azure Container Instances (`azure/deploy.sh`)**
-
-```
-   ┌───────────────────────── Azure · kura-prod-rg · eastus2 ──────────────────────────┐
-   │                                                                                   │
-   │  ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────────────────┐   │
-   │  │  Key Vault       │   │ Container        │   │ Storage Account              │   │
-   │  │  kura-prod-kv    │   │ Registry         │   │ · share de backup (dumps)    │   │
-   │  │  11 segredos     │   │ kuraprodacr      │   │ · share de documentos (PDFs) │   │
-   │  └────────┬─────────┘   └────────┬─────────┘   └───────────▲──────────────────┘   │
-   │           │ secureValue          │ imagem                  │ expdp / PDFs         │
-   │  ┌────────▼──────────────────────▼─────────────────────────┴──────────────────┐   │
-   │  │            Container Instances — um container group por serviço            │   │
-   │  │                                                                            │   │
-   │  │   kura-prod-clinica-api      kura-prod-tutor-api      kura-prod-luna-ai     │   │
-   │  │        :8080                     :8081                    :8000            │   │
-   │  │      (.NET 10)              (Java 21 · Flyway)        (Python/FastAPI)      │   │
-   │  │           └──────────────────────┬┴───────────────────────┘                │   │
-   │  │                      ┌───────────▼──────────────┐                          │   │
-   │  │                      │  kura-prod-oracle-db     │                          │   │
-   │  │                      │  :1521 · disco EFÊMERO   │                          │   │
-   │  └──────────────────────┴──────────────────────────┴──────────────────────────┘   │
-   └───────────────────────────────────────────────────────────────────────────────────┘
-
-   Não há rede compartilhada entre container groups. Cada serviço tem seu FQDN público
-   <nome>.eastus2.azurecontainer.io, e é por ele que os outros o alcançam.
-```
-
-**Desenvolvimento local — `docker compose`**
-
-```
-   ┌────────────── Máquina do desenvolvedor · rede kura_network (bridge) ──────────────┐
-   │   kura-api :8080   ·   kura-tutor :8081   ·   luna-ai :8000                       │
-   │                            └──────┬───────────────┘                               │
-   │                   oracle-db  9092 (host) → 1521 (container)                       │
-   │                   named volume kura_oracle_data                                   │
-   │   Serviços se resolvem por NOME (oracle-db, kura-api, luna-ai).                   │
-   └───────────────────────────────────────────────────────────────────────────────────┘
-```
-
-  Fluxo de dados Luna → .NET:
-
-```
-  Tutor WhatsApp → Twilio → POST /webhook/twilio/whatsapp (Luna)
-    → GET /api/v1/tutores/telefone/{nr}  [.NET kura-api]
-    → TriageEngine.classificar()         [local Luna]
-    → POST /api/v1/luna/triage           [.NET kura-api]
-    → TwilioGateway.enviar()             [resposta ao tutor]
-```
-
-> Fonte versionável e editável deste diagrama: [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) (Mermaid, renderiza no GitHub)
-> e [`docs/arquitetura-kura.drawio`](docs/arquitetura-kura.drawio) (editável em [draw.io](https://app.diagrams.net/)).
-> Versão para entrega: [`docs/Kura_Docs_DevOps.pdf`](docs/Kura_Docs_DevOps.pdf).
-
----
-
-## 4. Rotas da API
-
-### .NET API — Backend Clínica (`http://kura-prod-clinica-api.eastus2.azurecontainer.io:8080`)
-
-Documentação interativa completa: `http://kura-prod-clinica-api.eastus2.azurecontainer.io:8080/swagger`
-
-| Método | Rota | Auth | Descrição |
-|---|---|---|---|
-| `POST` | `/api/v1/auth/login` | Pública | Login → retorna JWT |
-| `POST` | `/api/v1/auth/register-clinica` | Pública | Cadastro de clínica |
-| `GET` | `/api/v1/tutores` | JWT | Lista tutores (filtros: nome, CPF) |
-| `POST` | `/api/v1/tutores` | JWT | Cria tutor + gera invite UUID |
-| `GET` | `/api/v1/pets/{id}/timeline` | JWT | Timeline de atendimentos |
-| `POST` | `/api/v1/eventos-clinicos/vacinas` | JWT | Registra vacina (atômico) |
-| `POST` | `/api/v1/agendamentos` | JWT | Cria agendamento |
-| `PATCH` | `/api/v1/agendamentos/{id}/status` | JWT | Atualiza status (otimistic lock) |
-| `GET` | `/api/v1/dashboard/hoje` | JWT | Resumo do dia |
-| `POST` | `/api/v1/iot/leituras` | API Key | Ingere leitura de temperatura (IoT) |
-| `GET` | `/health` | Pública | Health check |
-| `GET` | `/metrics` | Pública | Métricas SLO |
-
-### Java API — Backend Tutor (`http://kura-prod-tutor-api.eastus2.azurecontainer.io:8081`)
-
-Documentação: `http://kura-prod-tutor-api.eastus2.azurecontainer.io:8081/api/swagger-ui/index.html`
-
-| Método | Rota | Auth | Descrição |
-|---|---|---|---|
-| `POST` | `/api/auth/register-invite` | Pública | Onboarding por token de convite |
-| `POST` | `/api/auth/login` | Pública | Login → access + refresh token |
-| `POST` | `/api/auth/refresh` | Pública | Rotação do refresh token |
-| `GET` | `/api/tutores/{id}/pets` | JWT | Pets do tutor (paginado) |
-| `GET` | `/api/pets/{id}/timeline` | JWT | Linha do tempo do pet |
-| `POST` | `/api/agendamentos` | JWT | Cria agendamento |
-| `PUT` | `/api/agendamentos/{id}` | JWT | Atualiza (requer nrVersion) |
-| `POST` | `/api/tutores/{id}/consentimentos` | JWT | Registra aceite LGPD |
-| `GET` | `/api/tutores/{id}/lgpd/relatorio` | JWT | Relatório LGPD (art. 18) |
-
-### Luna IA — Python FastAPI (`http://kura-prod-luna-ai.eastus2.azurecontainer.io:8000`)
-
-Documentação: `http://kura-prod-luna-ai.eastus2.azurecontainer.io:8000/docs`
-
-| Método | Rota | Auth | Descrição |
-|---|---|---|---|
-| `POST` | `/webhook/twilio/whatsapp` | Twilio Signature | Recebe mensagens do tutor |
-| `GET` | `/health` | Pública | Health check |
-
----
-
-## 5. Como Instalar e Executar
-
-### Pré-requisitos locais
-
-| Ferramenta | Versão mínima | Necessária para |
-|---|---|---|
-| Git | 2.x | clone + submódulos |
-| Docker | 24+ | build das imagens e execução local |
-| Azure CLI | 2.50+ | deploy em ACR/ACI |
-| Python | 3.8+ | usado pelos scripts em `azure/` para renderizar os manifestos |
-| Conta Azure | crédito ativo | — |
-| Conta Docker Hub | gratuita | **só no primeiro deploy de um ACR novo** — espelhar a imagem do Oracle (§7). Há alternativa sem conta. |
-
-### Passo 1 — Clone do repositório de infraestrutura
+### Passo 1: Baixar o repositório e os submódulos
 
 ```bash
-git clone --recurse-submodules https://github.com/KURA-Clyvo/DevOps-Cloud.git
+git clone --recurse-submodules <url-do-repositório>
 cd DevOps-Cloud
-```
-
-Se já tiver clonado sem `--recurse-submodules`:
-
-```bash
+# se já clonou sem submódulos:
 git submodule update --init --recursive
 ```
 
-O conteúdo dos submódulos é **obrigatório para buildar** as imagens. Para apenas
-reimplantar uma tag que já está no ACR (`--skip-build`), o clone raso basta — o
-`deploy.sh` lê o commit fixado direto da árvore deste repositório.
+Confira que as pastas `dotnet-backend`, `java-backend`, `luna-ia`, `mobile-clinica-rn` e `mobile-tutor-rn` têm
+conteúdo. Vazias, as fases `build` e `web` param com a mensagem pedindo esse comando.
 
-Estrutura do repositório:
-
-```
-DevOps-Cloud/
-├── docker-compose.yml        ← ambiente de desenvolvimento local
-├── azure/
-│   ├── deploy.sh             ← provisiona e implanta tudo em ACR/ACI
-│   ├── verify.sh             ← valida cofre, ACR e os 4 serviços por FQDN público
-│   ├── backup-db.sh          ← dump lógico do Oracle (Data Pump) para o Azure Files
-│   ├── restore-db.sh         ← restaura um dump
-│   ├── teardown.sh           ← apaga o ambiente inteiro (operação excepcional)
-│   └── aci-*.yaml            ← manifestos de container group (templates)
-├── scripts/
-│   ├── smoke-contratos.sh    ← smoke de contrato app → API
-│   └── seed-demo.sh          ← popula uma clínica de demonstração
-├── docs/                     ← arquitetura (Mermaid, draw.io, PDF)
-├── .env.example              ← template de variáveis de ambiente
-├── dotnet-backend/           ← submódulo · backend-clinica-dotnet
-├── java-backend/             ← submódulo · backend-tutor-java
-└── luna-ia/                  ← submódulo · kura-luna-ai
-```
-
-### Passo 2 — Configure as variáveis de ambiente
+### Passo 2: Entrar no Azure
 
 ```bash
-cp .env.example .env
-nano .env   # preencha as credenciais
+az login                                   # no WSL/servidor sem navegador: az login --use-device-code
+az account set --subscription <id-ou-nome>
+az account show -o table                   # confirme a subscription ativa
 ```
 
-⚠️ **Este passo não é mais opcional.** Desde a TASK-39, o `docker-compose.yml` usa a
-sintaxe `${VAR:?mensagem}` para as 8 chaves de autenticação abaixo — sem elas
-preenchidas no `.env`, `docker compose up`/`docker compose config` **aborta com erro
-explicativo** em vez de subir com um segredo padrão. Isso é intencional: um
-`docker-compose.yml` público não pode ter default funcional de JWT/senha/API key.
+### Passo 3: Ajustar a configuração (opcional)
 
-Variáveis **obrigatórias** no `.env` (sem valor → `docker compose` falha ao subir):
-
-```dotenv
-# ─── Oracle ───────────────────────────────────────────────────────────────────
-ORACLE_SYS_PASSWORD=      # openssl rand -base64 32
-ORACLE_APP_USER=RM562999  # identificador de schema FIAP, não é segredo — pode manter
-ORACLE_APP_PASSWORD=      # openssl rand -base64 32
-
-# ─── .NET ─────────────────────────────────────────────────────────────────────
-DOTNET_JWT_KEY=       # openssl rand -base64 48
-IOT_API_KEY=          # openssl rand -base64 32
-LUNA_API_KEY=         # openssl rand -base64 32
-LUNA_INBOUND_API_KEY= # openssl rand -base64 32
-
-# ─── Foto de pet (.NET + Java, FT-06) ──────────────────────────────────────────
-FOTO_URL_SECRET=      # openssl rand -base64 48 — MESMO valor nos dois serviços
-
-# ─── Java ─────────────────────────────────────────────────────────────────────
-JAVA_JWT_SECRET=    # mín 64 bytes: openssl rand -base64 64
-
-# ─── Twilio (Luna) ────────────────────────────────────────────────────────────
-TWILIO_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-TWILIO_TOKEN=your_twilio_auth_token
-TWILIO_FROM_NUMBER=+14155238886
-WEBHOOK_PUBLIC_URL=https://xxxx.ngrok.io/webhook/twilio/whatsapp
-```
-
-> 🔴 **Segredo queimado:** até a TASK-39, o `docker-compose.yml` deste repositório
-> público definia defaults *funcionais* (não placeholders) para `DOTNET_JWT_KEY`,
-> `JAVA_JWT_SECRET`, `ORACLE_APP_PASSWORD`, `ORACLE_SYS_PASSWORD`, `IOT_API_KEY`,
-> `LUNA_API_KEY` e `LUNA_INBOUND_API_KEY` — esses valores continuam no histórico git
-> e devem ser considerados comprometidos. Qualquer ambiente (local ou Azure) que já
-> tenha subido usando os defaults antigos precisa trocar as 7 chaves por valores
-> novos antes de ser considerado seguro.
-
-### Passo 3 — Execute na Azure (produção)
+Os padrões funcionam (região `eastus2`, prefixo `kura`, grupo `rg-kura`). Para mudar algo, exporte a variável **antes
+de cada fase** (ver [Configuração](#configuração)). Para fornecer os segredos externos da Luna e do .NET, exporte também
+(eles são gravados no Key Vault e nunca impressos):
 
 ```bash
-az login
-chmod +x azure/*.sh
-./azure/deploy.sh
+export LOCATION=eastus2
+export TWILIO_SID=...  TWILIO_TOKEN=...  OPENAI_API_KEY=...  DAILY_API_KEY=...   # todos opcionais
 ```
 
-O `deploy.sh` cria o resource group, o Key Vault (com todos os segredos), o ACR, a
-storage account e os quatro container groups — nessa ordem, e todos os passos de
-infraestrutura são idempotentes. Ao final imprime os quatro endereços públicos.
+> Variáveis que mudam nomes ou o banco (`PREFIX`, `RG`, `LOCATION`, `ORACLE_IMAGE`, `ORACLE_SERVICE`…) precisam ter o
+> **mesmo valor em todas as fases**. Mantenha-as no mesmo terminal.
 
-Detalhes importantes na primeira execução:
+### Passo 4: Criar a infraestrutura
 
-- **Demora.** O Oracle XE cria o PDB no primeiro boot (vários minutos) e a imagem da
-  Luna tem ~9,8 GB para buildar e enviar ao ACR.
-- **O `tutor-api` sobe antes do `clinica-api`**, de propósito: o Flyway roda no boot
-  dele e é a autoridade de DDL. Com essa ordem, o `.NET` já encontra o schema pronto.
-- **Nada de `.env` é obrigatório aqui.** Ver §8.
-- **`FOTO_URL_BASE` é config não-secreta, resolvida automaticamente.** Sem ela no
-  ambiente, o `deploy.sh` usa `https://kura-clinica.vercel.app/proxy/clinica` (mesma
-  origem para os 2 ACIs — ver comentário no script, achado F6-config-1). **Não
-  preencha esta chave num `.env` usado para deploy no Azure**: um `.env` copiado de
-  `.env.example` para dev local traria `http://localhost:8080`, e as duas APIs
-  emitiriam URL de foto em `localhost` — foto quebrada nos 2 apps, sem erro nenhum
-  (achado I-1 do G2 da FT-06). O `deploy.sh` agora **aborta** se detectar isso
-  (`localhost`/`127.0.0.1` ou valor sem `https://`).
-- **O espelhamento da imagem do Oracle pode pedir credencial do Docker Hub.** É o
-  único ponto do deploy que fala com um registry de terceiro, e acontece só quando
-  `kura/oracle-xe:<tag>` ainda não está no ACR. Ver §7.
-
-#### Credencial do Docker Hub — quando é preciso, e quando não é
-
-O passo `[3/10]` espelha `gvenzl/oracle-xe` para o ACR com `az acr import`. Esse import
-sai por IPs do Azure compartilhados entre assinaturas, e a quota de pull **anônimo** do
-Docker Hub é aplicada por IP de origem — então ele falha com `401`/`TOOMANYREQUESTS` por
-tráfego que não é seu, mesmo quando `docker pull` da mesma imagem pública funciona
-normalmente da sua máquina. Autenticando a origem, o import conta contra a quota da sua
-conta (100 pulls/h) em vez da quota anônima compartilhada.
-
-```dotenv
-DOCKERHUB_USERNAME=     # o dono do token — não é segredo, mas não tem valor fixo
-DOCKERHUB_TOKEN=        # PAT, escopo "Public Repo Read-only"
+```bash
+azure/deploy.sh infra
 ```
 
-O PAT sai de *hub.docker.com → Account Settings → Personal access tokens*. **Os dois
-andam juntos:** o PAT só autentica com o username do seu dono, então o `deploy.sh` recusa
-meio par em vez de deixar o `az` responder `401` sem explicação. É também por isso que o
-repositório não traz um usuário fixo — herdar o username de outra pessoa sem o token dela
-não serve para nada, e token de terceiro não se compartilha (a quota é por conta, uma
-revogação derruba todo mundo junto, e PAT em repositório público é revogado
-automaticamente pelo secret scanning).
+Cria, em 6 etapas numeradas: grupo de recursos, NSG/VNet/sub-redes, Key Vault e segredos, VM do banco (Oracle XE 21c +
+MongoDB em containers), plano e os 3 Web Apps, e os 2 Static Web Apps. É a fase mais demorada: a VM baixa as imagens e o
+Oracle cria o banco na primeira subida (o script espera até 30 minutos). Termina com `banco pronto em 10.20.2.x` e a
+lista de URLs.
 
-Na prática, quase nenhum deploy precisa disso:
+### Passo 5: Compilar as APIs
 
-| Situação | Precisa de credencial? |
+```bash
+azure/deploy.sh build
+```
+
+Compila, a partir dos submódulos, `clinica.zip` (.NET), `tutor.jar` (Java, sem rodar testes: eles rodam no CI do repo da
+API) e `luna.zip` (Python) em `artifacts/`, e lista os arquivos ao final.
+
+### Passo 6: Implantar as APIs
+
+```bash
+azure/deploy.sh apps
+```
+
+Grava os app settings (referências ao Key Vault) e implanta na ordem **tutor → clínica e Luna**: o Flyway do tutor cria o
+schema Oracle ao subir, e o script só segue depois que `/api/actuator/health` responde 200. Em seguida espera a clínica
+e a Luna (`/health`). Se alguma não ficar saudável, o script mostra o log do Web App e para.
+
+### Passo 7: Compilar e publicar os apps web
+
+```bash
+azure/deploy.sh web
+```
+
+Compila os 2 apps Expo com as **URLs reais das APIs embutidas no JavaScript** (por isso vem depois do passo 6), em
+`web-dist/`, e publica cada um no seu Static Web App.
+
+### Passo 8: Conferir o resultado
+
+```bash
+eval "$(azure/deploy.sh urls)"      # define CLINICA_API_URL, TUTOR_API_URL, LUNA_URL, CLINICA_WEB_URL, TUTOR_WEB_URL
+curl -s -o /dev/null -w 'clinica %{http_code}\n' "$CLINICA_API_URL/health"
+curl -s -o /dev/null -w 'tutor   %{http_code}\n' "$TUTOR_API_URL/api/actuator/health"
+curl -s -o /dev/null -w 'luna    %{http_code}\n' "$LUNA_URL/health"
+echo "$CLINICA_WEB_URL  $TUTOR_WEB_URL"   # abra os dois no navegador
+```
+
+Esperado: `200` nas três APIs e os dois apps web abrindo. Depois, no portal: cada Web App → *Settings* →
+*Environment variables* (antes chamada *Configuration*) deve mostrar as referências do Key Vault resolvidas (ícone verde;
+podem levar alguns minutos após os papéis). Para popular dados de demonstração, ver [Seeds e smoke](#seeds-e-smoke).
+
+## Atalho: tudo de uma vez
+
+```bash
+azure/deploy.sh all      # infra → build → apps → web (passos 4 a 7)
+```
+
+## Atualizar uma versão depois do deploy inicial
+
+O `build` compila o commit que cada submódulo tem fixado. Para publicar uma versão nova de uma API ou app:
+
+```bash
+git submodule update --remote java-backend         # ou dotnet-backend, luna-ia, mobile-*-rn
+azure/deploy.sh build && azure/deploy.sh apps      # APIs
+azure/deploy.sh web                                # apps web
+git add java-backend && git commit -m "chore: atualiza java-backend"   # registra o que foi implantado
+```
+
+Rollback: volte o submódulo ao commit anterior (`git -C java-backend checkout <sha>`) e repita as fases. A pipeline de
+CI/CD do Azure DevOps do `tutor-api` fica no repositório do Java, não aqui.
+
+## Configuração
+
+Tudo é sobrescrevível por variável de ambiente (valores padrão entre parênteses).
+
+| Variável | Para quê |
 |---|---|
-| ACR novo, primeiro deploy completo | **Sim** (ou a alternativa abaixo) |
-| Qualquer deploy seguinte | Não — o import é pulado quando a imagem já está no ACR |
-| `--apps-only` / `--service <x>` | Não — esses escopos nem chegam no import |
-| Workflow `deploy-aci.yml` | Não — ele só usa os dois escopos acima, e por isso segue sem nenhum `secrets.*` |
-| Deploy contra um ambiente já provisionado por outra pessoa | Não; e se o import rodar, o par vem do Key Vault |
+| `LOCATION` (`eastus2`), `SWA_LOCATION` (= `LOCATION`) | Região; troque `SWA_LOCATION` se a região não oferecer Static Web Apps |
+| `PREFIX` (`kura`), `RG` (`rg-$PREFIX`) | Prefixo dos nomes e grupo de recursos |
+| `NAME_SUFFIX`, `KV_NAME` | Sufixo/nome do Key Vault (padrão: hash estável da subscription; o nome é global) |
+| `VM_SIZE` (`Standard_B2ms`), `VM_IMAGE` (Ubuntu 24.04) | VM do banco |
+| `ORACLE_IMAGE` (`gvenzl/oracle-xe:21-slim`), `ORACLE_SERVICE` (`XEPDB1`), `ORACLE_APP_USER` (`KURA`) | Banco. O 26ai Free (`gvenzl/oracle-free:slim` + `FREEPDB1`) ainda não foi validado com o Flyway do tutor |
+| `PLAN_SKU` (`B2`) | Plano do App Service |
+| `RUNTIME_DOTNET` (`DOTNETCORE:10.0`), `RUNTIME_JAVA` (`JAVA:21-java21`), `RUNTIME_PYTHON` (`PYTHON:3.12`) | Runtimes (o script confere com `az webapp list-runtimes`) |
+| `EXTRA_CORS_ORIGINS` | Origens extras no CORS (ex.: `http://localhost:19006`) |
+| `LOJA_SEED_EXEMPLO` (`true`) | Catálogo de exemplo da Loja |
+| `LUNA_SCHEDULER_ENABLED` (`false`), `LEMBRETE_CONFIRMACAO_HABILITADO` (`false`) | Agendadores da Luna |
+| `ARTIFACTS_DIR` (`./artifacts`), `WEB_DIR` (`./web-dist`) | Saída do `build` e do build web |
+| `CONFIRMA=sim` | Exigida pelo `destroy` |
 
-**Sem conta no Docker Hub:** deixe as duas vazias. O `deploy.sh` tenta o import anônimo e,
-se falhar, imprime o caminho alternativo — espelhar pela sua própria máquina:
+As demais (`TWILIO_FROM_NUMBER`, `JWT_ACCESS_EXPIRATION_MINUTES`, `STORAGE_BASE_PATH`…) estão no bloco *Configuração* do
+`deploy.sh`.
 
-```bash
-docker pull gvenzl/oracle-xe:21-slim
-az acr login --name kuraprodacr
-docker tag gvenzl/oracle-xe:21-slim kuraprodacr.azurecr.io/kura/oracle-xe:21-slim
-docker push kuraprodacr.azurecr.io/kura/oracle-xe:21-slim
-```
+## Segredos (Key Vault)
 
-São ~2,6 GB de download e upload, **uma vez** — e sem efeito nenhum sobre o SKU do ACR,
-que já é Standard por causa da Luna (§7). Feito isso, rode o `deploy.sh` de novo: ele
-encontra a imagem e pula o import.
+Gerados na primeira execução e nunca impressos. Para fornecer um valor, exporte a variável antes do `deploy.sh`.
 
-Depois:
-
-```bash
-./azure/verify.sh      # valida cofre, imagens no ACR e os 4 serviços, de fora
-./azure/backup-db.sh   # primeiro dump do banco
-```
-
-### Execução local (desenvolvimento)
-
-```bash
-# Build e start de todos os containers em background
-docker compose up --build -d
-
-# Verificar status
-docker compose ps
-
-# Acompanhar logs em tempo real
-docker compose logs -f
-
-# Parar tudo
-docker compose down
-
-# Parar e remover volume (CUIDADO: apaga dados do banco)
-docker compose down -v
-```
-
-### Verificação de saúde dos serviços
-
-```bash
-# .NET API
-curl http://localhost:8080/health
-
-# Java API
-curl http://localhost:8081/api/actuator/health
-
-# Luna IA
-curl http://localhost:8000/health
-```
-
-### Teste rápido de CRUD — .NET API
-
-```bash
-# 1. Login e captura do token
-TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"dsEmail":"admin@clyvovet.com","dsSenha":"Senha123!"}' \
-  | jq -r '.token')
-
-# 2. Listar tutores (GET)
-curl -H "Authorization: Bearer $TOKEN" \
-     http://localhost:8080/api/v1/tutores
-
-# 3. Criar pet (POST)
-curl -X POST http://localhost:8080/api/v1/pets \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"nmPet":"Rex","tutorId":1,"especieId":1,"racaId":2,"dtNascimento":"2020-03-15"}'
-
-# 4. Atualizar pet (PUT)
-curl -X PUT http://localhost:8080/api/v1/pets/1 \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"nmPet":"Rex Atualizado"}'
-
-# 5. Remover pet (DELETE)
-curl -X DELETE http://localhost:8080/api/v1/pets/1 \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### ⚠️ Smoke de contrato app → API (obrigatório antes de qualquer demo)
-
-Nenhuma suíte automatizada deste projeto detecta a classe de bug `'' → NULL` do Oracle
-nem divergência de contrato entre os apps e as APIs: os testes .NET usam
-`.UseInMemoryDatabase` (sem `NOT NULL`, sem a semântica Oracle de string vazia virando
-`NULL`) e os testes mobile batem em mocks sintéticos que sempre respondem sucesso. Já
-custou 3 ciclos de correção sem detecção automatizada (ver `TASK-56`/`TASK-57` do
-backlog `KURA_BACKLOG_FIX_4`).
-
-`scripts/smoke-contratos.sh` é o único detector real: sobe contra o compose vivo e
-exercita payloads com origem citada em comentário acima de cada chamada — não payload
-inventado sem rastro. Para os checks com tela real no app, o payload é **copiado
-literalmente** do código do app, com `arquivo:linha` de origem; para os 5 pares
-DTO × `NOT NULL` da TASK-60 (nenhum tem tela no app hoje), o payload é construído
-direto contra o DTO/validator .NET correspondente, citado como origem em vez de uma
-tela. Rodar **antes de considerar qualquer mudança de contrato pronta para
-demonstração**:
-
-```bash
-# Confirmar que o compose está de pé (5/5 healthy/Exited(0)) antes de rodar
-docker compose ps -a
-
-bash scripts/smoke-contratos.sh
-```
-
-Sai com código 0 e "TUDO OK" quando os 17 checks respondem com o status esperado:
-registro de clínica, listagem de pets/medicamentos/dashboard, os 4 endpoints de evento
-clínico (consulta/prescrição/vacina/exame, incluindo os casos sem `dsObservacao` que
-motivaram o backlog), registro de tutor por convite, os 5 pares DTO × `NOT NULL`
-confirmados pela TASK-60 (medicamento sem `dsApresentacao`, tutor sem `nrTelefone` em
-create e update — 2 casos —, vacina sem `dsFabricante`, pet com `dsVinculo` vazio
-explícito — 4 colunas Oracle distintas, ver comentários no script para a lista
-completa) e a checagem da TASK-63 de que
-`GET /pets/{id}/timeline` não devolve mais 500 contra o Oracle real. Qualquer `5xx`
-(ou qualquer status divergente do esperado) conta como falha e o script sai com código
-≠ 0. Idempotente — pode ser rodado quantas vezes for preciso, cada execução gera
-CPF/CNPJ/e-mails novos. Requer `curl` e `python` (ou `python3`) no PATH — sem
-dependência de `jq`. Não roda no CI (exige Oracle real no runner, ~20min + imagem da
-Luna ~9-10GB — mesma razão que excluiu o build completo do workflow deste repo, ver
-`.github/workflows/`); é um gate local, operado manualmente.
-
-### 🎬 Seed de demonstração (`scripts/seed-demo.sh`)
-
-Complementar ao smoke acima, não substituto: `smoke-contratos.sh` **valida contrato**
-antes de uma mudança (roda quantas vezes for preciso, dados descartáveis, sufixo
-aleatório a cada execução); `seed-demo.sh` **prepara uma demonstração** (roda uma vez
-por ambiente, credenciais fixas e conhecidas, para reapresentar a mesma demo em
-sessões diferentes). Em modo real (`EXPO_PUBLIC_USE_MOCKS=false`) a clínica nasce
-vazia — o seed de dado fictício (clínica/tutor/pet) é callback exclusivo do profile
-`dev` do Flyway e nunca roda em `prod`, que é o profile do compose (ver `CLAUDE.md`).
-Sem este script, a única saída era `curl` improvisado no meio de uma demonstração.
-
-```bash
-docker compose ps -a   # confirmar 5/5 healthy/Exited(0) antes de rodar
-
-bash scripts/seed-demo.sh
-```
-
-Cria, via as mesmas rotas HTTP que os apps reais usam (nunca por migration/SQL direto):
-1 clínica de demo (`demo@kura.local` / `SenhaDemo123!`), o veterinário admin dela, 2
-tutores com convite gerado, 3 pets (usando `idEspecie`/`idRaca` do catálogo semeado
-pela `V14__seed_referencia.sql`, com verificação em runtime de que `nmEspecie`/`nmRaca`
-da resposta batem com o esperado — não apenas presume os IDs), 1 consulta e 1
-prescrição com `dsObservacao` preenchida (para a demo mostrar o campo populado, não o
-sentinela "Sem observações") + o receituário PDF gerado a partir dela. Termina
-imprimindo um bloco copiável com as credenciais, os UUIDs de convite dos 2 tutores e os
-IDs de cada entidade criada.
-
-**Fotos dos pets de demo (NX-03).** `bash scripts/seed-demo-fotos.sh` envia a foto real de Rex, Mimi, Bolinha e Thor
-(`scripts/assets/pets/`, créditos em `CREDITOS.md`) pelo endpoint real `POST /api/v1/pets/{id}/foto`. É standalone e
-**idempotente** (só envia para pet sem foto; falha de um pet não derruba os outros, e o exit é 1 se algum falhou).
-Rode depois dos seeds de demo (`seed-demo.sh` e `seed-demo-luna.sh`, que cria o Thor); não precisa de `down -v`.
-
-**Idempotência — decisão documentada:** o script **não** é idempotente por escolha.
-Como CNPJ/CPF são fixos (não gerados por sufixo aleatório, ao contrário do smoke), uma
-segunda execução contra o mesmo ambiente encontraria a clínica de demo já cadastrada; em
-vez de tentar mesclar/pular passo a passo (risco de duplicar tutor/pet pela metade), o
-script verifica isso logo no início (tenta logar com as credenciais fixas) e **falha
-com mensagem clara**, orientando a resetar o ambiente (`docker compose down -v && up -d`)
-antes de rodar de novo. Requer `curl` e `python`/`python3` no PATH, mesmos pré-requisitos
-do smoke. Não roda no CI pelo mesmo motivo do smoke (exige Oracle real).
-
-**Dia de clínica e D-1 (REC-18, ciclo Recepção).** O `seed-demo.sh` também cria o "dia de clínica"
-(agendamentos de hoje em etapas diferentes — em atendimento, chegou, agendado —, um de amanhã e uma
-triagem da Luna sem agendamento), pelos endpoints da recepção. Dois cuidados operacionais:
-
-- **Janela proibida 00:00–00:10 (America/Sao_Paulo):** nela "agora − 10 min" cai em ontem e o
-  check-in (só vale no dia do agendamento) seria recusado no meio do seed. O script **recusa rodar
-  nessa janela** (`exit 2`, antes de criar a clínica); rode depois das 00:11.
-- **D-1:** o D-1 elegível (tutor com consentimento `LEMBRETES` e o WhatsApp do time) nasce em
-  `DEMO_WHATSAPP=<DDI+DDD+numero> bash scripts/seed-demo-luna.sh` (obrigatório; `SEED_SEM_WHATSAPP=1`
-  para ensaio sem celular). O lembrete só sai com `LEMBRETE_CONFIRMACAO_HABILITADO=true` e roda **uma
-  vez por dia em `LEMBRETE_CONFIRMACAO_HORA` (default 9h, SP), mirando o dia seguinte, sem gatilho
-  manual**: semear **depois** dessa hora deixa o D-1 sem lembrete naquele dia. Semeie antes, ou suba
-  a Luna com a hora alguns minutos à frente.
-
----
-
-### Pré-voo do estande (`scripts/seed-demo-contas.sh` + `scripts/preflight-next.sh`)
-
-Duas contas de tutor para o estande NEXT, ambas com pet com foto: **principal** = Tutor Demo Um (`tutor1-demo@kura.local`, Rex e Mimi, senha em `DEMO_SENHA_TUTOR`, default no cabeçalho do script) e **reserva** = Tutor Demo Luna (`tutor-demo-luna@kura.local`, Thor, senha em `DEMO_SENHA_TUTOR_RESERVA`). O compose tem de estar de pé e `seed-demo.sh`, `seed-demo-luna.sh` e `seed-demo-fotos.sh` já rodados.
-
-```bash
-bash scripts/seed-demo-contas.sh          # idempotente: registra o convite do principal se faltar; confere as 2 contas
-bash scripts/preflight-next.sh            # PASSOU/FALHOU por item, sai != 0 se algum falhar (~6 s); --com-smoke inclui o smoke
-```
-
-Janela de bloqueio do tutor (medida na NX-06): **5 senhas erradas seguidas bloqueiam a conta por 15 min** (`AUTH_JANELA_BLOQUEIO_MINUTOS`, default 15; o compose não sobrescreve). Se travar no estande, troque para a conta reserva. Defina `DEMO_SENHA` própria do evento no `.env`: o pré-voo falha se ela estiver ausente ou igual à senha pública.
-
-#### Dia do evento (NX-08) — ordem, itens do pré-voo e a regra do `127.0.0.1`
-
-Ordem dos seeds, depois do reset do dia (as senhas do evento devem estar no `.env` **antes** de semear: `DEMO_SENHA`, `DEMO_SENHA_TUTOR`, `DEMO_SENHA_TUTOR_RESERVA`):
-
-```bash
-docker compose down -v && docker compose up -d      # reset do dia (espere os 5 serviços healthy)
-bash scripts/seed-demo.sh                           # clínica, tutores, pets, agenda de hoje
-bash scripts/seed-demo-luna.sh                      # Thor + tutor-demo-luna (senha = DEMO_SENHA_TUTOR_RESERVA) + 3 triagens
-bash scripts/seed-demo-fotos.sh                     # fotos dos pets
-bash scripts/seed-demo-contas.sh                    # conta principal + vacinas a vencer de Rex (+10 d) e Mimi (+20 d), relativas a hoje
-bash scripts/preflight-next.sh                      # PASSOU/FALHOU; só então ensaie
-```
-
-O pré-voo confere, além dos itens de contas/Loja/flag: **Hoje da clínica com ≥ 4 agendamentos** na data de hoje (fuso SP, `GET /api/v1/agenda`); **fila da Luna com ≥ 1 triagem nos últimos 7 dias** (mesmo intervalo do chip de 7 dias do app; triagem semeada envelhece: no dia do evento, semeie de novo); **`DEMO_SENHA_TUTOR` e `DEMO_SENHA_TUTOR_RESERVA` definidas e diferentes do default público** (comparação de strings, sem tentar login com a senha padrão e sem imprimir nada); e um **`AVISO`** (não conta como falha) quando `[::1]:8080`/`[::1]:8081` é ouvido por um processo que não é o Docker (no Windows, `wslrelay`).
-
-- **Regra do `127.0.0.1`:** com esse `AVISO`, `localhost` pode resolver para `::1` e cair no `wslrelay` em vez do container. Suba os apps com `EXPO_PUBLIC_API_BASE_URL=http://127.0.0.1:<porta>` (8080 clínica, 8081 tutor).
-- **Senha do `.env` x conta já existente:** o Java **não tem endpoint de troca de senha** do tutor (só `login`/`refresh`/`logout`/`register-invite`). Uma conta criada com a senha padrão **só passa a usar a do `.env` depois do `down -v` + seeds**. Até lá o pré-voo falha no login — e **cada rodada com a senha errada gasta 1 das 5 tentativas** (bloqueio de 15 min): não rode o pré-voo em loop contra contas com senha desatualizada.
-- A vacina semeada aparece na aba Saúde do tutor por `GET /api/v1/tutor/pets/{id}/vacinas` (próxima dose nos próximos 30 dias); o seed é idempotente (pet que já tem próxima dose futura é pulado).
-
-## 6. Docker Compose — Detalhamento
-
-### Topologia dos containers
-
-```
-docker-compose.yml
-│
-├── oracle-db         (gvenzl/oracle-xe:21-slim)
-│   ├── porta:  9092:1521
-│   ├── volume: kura_oracle_data → /opt/oracle/oradata  [NAMED VOLUME]
-│   └── health: sqlplus SELECT 1
-│
-├── kura-storage-init (mesma imagem do kura-api · roda uma vez, como root)
-│   ├── cria STORAGE_BASE_PATH dentro do volume kura_storage_documentos e
-│   │   entrega a posse ao usuário 'kura' — um named volume novo nasce
-│   │   root:root, o que quebraria a escrita do receituário sem este passo
-│   └── volume: kura_storage_documentos → STORAGE_BASE_PATH  [NAMED VOLUME]
-│
-├── kura-api          (./dotnet-backend · Dockerfile multistage)
-│   ├── porta:  8080:8080
-│   ├── user:   kura (não-root, uid definido no Dockerfile)
-│   ├── volume: kura_storage_documentos → STORAGE_BASE_PATH (PDFs de receituário)
-│   └── depends_on: oracle-db (healthy) + kura-storage-init (completed)
-│
-├── kura-tutor        (./java-backend · Dockerfile multistage)
-│   ├── porta:  8081:8081
-│   ├── user:   spring (uid=1000, definido no Dockerfile)
-│   ├── depends_on: oracle-db (healthy)
-│   └── Flyway (baseline-version 0) cria o schema completo (V1→V12+) do zero
-│       contra o volume vazio na primeira subida — não há mais bootstrap SQL
-│       manual em `db/init/`. Isso foi possível porque a V9 e a V12 do Flyway
-│       passaram a criar, respectivamente, as 11 tabelas .NET que faltavam e
-│       as 20 sequences que o EF Core exige.
-│
-└── luna-ai           (./luna-ia · Dockerfile python:3.12-slim)
-    ├── porta:  8000:8000
-    ├── user:   "1000:1000" (forçado via compose — Dockerfile não define USER)
-    └── depends_on: kura-api (healthy) + oracle-db (healthy)
-```
-
-### Segurança: usuários não-root (RUBRICA 2.2)
-
-| Container | Como é garantido | UID |
+| Segredo | Usado por | Origem |
 |---|---|---|
-| `kura-api` (.NET) | `USER kura` no Dockerfile (Stage runtime) | não-root |
-| `kura-tutor` (Java) | `USER spring` no Dockerfile (uid=1000) | 1000 |
-| `luna-ai` (Python) | `user: "1000:1000"` no docker-compose.yml | 1000 |
-| `oracle-db` | Imagem `gvenzl/oracle-xe` usa usuário `oracle` internamente | não-root |
+| `oracle-sys-password`, `oracle-app-password` | VM, tutor, Luna, .NET | gerado |
+| `dotnet-oracle-connection-string` | clinica-api | composto pelo script |
+| `dotnet-jwt-key`, `java-jwt-secret`, `foto-url-secret` | .NET, Java | gerado |
+| `iot-api-key`, `luna-api-key`, `luna-inbound-api-key` | .NET ↔ Luna, dispositivos | gerado |
+| `mongo-root-password`, `mongo-java-password`, `tutor-mongodb-uri` | VM, tutor | gerado / composto |
+| `twilio-sid`, `twilio-token`, `openai-api-key`, `daily-api-key` | Luna, .NET | **você fornece** (opcionais) |
 
-### Volume nomeado (RUBRICA 2.3)
+Trocar uma senha de banco **depois** da primeira subida exige alterar também o usuário dentro do banco: o container só
+aplica a senha ao criar o volume.
 
-```yaml
-volumes:
-  kura-oracle-data:        # volume nomeado — persiste dados entre restarts
-    name: kura_oracle_data
+## Operação
 
-services:
-  oracle-db:
-    volumes:
-      - kura-oracle-data:/opt/oracle/oradata
+```bash
+# containers do banco
+az vm run-command invoke -g rg-kura -n vm-kura-db --command-id RunShellScript \
+  --scripts "docker ps --format '{{.Names}}  {{.Status}}'" --query 'value[0].message' -o tsv
+# reiniciar o Oracle
+az vm run-command invoke -g rg-kura -n vm-kura-db --command-id RunShellScript --scripts "docker restart kura_oracle_db"
+# logs de um Web App
+az webapp log tail -g rg-kura -n kura-tutor-api
+# cópia do disco da VM (crash-consistent; não há backup automático)
+az snapshot create -g rg-kura -n snap-db-$(date +%F) \
+  --source "$(az vm show -g rg-kura -n vm-kura-db --query storageProfile.osDisk.managedDisk.id -o tsv)"
 ```
 
-O volume `kura_oracle_data` é gerenciado pelo Docker e **não é apagado** com `docker compose down`. Para apagá-lo intencionalmente: `docker compose down -v`.
+Não há SSH: o NSG nega toda entrada além de Oracle/MongoDB vindos da sub-rede dos Web Apps.
 
-```yaml
-volumes:
-  kura-storage-documentos:  # volume nomeado — PDFs de receituário (Documento.DsCaminho)
-    name: kura_storage_documentos
+## Seeds e smoke
 
-services:
-  kura-api:
-    volumes:
-      - kura-storage-documentos:${STORAGE_BASE_PATH:-/data/kura/receituarios}
+Populam e verificam as APIs **por HTTP real**. Contra o Azure, defina as URLs e as chaves por variável de ambiente:
+
+```bash
+eval "$(azure/deploy.sh urls)"
+export API="$CLINICA_API_URL" TUTOR_API="$TUTOR_API_URL" LUNA_URL
+export LUNA_API_KEY="$(az keyvault secret show --vault-name <kv> --name luna-api-key --query value -o tsv)"
+export DEMO_SENHA='<senha do evento>'
+bash scripts/seed-demo.sh        # clínica, tutores e pets  ·  depois: seed-demo-contas.sh, seed-demo-fotos.sh
 ```
 
-Mesma regra do `kura_oracle_data`: sobrevive a `docker compose down`, só some com `down -v`. Sem este volume, os PDFs viveriam só na camada gravável do container `kura-api` e sumiriam a cada `down`/recreate — não precisa de `-v` para isso acontecer, basta o container ser recriado.
+O nome do cofre (`<kv>`) sai de `az keyvault list -g rg-kura --query '[0].name' -o tsv`.
 
-### Rede interna
-
-Todos os serviços compartilham a rede `kura_network` (bridge). A comunicação entre serviços usa o **nome do serviço como hostname**:
-
-- Luna → `.NET`: `http://kura-api:8080`
-- `.NET` → Luna: `http://luna-ai:8000` (transcrição de áudio → draft SOAP, `Luna__BaseUrl`)
-- Java → Oracle: `jdbc:oracle:thin:@//oracle-db:1521/XEPDB1`
-- .NET → Oracle: `Data Source=oracle-db:1521/XEPDB1`
-
-### Variáveis de ambiente por serviço
-
-**oracle-db:**
-```
-ORACLE_PASSWORD        → senha SYS/SYSTEM
-APP_USER               → usuário de aplicação (criado automaticamente)
-APP_USER_PASSWORD      → senha do usuário de aplicação
-```
-
-**kura-api (.NET):**
-```
-ASPNETCORE_ENVIRONMENT          → Production
-ConnectionStrings__DefaultConnection → aponta para oracle-db:1521/XEPDB1
-Jwt__Key                        → chave secreta JWT
-IoT__ApiKey                     → chave dos dispositivos ESP32
-Luna__ApiKey                    → chave da Luna IA (Luna → .NET, TriagemLuna/tutores)
-Daily__ApiKey                   → chave da Daily.co (FEAT-01 teleconsulta). Sem ela —
-                                   ou com valor inválido — DailyService aplica fallback
-                                   de link manual em vez de falhar; env: DAILY_API_KEY
-Luna__BaseUrl                   → URL da Luna vista pelo .NET (FEAT-02 transcrição de
-                                   áudio → draft SOAP), default http://luna-ai:8000;
-                                   env: LUNA_BASE_URL
-Luna__InboundApiKey             → mesma chave do LUNA_INBOUND_API_KEY do serviço luna-ai
-                                   (não duplicar literal) — vai no header X-API-Key que
-                                   a Luna valida em POST /transcricao; env: LUNA_INBOUND_API_KEY
-Storage__BasePath               → pasta onde o kura-api grava PDFs de receituário
-                                   (FEAT-03, Documento.DsCaminho); montada como named
-                                   volume (kura_storage_documentos) para persistir entre
-                                   `down`/recreate; env: STORAGE_BASE_PATH
-Foto__UrlSecret                  → segredo HMAC da URL assinada de foto do pet (FT-02/
-                                   FT-04); FAIL-FAST na partida se ausente ou < 32 bytes;
-                                   MESMO valor do FOTO_URL_SECRET do kura-tutor abaixo;
-                                   env: FOTO_URL_SECRET
-Foto__UrlBase                    → base pública da URL de foto; sem valor, deriva do
-                                   próprio request (só serve local/LAN — ver achado F-P1
-                                   em azure/aci-dotnet-api.yaml); env: FOTO_URL_BASE
-```
-
-Binding confirmado em `dotnet-backend/src/Kura.Api/Extensions/ServiceCollectionExtensions.cs`
-(`configuration["Daily:ApiKey"]`, `configuration["Luna:BaseUrl"]`, `configuration["Luna:InboundApiKey"]`)
-e `dotnet-backend/src/Kura.Application/Services/ReceituarioPdfService.cs`
-(`configuration["Storage:BasePath"]`) — o binding padrão do .NET usa `__` como separador de
-hierarquia em variável de ambiente (`Daily__ApiKey`), não `:`; o `.env`/`.env.example` deste
-repo usa nomes com `_` simples (`DAILY_API_KEY` etc.), mapeados para as chaves `__` no
-`docker-compose.yml`, seguindo o mesmo padrão já usado por `Jwt__Key`/`IoT__ApiKey`/`Luna__ApiKey`.
-
-**kura-tutor (Java):**
-```
-SPRING_PROFILES_ACTIVE → prod
-DB_URL                 → jdbc:oracle:thin:@//oracle-db:1521/XEPDB1
-DB_USERNAME            → usuário Oracle
-DB_PASSWORD            → senha Oracle
-JWT_SECRET             → mínimo 64 bytes
-FOTO_URL_SECRET        → segredo HMAC da URL assinada de foto do pet (FT-05); SEM
-                          fail-fast (ausente → URLs de foto saem null, WARN na
-                          partida); MESMO valor do Foto__UrlSecret do kura-api acima
-FOTO_URL_BASE          → base pública da URL de foto; sem valor, sai vazio (não
-                          deriva do request — o Java não hospeda o arquivo)
-```
-
-**luna-ai (Python):**
-```
-ORACLE_DSN             → oracle-db:1521/XEPDB1
-KURA_API_BASE_URL      → http://kura-api:8080
-TWILIO_SID/TOKEN       → credenciais WhatsApp Sandbox
-YOLO_WEIGHTS_PATH      → caminho dos pesos YOLOv8n
-```
-
----
-
-## 6a. MongoDB da Loja (S4-LOJA-02)
-
-O compose sobe um MongoDB 7.0 (`kura-mongo`, volume nomeado `kura_mongo_data`) para a Loja do
-tutor. Ele **não publica porta no host**: só os containers da rede `kura-net` o alcançam. Um
-serviço one-shot, `mongo-init`, roda a cada `up`, aplica **só** a role e o usuário do Java
-(idempotente) e sai com `0`; schema e índices são do próprio `backend-tutor-java`.
-**Nenhum serviço depende do `mongo-init`** (nem o `kura-tutor`): com o Mongo fora, o `kura-tutor`
-sobe do mesmo jeito.
-
-| Variável (`.env`) | Para quê |
+| Script | Função |
 |---|---|
-| `KURA_MONGO_ROOT_USER` | usuário root (default `kura_root`) |
-| `KURA_MONGO_ROOT_PASSWORD` | senha do root; obrigatória (`openssl rand -hex 24`) |
-| `KURA_MONGO_JAVA_PASSWORD` | senha do usuário `kura_java`; obrigatória; hex, para dispensar URL-encode na URI |
+| `seed-demo.sh`, `seed-demo-luna.sh` | clínica de demonstração e dados da Luna |
+| `seed-demo-contas.sh`, `seed-demo-fotos.sh` | contas de tutor do estande e fotos dos pets (`scripts/assets/pets`) |
+| `preflight-next.sh` | pré-voo do estande (login, fotos, catálogo da Loja) |
+| `smoke-contratos.sh` | contrato app ↔ API |
+| `lib-env.sh` | leitura tolerante de chaves (variável de ambiente ou `.env`) |
 
-O usuário `kura_java` vive no database `kura_docs` (`authSource=kura_docs`) e tem a role
-`kura_java_runtime`: privilégios **por coleção** (`catalogo_loja`, `carrinho`, `pedidos_loja`,
-`documentos_tutor`), só leitura em `laudos` (dono: `.NET`), sem `drop*`. Conferir a role:
+Os blocos que usam `docker exec` ou conferem containers `kura_*` só valem para uma stack local; os demais passos são HTTP e
+funcionam contra o Azure.
 
-```bash
-docker exec -it kura_mongo mongosh -u "$KURA_MONGO_ROOT_USER" --authenticationDatabase admin kura_docs   --eval 'db.getRole("kura_java_runtime", {showPrivileges: true})'   # pede a senha do root
-```
+## CI no GitHub Actions
 
-Mudar um privilégio: editar `mongo/init/01-roles-usuarios.js` e `docker compose up -d mongo-init`
-(sem apagar o volume). Rotacionar a senha do Java: trocar `KURA_MONGO_JAVA_PASSWORD` e
-`docker compose up -d mongo-init kura-tutor`.
+`.github/workflows/ci.yml` roda a cada push/PR no `main`, toda segunda-feira e sob demanda:
 
----
-
-## 6b. Túnel Cloudflare para os apps hospedados na Vercel (REC-05b)
-
-Os apps `kura-clinica.vercel.app` e `kura-tutor.vercel.app` chamam as APIs por rewrites
-`/proxy/clinica|tutor|luna/*` (`vercel.json` de cada app). Sem um backend público, a tela abre
-e criar conta/login dá `502`. O destino público é **este compose, na máquina da demo, atrás de
-um Cloudflare *quick tunnel* grátis** (sem conta, sem login) — ligado só nos dias de demo.
-
-```
-celular/navegador → Vercel (/proxy/tutor/x) → https://<aleatorio>.trycloudflare.com/tutor/x
-   → cloudflared → 127.0.0.1:8088 (tunnel-gateway, nginx) → kura-tutor:8081 /x
-```
-
-O `tunnel-gateway` (profile `tunnel`, `tunnel/nginx.conf`) multiplexa as 3 APIs por prefixo
-(`/clinica`→`kura-api:8080`, `/tutor`→`kura-tutor:8081`, `/luna`→`luna-ai:8000`, prefixo
-removido) porque o túnel tem **um** hostname. Qualquer outro path é `404`. **O Oracle não
-é roteado** (nem `stream{}`, nem porta publicada; o gateway só escuta em `127.0.0.1:8088`).
-Sem `--profile tunnel` o serviço nem existe (`docker compose config --services` mostra 5).
-
-### Passo a passo
-
-1. **Uma vez por máquina:** baixar o `cloudflared` (release do GitHub `cloudflare/cloudflared`,
-   `cloudflared-windows-amd64.exe`) para uma pasta do `PATH`. Nenhuma conta, nenhum login.
-2. Compose de pé e `healthy` (`docker compose up -d`).
-3. `bash scripts/tunnel-up.sh` — sobe só o gateway (`--no-deps`, não recria os `kura_*`), abre o
-   quick tunnel, espera a URL responder e **reescreve os `/proxy/*` dos `vercel.json`** dos
-   checkouts `../mobile-clinica-rn` e `../mobile-tutor-rn` (outros caminhos:
-   `CLINICA_APP_DIR`/`TUTOR_APP_DIR`). Não commita e não faz deploy.
-4. **Deploy (manual):** em cada app, a partir do checkout com o `vercel.json` reescrito,
-   `vercel deploy --prod` (requer `vercel login` e o projeto linkado — `.vercel/project.json`;
-   no `mobile-clinica-rn` existe, no `mobile-tutor-rn` rode `vercel link` antes). A **URL muda a
-   cada subida**, então são 2 deploys por demo. Efeito colateral: um deploy disparado por *push*
-   no git volta a usar o `vercel.json` **commitado** (placeholder `SUBSTITUIR-PELO-TUNEL`), ou
-   seja, desfaz o apontamento — redeploy manual depois de qualquer push.
-5. **Obrigatório com o túnel:** em `.env`, `FOTO_URL_BASE=https://kura-clinica.vercel.app/proxy/clinica`
-   e `CONVITE_URL_BASE_APP_TUTOR=https://kura-tutor.vercel.app`, depois
-   `docker compose up -d kura-api kura-tutor` (recria só esses 2). Não é só para a foto abrir:
-   sem `FOTO_URL_BASE` o `.NET` deriva `http://<host-do-túnel>/api/v1/fotos/…` (sem `/clinica`,
-   foto `404`) **e devolve o hostname do túnel no JSON de `/pets` para qualquer cliente**.
-6. Ao terminar: `bash scripts/tunnel-up.sh down` (derruba cloudflared + gateway; `kura_*`
-   intocados) e `git checkout -- vercel.json` nos 2 apps para descartar a reescrita local.
-
-### Limites e cuidados
-
-- 🔴 **Senha da clínica demo é pública** (`seed-demo.sh`, repo público). `tunnel-up.sh` **recusa subir**
-  se `demo@kura.local` ainda logar com ela: defina `DEMO_SENHA` (env ou `.env`) e re-semeie
-  (`seed-demo.sh` e `seed-demo-luna.sh` leem `DEMO_SENHA`; sem ela, usam o default de sempre), ou
-  `docker compose down -v`. Aceitar o risco: `TUNNEL_ACEITA_SENHA_PUBLICA=1`. Com cadastro real de
-  tutores na recepção, nunca ligue o túnel com a senha pública.
-- 🔴 **NÃO coloque `EXPO_PUBLIC_LUNA_API_KEY` na Vercel.** O bundle hospedado não leva `X-API-Key` para
-  `/proxy/luna`, então **pelo túnel só `/luna/health` funciona no app hospedado** (o resto dá 401).
-  "Consertar" isso publicaria no bundle a chave que, pelo túnel, autoriza `POST /luna/whatsapp/enviar`
-  com a Twilio real do compose.
-- O gateway repassa a URI **decodificada** ao backend (`%2F` vira `/`). Nenhum service dos apps usa
-  segmento de path codificado hoje; quem criar rota assim precisa saber disso.
-- Reexecutar `tunnel-up.sh` gera URL nova (e mata o túnel anterior que o próprio script abriu): o app já
-  deployado com a URL velha perde o backend até o próximo deploy. O `down` só mata o cloudflared que o
-  script iniciou (PID em arquivo no diretório temporário); outro cloudflared da máquina não é tocado.
-- 🔴 **Enquanto ligado, as 3 APIs ficam públicas** (qualquer um com a URL). Ligue para a demo, desligue depois.
-- Quick tunnel não tem SLA nem garantia de uptime; suficiente para demo, não para produção.
-- **Por que não ngrok:** o plano grátis responde a `GET` com `User-Agent` de navegador (inclusive o
-  `<img>` da foto do pet, que não manda header custom) com uma página HTML de aviso em vez da API.
-  Cloudflare quick tunnel não tem essa página (medido: 200 `application/json` e `image/png`).
-
-## 7. Deploy em ACR/ACI (produção)
-
-Produção roda em **Azure Container Instances**: um container group por serviço, imagens
-no **Azure Container Registry**, segredos no **Azure Key Vault**. Tudo é provisionado por
-`azure/deploy.sh`.
-
-### Modos de execução
-
-| Comando | O que faz |
+| Job | O que confere |
 |---|---|
-| `./azure/deploy.sh` | Implantação completa. Se o container group do Oracle **já existe, é preservado** — o banco não é tocado. |
-| `./azure/deploy.sh --apps-only` | Redeploy só das três aplicações. Nem olha para o Oracle. É o modo usado pelo GitHub Actions. |
-| `./azure/deploy.sh --service luna-ai` | Redeploy de um serviço só (`clinica-api`, `tutor-api`, `luna-ai`). |
-| `./azure/deploy.sh --db-only` | Só a infraestrutura e o Oracle, sem tocar em aplicação. Usado no fluxo de restauração. |
-| `./azure/deploy.sh --recreate-db` | **Apaga e recria o banco.** Pede confirmação digitada. |
-| `./azure/deploy.sh --skip-build` | Não builda; usa a tag que já está no ACR. |
+| *Validate scripts and embedded compose* | `bash -n` e `shellcheck` do `deploy.sh` e de `scripts/`; JSON do Static Web Apps; sintaxe do script de bootstrap da VM gerado pelo `deploy.sh`; estrutura do `docker-compose.yml` embutido (YAML válido, variáveis todas definidas no `.env`, sem valores padrão de segredo), tudo sem Docker e sem Azure |
+| *Check submodule pins against upstream main* | Falha se algum dos 5 submódulos estiver fixado num commit diferente do `main` do repositório de origem |
 
-### O banco: por que não há volume, e o que garante a durabilidade
+## Solução de problemas
 
-O único tipo de volume do ACI é `azureFile`, que é **SMB** — e o Oracle não abre a
-instância com os datafiles em SMB (`ORA-00205`/`ORA-00210`: falta o locking POSIX/O_DIRECT
-que control files e redo logs exigem). Não é questão de configuração: **não existe volume
-persistente possível para o banco neste modelo.**
-
-Duas consequências, ambas tratadas explicitamente:
-
-1. **Recriar o container group do Oracle apaga o banco.** Por isso o `deploy.sh` nunca o
-   recria sem `--recreate-db`, e o modo `--apps-only` existe justamente para que um
-   redeploy de aplicação não chegue perto dele.
-2. **A durabilidade vem de dump lógico**, não de volume:
-
-```bash
-./azure/backup-db.sh                     # dump nomeado pela data/hora UTC
-./azure/backup-db.sh antes-da-migracao   # dump com rótulo próprio
-./azure/restore-db.sh --list             # o que existe no share
-```
-
-O dump usa **Data Pump** (`expdp` com `FLASHBACK_TIME`), que é consistente por construção.
-Copiar `/opt/oracle/oradata` com o banco aberto — abordagem tentadora e usada em versões
-anteriores deste projeto — produz datafiles *fuzzy*, que só seriam recuperáveis com o redo
-do intervalo; em `NOARCHIVELOG` (padrão do XE) esse redo não existe, então **aquela cópia
-não restaura**. Este é o motivo de a persistência ter mudado de mecanismo.
-
-**Restaurar** exige uma ordem específica, porque o Flyway roda no boot do `tutor-api` e
-recriaria um schema vazio antes do import:
-
-```bash
-./azure/deploy.sh --db-only --recreate-db   # banco novo e vazio, sem apps
-./azure/restore-db.sh kura-20260910T143000Z
-./azure/deploy.sh --apps-only               # sobe as três aplicações
-```
-
-Funciona porque o dump inclui a `flyway_schema_history`: ao subir, o Flyway lê o histórico
-restaurado e não reaplica nada.
-
-### Endereçamento: FQDN pré-calculado
-
-No compose os serviços se resolvem por nome na bridge network. Em ACI, container groups
-são recursos isolados — sem rede compartilhada, sem resolução de nome. O endereço passa a
-ser o FQDN público.
-
-Isso cria uma dependência circular: o `.NET` chama a Luna (transcrição, FEAT-02) e a Luna
-chama o `.NET` (triagem). Nenhum poderia ser criado "depois" do outro para herdar seu
-endereço. A saída é que o FQDN do ACI é **determinístico**:
-
-```
-<nome-do-container-group>.<região>.azurecontainer.io
-```
-
-Então o `deploy.sh` calcula os quatro endereços **antes** de criar qualquer container
-group, e o ciclo deixa de existir.
-
-### Consequência do endereço público: pool de conexões do Oracle
-
-Como não há VNet comum, o tráfego de banco **sai** do container group, passa pelo NAT de
-saída do Azure e volta pelo IP público do Oracle. Esse caminho tem uma propriedade que
-precisa estar refletida na configuração dos pools: **o fluxo TCP que fica ocioso é
-descartado no meio do caminho** — a tradução de NAT expira (o default documentado da
-plataforma é 4 minutos) e nenhuma das duas pontas recebe `RST` ou `FIN`.
-
-Nada avisa o cliente. A conexão segue no pool, aparentemente saudável, e o defeito aparece
-na próxima requisição que a usar:
-
-| Cliente | Erro |
+| Sintoma | O que fazer |
 |---|---|
-| .NET (ODP.NET) | `ORA-12537: TNS:connection closed` → HTTP 500 no endpoint |
-| Java (JDBC/Hikari) | `ORA-17008: Closed connection` → `CannotGetJdbcConnectionException`, `/actuator/health` **DOWN** |
-| Luna (python-oracledb) | absorvido: o pool *thin* faz `ping` ao adquirir conexão ociosa há mais de 60s |
+| `runtime '...' indisponível` | O script lista as opções da região; exporte `RUNTIME_DOTNET`, `RUNTIME_JAVA` ou `RUNTIME_PYTHON` com uma delas |
+| `sem sessão Azure` | `az login` e `az account set --subscription <id>` |
+| `bootstrap da VM não concluiu (sentinela ausente)` | Repita `azure/deploy.sh infra` (é idempotente). Para ver o que houve: `az vm run-command invoke … --scripts "docker logs --tail 40 kura_oracle_db"` |
+| Erros de permissão (RBAC) ao gravar segredos | O papel recém-concedido leva minutos para propagar; o script já repete a operação. Se persistir, confira Owner (ou Contributor + User Access Administrator) |
+| `build`: `'dotnet' não encontrado`, `JDK 21 ou superior necessário`, `dotnet SDK 10 não encontrado` | Instale a ferramenta indicada (ver [Pré-requisitos](#pré-requisitos)) |
+| `... não encontrado: baixe os submódulos` | `git submodule update --init --recursive` |
+| `tutor-api não ficou saudável` | O log do Web App é impresso; confira o banco (`az vm run-command` acima) e as referências do Key Vault |
+| Referência do Key Vault não resolvida | Aguarde alguns minutos após os papéis; reinicie o Web App (`az webapp restart -g rg-kura -n <app>`) |
+| Região sem Static Web Apps | Exporte `SWA_LOCATION` com outra região |
 
-É um erro **intermitente por construção**: depende de quanto tempo o serviço ficou sem
-tráfego, não do endpoint chamado. Com tráfego constante nunca aparece; depois de alguns
-minutos parado, a primeira chamada falha e a segunda funciona — porque a primeira foi o que
-expurgou a conexão morta do pool.
-
-Como distinguir isso de banco fora do ar, ao reinvestigar:
-
-- o `alert_XE.log` (`az container logs --name kura-prod-oracle-db`) **não** registra erro
-  nem restart na janela da falha — o banco não caiu;
-- o log do `tutor-api` mostra o Hikari reprovando uma a uma as conexões abertas dezenas de
-  minutos antes (`Failed to validate connection ... ORA-17008`), e a requisição seguinte
-  já responde `UP`;
-- cuidado com um falso negativo: um socket ocioso aberto **de fora** contra o IP público do
-  Oracle sobrevive a 300s. O caminho que expira é o de **saída** dos container groups das
-  aplicações, que é justamente onde os pools vivem.
-
-Por isso cada pool é configurado para que **nenhuma conexão fique ociosa perto dos 4
-minutos sem ser validada ou renovada**:
-
-- **.NET** — `deploy.sh` monta a connection string com `Validate Connection=true`
-  (valida ao tirar do pool), `Connection Lifetime=180` (aposenta em 3 min) e
-  `Min Pool Size=0` (o default, 1, mantém justamente uma conexão parada para sempre).
-- **Java** — `aci-java-api.yaml` injeta `SPRING_DATASOURCE_HIKARI_KEEPALIVE_TIME=120000`
-  e `SPRING_DATASOURCE_HIKARI_MAX_LIFETIME=180000`. Os defaults do Hikari fazem o oposto do
-  necessário aqui: `minimumIdle = maximumPoolSize`, `maxLifetime` de 30 min e nenhum
-  keepalive — as 5 conexões ficam paradas até morrerem todas juntas.
-
-Renovar a conexão **antes** da janela, e não só validá-la depois, tem um segundo efeito que
-importa no XE: o fechamento acontece com o socket ainda vivo, então o `logoff` chega ao
-servidor. Conexão que morre no meio do caminho deixa **sessão órfã** no banco — o processo
-servidor fica esperando para sempre num socket que não existe mais.
-
-O lado servidor é coberto por `SQLNET.EXPIRE_TIME=2` (dead connection detection), que o
-Oracle só passa a ter porque o container group roda uma **imagem derivada** da base
-espelhada — ver [Imagem do Oracle: base espelhada + camada de DCD](#imagem-do-oracle-base-espelhada--camada-de-dcd).
-Com ele o banco sonda cada sessão ociosa a cada 2 min, derruba a que não responde (liberando
-processo e sessão) e, como 2 min é menos que a janela de NAT, a própria sonda mantém a
-tradução viva — o que reforça o lado cliente de graça, para os três serviços.
-
-> A alternativa estrutural é colocar os quatro container groups na mesma VNet, onde o
-> tráfego de banco nunca passa por NAT e o problema não existe. O custo é que ACI
-> com VNet **não aceita IP público nem `dnsNameLabel`**: os FQDNs determinísticos desta
-> seção deixariam de existir e expor as APIs passaria a exigir um Application Gateway na
-> frente. Para o escopo deste projeto, ajustar os pools resolve o mesmo sintoma sem esse
-> acréscimo.
-
-### Imagens: tag por commit, nunca `latest`
-
-Cada imagem é marcada com o SHA do commit fixado do submódulo correspondente
-(`kura/clinica-api:de96c70e9f82`). É isso que permite saber o que está no ar e voltar
-atrás — rollback é recriar o container group apontando para a tag anterior, que continua
-no ACR.
-
-A imagem do Oracle é espelhada do Docker Hub para o ACR com `az acr import`, que copia
-**server-side**, sem baixar os ~2,6 GB para a máquina de quem faz o deploy. Espelhar evita
-o rate limit de pull anônimo do Docker Hub, aplicado por IP de origem — e os IPs de saída
-do ACI são compartilhados entre assinaturas, o que torna esse limite uma falha
-intermitente e difícil de diagnosticar.
-
-Isso não é teórico para este container group em particular: o Oracle roda com
-`restartPolicy: Always` e **sem volume para os datafiles**. Puxar direto do Docker Hub
-significaria que todo reagendamento do container group depende de uma quota compartilhada
-com terceiros — um limite estourado por outra assinatura viraria banco que não volta do
-restart, com os dados no disco local e nenhum caminho de recuperação além de esperar.
-Espelhar move essa dependência para um momento controlado, que acontece uma vez.
-
-O mesmo compartilhamento de IPs afeta o próprio serviço de import, que por isso aceita
-credencial na origem: `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` (PAT com escopo *Public
-Repo Read-only*). É opcional e necessário no máximo uma vez por ACR — ver
-[§5, Credencial do Docker Hub](#credencial-do-docker-hub--quando-é-preciso-e-quando-não-é)
-para quando isso se aplica e para a alternativa sem conta no Docker Hub.
-
-### Imagem do Oracle: base espelhada + camada de DCD
-
-O banco roda **duas tags** do mesmo repositório no ACR, e a distinção importa:
-
-| Tag | O que é | Como nasce |
-|---|---|---|
-| `kura/oracle-xe:21-slim` | a base, byte a byte igual à do Docker Hub | `az acr import` (passo `[3/10]`) |
-| `kura/oracle-xe:21-slim-dcd2` | a base + `SQLNET.EXPIRE_TIME=2` | `az acr build` a partir de `azure/oracle-xe-dcd/Dockerfile` |
-
-O container group roda a **derivada** (`ORACLE_IMAGE_TAG`). A base nunca é sobrescrita — o
-`deploy.sh` aborta se as duas tags coincidirem, porque isso faria o próximo build empilhar
-DCD sobre uma imagem que já tem DCD e perder a cópia original do Docker Hub.
-
-O número de minutos entra no nome da tag de propósito (`-dcd2`): mudar
-`ORACLE_DCD_MINUTOS` produz tag nova, e o ACI puxa imagem nova em vez de reaproveitar a
-que já conhece.
-
-O build roda **dentro do ACR** (`az acr build`): o contexto enviado é só o Dockerfile, a
-base é lida registry-local e o resultado nasce lá. Nada dos ~2,6 GB passa pela máquina de
-quem faz o deploy, e o passo não exige Docker instalado. Exige ACR com suporte a Tasks — o
-criado aqui é `Standard`. `--skip-build` **não** cobre este build: aquela flag existe para
-pular o build/push das imagens de aplicação (a `luna-ai` tem ~9,8 GB), enquanto esta é uma
-camada de poucos KB cuja ausência deixaria o passo `[6/10]` apontando para uma tag
-inexistente.
-
-Por que imagem derivada, e não um script de inicialização num share ou um `command`
-sobrescrito no manifesto: o único tipo de volume do ACI é `azureFile` (SMB), e pendurar o
-boot do Oracle numa dependência de SMB é arriscado justamente no ponto mais sensível desta
-infra — sem volume para os datafiles, boot que falha é banco perdido. Sobrescrever `command`
-exigiria repetir o entrypoint da imagem base, que não é contrato nosso. A camada derivada
-preserva o entrypoint e deixa a configuração versionada na tag.
-
-Um detalhe que custa tempo se for descoberto em produção: o `sqlnet.ora` que vale **não**
-está em `$ORACLE_HOME/network/admin`. O 21c usa *read-only Oracle home*, e o diretório
-efetivo é `$ORACLE_BASE_HOME/network/admin`
-(`/opt/oracle/homes/OraDBHome21cXE/network/admin`). Escrever no primeiro produz um build que
-passa e um banco **sem** DCD, em silêncio. O `RUN` do Dockerfile por isso procura o
-diretório que de fato contém um `sqlnet.ora` e **falha** se não achar nenhum — se uma base
-futura mudar o layout, o erro aparece no deploy. No primeiro start o
-`container-entrypoint.sh` move esse arquivo para
-`$ORACLE_BASE/oradata/dbconfig/$ORACLE_SID/` e devolve um symlink no lugar; o conteúdo é
-preservado, então a linha acrescentada no build continua valendo depois do boot.
-
-### Deploy por GitHub Actions
-
-`.github/workflows/deploy-aci.yml` faz o rollout manual (`workflow_dispatch`), autenticando
-por **OIDC / workload identity federation** — nenhuma credencial de longa duração fica
-guardada no repositório.
-
-O workflow **não builda a imagem da Luna**: os quatro images somam ~13,6 GB, com a Luna
-sozinha em ~9,8 GB, e um runner `ubuntu-latest` documenta ~14 GB livres. A Luna é buildada
-numa estação de trabalho (`./azure/deploy.sh` sem `--skip-build`) e o workflow apenas a
-implanta. É a mesma medição que já justificava a ausência do build completo em `ci.yml`.
-
-O principal do Actions precisa, além do papel no resource group, de acesso ao cofre — que o
-`deploy.sh` cria em modo *access policy*, cobrindo apenas quem rodou primeiro:
+## Remover o ambiente
 
 ```bash
-az keyvault set-policy --name kura-prod-kv \
-  --spn <client-id> --secret-permissions get list set
+CONFIRMA=sim azure/deploy.sh destroy    # apaga o grupo de recursos (inclusive os dados do banco) e purga o Key Vault
 ```
-
-### Encerrar o ambiente
-
-```bash
-./azure/teardown.sh                  # apaga o resource group inteiro
-./azure/teardown.sh --purge-keyvault # e apaga os segredos de vez
-```
-
-⚠️ Isto apaga também a storage account — **onde moram os dumps de backup**. Baixe o que
-precisar antes:
-
-```bash
-az storage file download-batch --account-name kuraprodstorage \
-  --source kura-oracle-backup --destination ./dumps
-```
-
----
-
-## 8. Segredos no Azure Key Vault
-
-Em produção os segredos vivem no cofre `kura-prod-kv`, criado pelo próprio `deploy.sh`
-dentro do mesmo resource group. **O `.env` não é usado no caminho Azure.**
-
-> O `.env` continua **obrigatório para o `docker compose` local** — o compose usa
-> `${VAR:?mensagem}` nas chaves de auth de propósito, e o `ci.yml` tem um guard (TASK-39)
-> que quebra o build se isso deixar de ser verdade. Os dois caminhos são independentes.
-
-| Segredo no cofre | Variável | Consumido por |
-|---|---|---|
-| `oracle-sys-password` | `ORACLE_SYS_PASSWORD` | Oracle (`ORACLE_PASSWORD`) |
-| `oracle-app-password` | `ORACLE_APP_PASSWORD` | Oracle, connection string do .NET, `DB_PASSWORD` do Java, `ORACLE_PASSWORD` da Luna |
-| `dotnet-jwt-key` | `DOTNET_JWT_KEY` | .NET (`Jwt__Key`) |
-| `iot-api-key` | `IOT_API_KEY` | .NET (`IoT__ApiKey`) |
-| `luna-api-key` | `LUNA_API_KEY` | .NET (`Luna__ApiKey`), Luna (`KURA_API_KEY`) |
-| `luna-inbound-api-key` | `LUNA_INBOUND_API_KEY` | .NET e Luna — mesmo valor dos dois lados |
-| `java-jwt-secret` | `JAVA_JWT_SECRET` | Java (`JWT_SECRET`) |
-| `foto-url-secret` | `FOTO_URL_SECRET` | .NET (`Foto__UrlSecret`) e Java (`FOTO_URL_SECRET`) — mesmo valor dos dois lados |
-| `daily-api-key` | `DAILY_API_KEY` | .NET — **externa, opcional** |
-| `twilio-sid` / `twilio-token` | `TWILIO_SID` / `TWILIO_TOKEN` | Luna — **externas, opcionais** |
-| `openai-api-key` | `OPENAI_API_KEY` | Luna — **externa, opcional** |
-| `dockerhub-username` / `dockerhub-token` | `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` | `deploy.sh` `[3/10]`, `az acr import` — **externas, opcionais, par indivisível**. Nenhum container as recebe. |
-
-O nome no cofre é a variável em kebab-case minúsculo porque o Key Vault não aceita `_`.
-
-### Como cada segredo converge
-
-1. Veio do ambiente/`.env` e difere do cofre → `az keyvault secret set`;
-2. veio do ambiente e é igual ao do cofre → nada é feito (sem versão nova a cada deploy);
-3. não veio do ambiente mas já está no cofre → reaproveitado;
-4. não existe em lugar nenhum → **gerado** na hora e guardado.
-
-O passo 4 tem uma exceção deliberada: as credenciais marcadas como **externas** (Daily,
-Twilio, OpenAI, Docker Hub) nunca são geradas. São emitidas por terceiros, e inventar um
-valor aleatório produziria uma credencial inválida em vez de um erro claro — quem as
-consome degrada de forma tratada quando elas faltam: os três serviços de aplicação
-conforme o `docker-compose.yml`, e o espelhamento do Oracle caindo para import anônimo.
-
-`dockerhub-username` é o único item do cofre que **não é segredo** (é público no perfil do
-Docker Hub). Está lá de propósito: o Docker Hub autentica com o par username+PAT, e o PAT
-só vale para o seu dono — guardar só o token faria o cofre conter meia credencial, e o
-segundo deploy herdaria um `401` sem explicação.
-
-As senhas do Oracle são geradas com 28 caracteres **alfanuméricos**, não base64: elas
-entram numa connection string ADO.NET (`User Id=...;Password=...;Data Source=...`) e num
-JDBC URL, onde `;` `/` `+` `=` quebrariam o parsing.
-
-Depois de convergir, **todos são relidos do cofre** com `az keyvault secret show` —
-inclusive os que vieram do `.env` — e só então preenchem os manifestos, onde entram como
-`secureValue` (não aparecem em `az container show` nem nos logs). O YAML preenchido fica
-em `azure/.generated/` (gitignored) e é recriado a cada execução.
-
-### Operar os segredos
-
-```bash
-az keyvault secret list --vault-name kura-prod-kv -o table
-az keyvault secret set  --vault-name kura-prod-kv --name dotnet-jwt-key --value "<novo>"
-./azure/deploy.sh --apps-only     # recria os container groups com o valor girado
-```
-
-⚠️ Girar `oracle-app-password` no cofre **não gira a senha dentro do banco**. Credencial de
-banco é sempre um par coordenado: `ALTER USER` no Oracle **e** o cofre. Girar só um lado
-derruba as três aplicações no próximo deploy com `ORA-01017`.
-
-O `verify.sh` confere no passo `[1/6]` que os segredos obrigatórios existem — presença,
-nunca valor.
-
----
-
-## Links
-
-| Recurso | URL |
-|---|---|
-| Repositório Infra | `https://github.com/KURA-Clyvo/DevOps-Cloud` |
-| Repositório .NET | `https://github.com/KURA-Clyvo/backend-clinica-dotnet` |
-| Repositório Java | `https://github.com/KURA-Clyvo/backend-tutor-java` |
-| Repositório Luna IA | `https://github.com/KURA-Clyvo/kura-luna-ai` |
-| Diagrama de arquitetura (Mermaid) | [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) |
-| Diagrama de arquitetura (draw.io) | [`docs/arquitetura-kura.drawio`](docs/arquitetura-kura.drawio) |
-| Vídeo YouTube | *(inserir link após gravação)* |
-
----
-
-*Projeto acadêmico — FIAP Challenge 2026 · Parceiro: Clyvo Vet*

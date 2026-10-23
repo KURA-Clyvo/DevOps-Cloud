@@ -1,1215 +1,691 @@
 #!/usr/bin/env bash
 # =============================================================================
-# KURA · azure/deploy.sh — implantação em ACR + ACI (ambiente de produção)
+# azure/deploy.sh — provisiona e implanta o Kura no Azure (deploy inicial)
 #
-# Substitui o antigo script-azure.sh, que provisionava uma VM Ubuntu e rodava o
-# docker-compose.yml dentro dela. O compose CONTINUA sendo o caminho de
-# desenvolvimento local; o que mudou é só o destino de produção: cada serviço
-# passa a ser um Azure Container Instance próprio, com as imagens vindas de um
-# Azure Container Registry e os segredos de um Azure Key Vault.
+#   App Service (Linux) ... clinica-api (.NET 10) · tutor-api (Java 21) · luna-ai (Python 3.12)
+#   VM Ubuntu ............. Oracle + MongoDB em containers (volumes nomeados no disco da VM)
+#   Key Vault (RBAC) ...... segredos, lidos pelos Web Apps via Key Vault references
+#   Static Web Apps ....... build web dos apps React Native (clínica e tutor)
 #
-# ─── ORDEM DE EXECUÇÃO ───────────────────────────────────────────────────────
-#   1. git submodule update --init --recursive   (o build precisa do conteúdo
-#                                                  dos três submódulos)
-#   2. az login
-#   3. ./azure/deploy.sh                          (este script)
-#   4. ./azure/verify.sh                          (valida por FQDN público)
-#   5. ./azure/backup-db.sh                       (antes de qualquer mexida no
-#                                                  container group do Oracle)
+# Uso:  azure/deploy.sh <fase>
 #
-# ─── MODOS ───────────────────────────────────────────────────────────────────
-#   ./azure/deploy.sh                     implantação completa. Se o container
-#                                         group do Oracle JÁ EXISTE, ele é
-#                                         PRESERVADO (o banco não é tocado).
-#   ./azure/deploy.sh --apps-only         redeploy só das três aplicações; nem
-#                                         olha para o Oracle. É o modo usado
-#                                         pelo workflow do GitHub Actions.
-#   ./azure/deploy.sh --service luna-ai   redeploy de um serviço só
-#                                         (clinica-api | tutor-api | luna-ai)
-#   ./azure/deploy.sh --db-only           só a infraestrutura e o Oracle; não
-#                                         mexe em nenhuma aplicação. É o modo
-#                                         usado no fluxo de restauração, para
-#                                         que o banco volte ANTES de o Flyway
-#                                         (que roda no boot do tutor-api) achar
-#                                         um schema vazio e recriá-lo do zero.
-#   ./azure/deploy.sh --recreate-db       APAGA e recria o Oracle. Destrói todos
-#                                         os dados: o armazenamento do ACI é
-#                                         efêmero e não há volume para os
-#                                         datafiles (ver aci-oracle-db.yaml).
-#                                         Pede confirmação digitada.
-#   ./azure/deploy.sh --skip-build        não builda/pusha imagem; usa a tag que
-#                                         já está no ACR.
-#   ./azure/deploy.sh --yes               não pergunta nada (para automação).
+#   infra    RG, rede (VNet/NSG), Key Vault, VM do banco, plano e Web Apps, Static Web Apps
+#   build    compila as 3 APIs a partir dos submódulos em $ARTIFACTS_DIR
+#            (clinica.zip · tutor.jar · luna.zip)
+#   apps     app settings + deploy das 3 APIs, a partir de $ARTIFACTS_DIR
+#   web      compila os 2 apps web com as URLs reais das APIs ($WEB_DIR) e publica nos Static Web Apps
+#   urls     imprime CHAVE=VALOR com as URLs públicas
+#   all      infra, build, apps e web em sequência (deploy inicial completo)
+#   destroy  apaga o grupo de recursos e purga o Key Vault (exige CONFIRMA=sim)
 #
-# ─── IDEMPOTÊNCIA ────────────────────────────────────────────────────────────
-# Resource group, Key Vault, ACR, storage account e file shares só são criados
-# se ainda não existirem. Os container groups das APLICAÇÕES são recriados do
-# zero a cada execução (delete + create), porque o ACI não suporta update
-# in-place de imagem/env var — e para elas isso é inofensivo, já que não
-# guardam estado. O container group do ORACLE é a exceção deliberada: nunca é
-# recriado sem --recreate-db explícito.
+# Pré-requisitos: az logado (az login), python3, curl.
+#   fase build: dotnet SDK 10, JDK 21 e zip      fase web: Node.js 22 LTS (npm/npx)
+# Os submódulos precisam estar baixados (git submodule update --init --recursive).
+# A identidade precisa criar role assignments (Owner, ou Contributor + User Access
+# Administrator) — o script concede papéis no Key Vault às identidades dos Web Apps e da VM.
+#
+# Tudo é sobrescrevível por variável de ambiente (ver "Configuração").
+# Segredos: gerados no Key Vault na primeira execução. Para fornecer um valor
+# (ex.: TWILIO_SID, TWILIO_TOKEN, OPENAI_API_KEY, DAILY_API_KEY) exporte a variável
+# de mesmo nome antes de rodar; ela é gravada no cofre. Nada é impresso.
 # =============================================================================
-set -eu
+set -Eeuo pipefail
+trap 'echo "ERRO na linha $LINENO: $BASH_COMMAND" >&2' ERR
 
-# ─── UTF-8 no Python DESTE script ────────────────────────────────────────────
-# Vale para o $PYTHON_BIN usado em substituir_placeholders(), que lê e escreve
-# os manifestos.
-#
-# ATENÇÃO — isto NÃO protege o `az`. O launcher do Azure CLI no Windows é
-# `python.exe -IBm azure.cli`, e o -I (modo isolado, implica -E) faz o Python do
-# az ignorar toda variável PYTHON*, estas duas inclusive. O manifesto acaba lido
-# com a codificação ANSI da máquina (cp1252 em português), e um byte indefinido
-# nessa tabela derruba `az container create --file` com "'charmap' codec can't
-# decode byte 0x8d". Quem resolve isso é a dobra para ASCII em
-# substituir_placeholders() — ver o docstring de para_ascii() lá embaixo.
-export PYTHONUTF8=1
-export PYTHONIOENCODING=utf-8
+RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-GERADOS_DIR="$SCRIPT_DIR/.generated"
+# ─── Configuração ────────────────────────────────────────────────────────────
+LOCATION="${LOCATION:-eastus2}"
+SWA_LOCATION="${SWA_LOCATION:-$LOCATION}"   # Static Web Apps só existe em algumas regiões
+PREFIX="${PREFIX:-kura}"
+RG="${RG:-rg-$PREFIX}"
 
-# ─── Argumentos ──────────────────────────────────────────────────────────────
-MODO_ESCOPO="tudo"      # tudo | apps | db | servico
-SERVICO_ALVO=""
-RECRIAR_DB=false
-PULAR_BUILD=false
-PERGUNTAR=true
+# Rede
+VNET="vnet-$PREFIX"; VNET_CIDR="10.20.0.0/16"
+SNET_APP="snet-app";   SNET_APP_CIDR="10.20.1.0/24"     # integração dos Web Apps (delegada)
+SNET_DATA="snet-data"; SNET_DATA_CIDR="10.20.2.0/24"    # VM do banco
+NSG="nsg-$PREFIX-data"
 
-# Imprime o cabecalho deste arquivo ate a linha que o fecha, para que a ajuda
-# nunca fique defasada em relacao aos modos documentados la em cima.
-mostrar_ajuda() {
-    awk 'NR>2 && /^# ={10,}/{exit} NR>2{sub(/^# ?/,""); print}' "${BASH_SOURCE[0]}"
-    exit 0
-}
-
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --apps-only)   MODO_ESCOPO="apps" ;;
-        --db-only)     MODO_ESCOPO="db" ;;
-        --service)
-            shift
-            [ $# -gt 0 ] || { echo "❌ --service exige um nome."; exit 1; }
-            MODO_ESCOPO="servico"
-            SERVICO_ALVO="$1"
-            ;;
-        --recreate-db) RECRIAR_DB=true ;;
-        --skip-build)  PULAR_BUILD=true ;;
-        --yes)         PERGUNTAR=false ;;
-        -h|--help)     mostrar_ajuda ;;
-        *)
-            echo "❌ Argumento desconhecido: $1"
-            echo "   Use --help para ver os modos disponíveis."
-            exit 1
-            ;;
-    esac
-    shift
-done
-
-case "$MODO_ESCOPO:$SERVICO_ALVO" in
-    servico:clinica-api|servico:tutor-api|servico:luna-ai) ;;
-    servico:*)
-        echo "❌ Serviço inválido: '$SERVICO_ALVO'."
-        echo "   Válidos: clinica-api | tutor-api | luna-ai"
-        exit 1
-        ;;
-esac
-
-# ─── .env: OPCIONAL para este script ─────────────────────────────────────────
-# Atenção à diferença de papel entre os dois caminhos deste repositório:
-#   - docker-compose.yml (desenvolvimento local): o .env é OBRIGATÓRIO. O
-#     compose usa `${VAR:?mensagem}` nas chaves de auth de propósito, e o
-#     workflow de CI tem um guard (TASK-39) que falha se `docker compose config`
-#     passar a resolver sem .env. Isso não mudou.
-#   - este script (produção em ACI): o .env é OPCIONAL. Os segredos vivem no
-#     Azure Key Vault. Se houver um .env aqui, ele serve para config não-secreta
-#     e para SEMEAR o cofre na primeira execução.
-if [ -f "$ROOT_DIR/.env" ]; then
-    # shellcheck disable=SC1091
-    set -a
-    . "$ROOT_DIR/.env"
-    set +a
-    echo "✅ .env local carregado (opcional aqui — semente do cofre + config não-secreta)."
-else
-    echo "ℹ️  Sem .env local — usando apenas o ambiente e o Azure Key Vault."
+# Key Vault (nome global: sufixo estável derivado da subscription)
+SUFFIX="${NAME_SUFFIX:-}"
+if [ -z "$SUFFIX" ]; then
+  SUB_ID="$(az account show --query id -o tsv 2>/dev/null || true)"
+  [ -n "$SUB_ID" ] && SUFFIX="$(printf '%s' "$SUB_ID" | sha1sum | cut -c1-5)"
 fi
+KV_NAME="${KV_NAME:-kv-$PREFIX-${SUFFIX:-x0000}}"
 
-# ─── Nomenclatura ────────────────────────────────────────────────────────────
-# KURA_PREFIX é a ÚNICA fonte da verdade dos nomes. ACR, Key Vault e storage
-# account exigem nome GLOBALMENTE único no Azure inteiro, e o dnsNameLabel dos
-# ACIs precisa ser único dentro da região — se algum colidir, trocar esta
-# variável (no .env ou no ambiente) reposiciona todos de uma vez.
-KURA_PREFIX="${KURA_PREFIX:-kura-prod}"
-# Variante sem hífen, para os recursos que só aceitam alfanumérico.
-KURA_PREFIX_ALNUM="$(printf '%s' "$KURA_PREFIX" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
+# VM do banco (Oracle ≤ 2 GB de SGA+PGA; MongoDB limitado a 0,5 GB de cache; 8 GiB dá folga)
+VM="vm-$PREFIX-db"
+VM_SIZE="${VM_SIZE:-Standard_B2ms}"
+VM_IMAGE="${VM_IMAGE:-Canonical:ubuntu-24_04-lts:server:latest}"
 
-AZURE_RESOURCE_GROUP="${AZURE_RESOURCE_GROUP:-${KURA_PREFIX}-rg}"
-AZURE_LOCATION="${AZURE_LOCATION:-eastus2}"
-KEYVAULT_NAME="${KEYVAULT_NAME:-${KURA_PREFIX}-kv}"
-ACR_NAME="${ACR_NAME:-${KURA_PREFIX_ALNUM}acr}"
-STORAGE_ACCOUNT_NAME="${STORAGE_ACCOUNT_NAME:-${KURA_PREFIX_ALNUM}storage}"
-STORAGE_SHARE_BACKUP="${STORAGE_SHARE_BACKUP:-kura-oracle-backup}"
-STORAGE_SHARE_DOCUMENTOS="${STORAGE_SHARE_DOCUMENTOS:-kura-documentos}"
-STORAGE_SHARE_QUOTA_GB="${STORAGE_SHARE_QUOTA_GB:-10}"
+# Banco: Oracle XE 21c (service XEPDB1), a imagem validada no projeto, e MongoDB 7 (Loja do tutor).
+# Alternativa ainda não validada com o Flyway do tutor: ORACLE_IMAGE=gvenzl/oracle-free:slim ORACLE_SERVICE=FREEPDB1
+ORACLE_IMAGE="${ORACLE_IMAGE:-gvenzl/oracle-xe:21-slim}"
+ORACLE_SERVICE="${ORACLE_SERVICE:-XEPDB1}"
+ORACLE_APP_USER="${ORACLE_APP_USER:-KURA}"      # dono do schema: o Flyway (tutor) cria tudo nele
 
-ACI_ORACLE_NAME="${KURA_PREFIX}-oracle-db"
-ACI_DOTNET_NAME="${KURA_PREFIX}-clinica-api"
-ACI_JAVA_NAME="${KURA_PREFIX}-tutor-api"
-ACI_LUNA_NAME="${KURA_PREFIX}-luna-ai"
+# App Service
+PLAN="plan-$PREFIX"; PLAN_SKU="${PLAN_SKU:-B2}"
+APP_CLINICA="$PREFIX-clinica-api"; APP_TUTOR="$PREFIX-tutor-api"; APP_LUNA="$PREFIX-luna-ai"
+SWA_CLINICA="$PREFIX-clinica-web"; SWA_TUTOR="$PREFIX-tutor-web"
+# Strings de runtime: confira com `az webapp list-runtimes --os-type linux` (o script valida)
+RUNTIME_DOTNET="${RUNTIME_DOTNET:-DOTNETCORE:10.0}"
+RUNTIME_JAVA="${RUNTIME_JAVA:-JAVA:21-java21}"
+RUNTIME_PYTHON="${RUNTIME_PYTHON:-PYTHON:3.12}"
 
-# ─── Config não-secreta das aplicações ───────────────────────────────────────
-# ORACLE_APP_USER é o DONO DO SCHEMA: o Flyway cria todos os objetos dentro
-# dele. O compose ainda traz RM562999 como default (herança da nomenclatura de
-# checkpoint); aqui o default é KURA, alinhado ao resto dos nomes. A troca é
-# segura porque o banco nasce vazio e o Flyway não qualifica objeto por schema —
-# mas se alguma migration passar a fazer `CREATE ... KURA.TABELA` ou similar, a
-# falha aparece já na primeira subida do Java, alto e claro, não silenciosa.
-ORACLE_APP_USER="${ORACLE_APP_USER:-KURA}"
-ORACLE_PDB_SERVICE="${ORACLE_PDB_SERVICE:-XEPDB1}"
+# Valores de aplicação
 ASPNETCORE_ENVIRONMENT="${ASPNETCORE_ENVIRONMENT:-Production}"
-STORAGE_BASE_PATH="${STORAGE_BASE_PATH:-/data/kura/receituarios}"
+STORAGE_BASE_PATH="${STORAGE_BASE_PATH:-/home/kura/receituarios}"   # /home persiste no App Service
 JWT_ACCESS_EXPIRATION_MINUTES="${JWT_ACCESS_EXPIRATION_MINUTES:-15}"
-CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-http://localhost:8082,http://localhost:19006,https://kura-clinica.vercel.app,https://kura-tutor.vercel.app}"
-# FT-06 (KURA_BACKLOG_FOTO_PET.md). NÃO é a mesma origem do compose local
-# (http://localhost:8080 não existe atrás de um ACI) — é a origem HTTPS que os
-# apps hospedados alcançam de fato. Achado medido nesta task: o app do TUTOR
-# não tem rewrite próprio até o .NET (mobile-tutor-rn/vercel.json só proxeia
-# para o Java e a Luna) — a única rota pública até o .NET é a do app da
-# CLÍNICA (mobile-clinica-rn/vercel.json, /proxy/clinica). Por isso o mesmo
-# valor serve para os DOIS ACIs (dotnet e java) abaixo: um <Image>/download de
-# foto não é sujeito a CORS, então a origem "de outro app" funciona igual para
-# quem chama de dentro do app do tutor. Ver o comentário em aci-java-api.yaml
-# para o raciocínio completo.
-# REC-05 (fix wave G2, achado m-guard) — guarda ÚNICA para toda URL pública
-# https:// que este script exige (FOTO_URL_BASE e CONVITE_URL_BASE_APP_TUTOR
-# abaixo). Antes eram 2 blocos `case` quase idênticos (um herdado da FT-06,
-# outro copiado dele pela REC-05) cuja lista de padrões proibidos
-# (*localhost*|*127.0.0.1*[|*192.168.*|*10.0.2.2*]) o G2 mediu que deixava
-# passar (`EXIT=0` indevido): `https://10.x` — qualquer coisa em
-# `10.0.0.0/8` fora do literal `10.0.2.2` —, `https://172.16-31.x` (o range
-# padrão de rede Docker/172.16.0.0/12), `https://0.0.0.0` e HOST VAZIO
-# (`https://` sozinho, que geraria um link `https:///register?...`).
-#
-# Extrai o HOST antes de comparar (em vez de `grep`/`case` na string
-# inteira), para não depender do que vem depois (porta, path) nem produzir
-# falso positivo em algo como `https://meufotos10.example.com` (que o
-# padrão antigo `*10.*` teria acertado por engano se alguém tivesse tentado
-# consertá-lo ingenuamente).
-guardar_url_publica_https() {  # guardar_url_publica_https <nome_da_variavel> <valor>
-    local nome=$1 valor=$2 host
-    case "$valor" in
-        https://*) ;;
-        *)
-            echo "❌ ERRO: $nome precisa começar com https:// para o deploy no Azure (valor atual: '$valor')."
-            echo "   Provável causa: um .env local copiado de .env.example com essa chave"
-            echo "   descomentada (valor de dev/LAN) vazou para este deploy. Não defina esta"
-            echo "   chave no .env usado para deploy no Azure — o default do script já é a"
-            echo "   origem certa."
-            exit 1
-            ;;
-    esac
-    host="${valor#https://}"
-    host="${host%%/*}"
-    host="${host%%:*}"
-    case "$host" in
-        ""|localhost|127.*|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|0.0.0.0)
-            echo "❌ ERRO: $nome aponta para localhost/IP privado/host vazio ('$valor', host='$host')."
-            echo "   Isso quebra a foto/o link de convite em produção, sem erro nenhum. Não"
-            echo "   defina $nome no .env usado para este script — o default do script já é a"
-            echo "   origem certa. Se precisar sobrescrever, use uma URL https:// pública real."
-            exit 1
-            ;;
-    esac
-}
-
-FOTO_URL_BASE="${FOTO_URL_BASE:-https://kura-clinica.vercel.app/proxy/clinica}"
-# achado I-1 do G2 da FT-06 (guarda contra `.env` de dev vazando pro deploy),
-# ampliado pelo m-guard da REC-05 acima.
-guardar_url_publica_https FOTO_URL_BASE "$FOTO_URL_BASE"
-# REC-05 (KURA_BACKLOG_RECEPCAO.md, A-8). Só o ACI do .NET usa (Convite__UrlBaseAppTutor
-# — ver aci-dotnet-api.yaml). Diferente de FOTO_URL_BASE acima: o link do convite
-# aponta para o APP DO TUTOR hospedado (não para este próprio backend nem para o app
-# da clínica) — a origem certa é a raiz pública do mobile-tutor-rn na Vercel, sem
-# prefixo de proxy (a tela /register roda direto ali, ver REC-06/G0 item 5).
-CONVITE_URL_BASE_APP_TUTOR="${CONVITE_URL_BASE_APP_TUTOR:-https://kura-tutor.vercel.app}"
-guardar_url_publica_https CONVITE_URL_BASE_APP_TUTOR "$CONVITE_URL_BASE_APP_TUTOR"
 TWILIO_FROM_NUMBER="${TWILIO_FROM_NUMBER:-+14155238886}"
-WEBHOOK_PUBLIC_URL="${WEBHOOK_PUBLIC_URL:-https://kura-webhook-nao-configurado.invalid/webhook/twilio/whatsapp}"
-# REC-18 (KURA_BACKLOG_RECEPCAO.md, A-10). Lembrete de confirmacao D-1 da Luna
-# (settings.py: LEMBRETE_CONFIRMACAO_HABILITADO / LEMBRETE_CONFIRMACAO_HORA). Default
-# DESLIGADO: ligar dispara WhatsApp de verdade, todo dia, para os tutores de amanha.
-# Validado aqui porque o valor entra num manifesto YAML e a Luna (pydantic) so recusa
-# valor invalido na partida do container - melhor falhar antes do deploy.
 LEMBRETE_CONFIRMACAO_HABILITADO="${LEMBRETE_CONFIRMACAO_HABILITADO:-false}"
 LEMBRETE_CONFIRMACAO_HORA="${LEMBRETE_CONFIRMACAO_HORA:-9}"
-case "$LEMBRETE_CONFIRMACAO_HABILITADO" in
-    true|false) ;;
-    *) echo "❌ ERRO: LEMBRETE_CONFIRMACAO_HABILITADO deve ser true ou false (veio '"$LEMBRETE_CONFIRMACAO_HABILITADO"')."; exit 1 ;;
+LUNA_SCHEDULER_ENABLED="${LUNA_SCHEDULER_ENABLED:-false}"
+LUNA_SCHEDULER_HORA="${LUNA_SCHEDULER_HORA:-8}"
+LOJA_SEED_EXEMPLO="${LOJA_SEED_EXEMPLO:-true}"      # catálogo de exemplo da Loja (D-LOJA-10)
+EXTRA_CORS_ORIGINS="${EXTRA_CORS_ORIGINS:-}"        # ex.: http://localhost:19006 (desenvolvimento)
+
+ARTIFACTS_DIR="${ARTIFACTS_DIR:-$RAIZ/artifacts}"
+WEB_DIR="${WEB_DIR:-$RAIZ/web-dist}"
+SWA_CLI_VERSION="${SWA_CLI_VERSION:-2.0.10}"        # fixada (publicada há mais de 14 dias)
+
+# ─── Utilitários ─────────────────────────────────────────────────────────────
+log()  { printf '\n==> %s\n' "$*"; }
+info() { printf '    %s\n' "$*"; }
+die()  { printf 'ERRO: %s\n' "$*" >&2; exit 1; }
+
+tentar() { # tentar <tentativas> <espera-s> <comando...>
+  local n=$1 s=$2 i; shift 2
+  for ((i = 1; i <= n; i++)); do
+    "$@" && return 0
+    [ "$i" -lt "$n" ] && sleep "$s"
+  done
+  return 1
+}
+
+exigir_ferramentas() {
+  local t
+  for t in az python3 curl; do command -v "$t" >/dev/null 2>&1 || die "'$t' não encontrado no PATH"; done
+  az account show >/dev/null 2>&1 || die "sem sessão Azure: rode 'az login' (ou use a service connection)"
+}
+
+gerar() { # gerar <alnum|hex|b64> <tamanho>
+  python3 - "$1" "$2" <<'PY'
+import secrets, string, sys
+tipo, n = sys.argv[1], int(sys.argv[2])
+if tipo == "alnum":   # começa com letra: senhas Oracle e connection strings
+    todos = string.ascii_letters + string.digits
+    print(secrets.choice(string.ascii_letters) + "".join(secrets.choice(todos) for _ in range(n - 1)))
+elif tipo == "hex":   # sem caracteres que exijam URL-encode em URIs
+    print(secrets.token_hex(n // 2))
+else:                 # base64 url-safe
+    print(secrets.token_urlsafe(n)[:n])
+PY
+}
+
+oid_chamador() { # object id de quem executa (usuário ou service principal), lido do token — sem Graph
+  az account get-access-token --query accessToken -o tsv | python3 -c '
+import sys, json, base64
+p = sys.stdin.read().strip().split(".")[1]
+p += "=" * (-len(p) % 4)
+print(json.loads(base64.urlsafe_b64decode(p))["oid"])'
+}
+tipo_chamador() {
+  if [ "$(az account show --query user.type -o tsv)" = "servicePrincipal" ]; then echo ServicePrincipal; else echo User; fi
+}
+
+dar_papel() { # dar_papel <object-id> <User|ServicePrincipal> <papel> <escopo> — idempotente, com retry
+  local i out
+  for ((i = 1; i <= 12; i++)); do
+    if out="$(az role assignment create --assignee-object-id "$1" --assignee-principal-type "$2" \
+                --role "$3" --scope "$4" -o none 2>&1)"; then return 0; fi
+    grep -qi 'already exists' <<<"$out" && return 0
+    sleep 10   # identidade recém-criada ainda replicando no Entra ID
+  done
+  printf '%s\n' "$out" >&2; return 1
+}
+
+# ─── Key Vault: segredos ─────────────────────────────────────────────────────
+kv_ler() { az keyvault secret show --vault-name "$KV_NAME" --name "$1" --query value -o tsv 2>/dev/null || true; }
+
+kv_gravar() { # só cria nova versão quando o valor muda
+  [ "$(kv_ler "$1")" = "$2" ] && return 0
+  tentar 20 15 az keyvault secret set --vault-name "$KV_NAME" --name "$1" --value "$2" -o none   # RBAC propaga em minutos
+}
+
+segredo() { # segredo <nome-no-cofre> <VARIÁVEL> <alnum|hex|b64|externo> [tamanho]
+  local nome=$1 tipo=$3 tam=${4:-32} valor="${!2:-}"
+  if [ -n "$valor" ]; then kv_gravar "$nome" "$valor"; return 0; fi   # valor fornecido pelo ambiente
+  [ -n "$(kv_ler "$nome")" ] && return 0                              # já existe: preserva
+  [ "$tipo" = externo ] && return 0                                    # opcional: segue ausente
+  kv_gravar "$nome" "$(gerar "$tipo" "$tam")"
+}
+
+kvref()         { printf '@Microsoft.KeyVault(VaultName=%s;SecretName=%s)' "$KV_NAME" "$1"; }
+kvref_opcional() { if [ -n "$(kv_ler "$1")" ]; then kvref "$1"; fi; }   # vazio se o segredo não existe
+
+# ─── Consultas ───────────────────────────────────────────────────────────────
+host_app() { az webapp show -g "$RG" -n "$1" --query defaultHostName -o tsv; }
+host_swa() { az staticwebapp show -g "$RG" -n "$1" --query defaultHostname -o tsv; }
+ip_vm()    { az vm show -d -g "$RG" -n "$VM" --query privateIps -o tsv; }
+
+aguardar_saude() { # aguardar_saude <url> [tentativas] [espera-s]
+  local url=$1 n=${2:-40} s=${3:-15} i code
+  for ((i = 1; i <= n; i++)); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" || true)"
+    if [ "$code" = 200 ]; then info "saudável: $url"; return 0; fi
+    sleep "$s"
+  done
+  return 1
+}
+
+diagnostico() { # últimas linhas do log do Web App quando algo falha
+  info "log de $1 (últimos segundos):"
+  timeout 25 az webapp log tail -g "$RG" -n "$1" 2>&1 | tail -n 40 || true
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FASE infra
+# ═════════════════════════════════════════════════════════════════════════════
+validar_runtimes() {
+  local lista r; lista="$(az webapp list-runtimes --os-type linux -o tsv)"
+  for r in "$RUNTIME_DOTNET" "$RUNTIME_JAVA" "$RUNTIME_PYTHON"; do
+    grep -qix "$r" <<<"$lista" || die "runtime '$r' indisponível. Opções:
+$lista"
+  done
+}
+
+criar_rede() {
+  az group create -n "$RG" -l "$LOCATION" --tags projeto=kura -o none
+
+  # NSG da sub-rede do banco: só os Web Apps (snet-app) chegam em Oracle e MongoDB.
+  # Nada mais entra (sem SSH: a administração é por `az vm run-command`).
+  az network nsg create -g "$RG" -n "$NSG" -l "$LOCATION" -o none
+  az network nsg rule create -g "$RG" --nsg-name "$NSG" -n allow-db-from-app \
+    --priority 100 --direction Inbound --access Allow --protocol Tcp \
+    --source-address-prefixes "$SNET_APP_CIDR" --source-port-ranges '*' \
+    --destination-address-prefixes '*' --destination-port-ranges 1521 27017 -o none
+  az network nsg rule create -g "$RG" --nsg-name "$NSG" -n deny-all-inbound \
+    --priority 4000 --direction Inbound --access Deny --protocol '*' \
+    --source-address-prefixes '*' --source-port-ranges '*' \
+    --destination-address-prefixes '*' --destination-port-ranges '*' -o none
+
+  az network vnet create -g "$RG" -n "$VNET" -l "$LOCATION" --address-prefixes "$VNET_CIDR" -o none
+  az network vnet subnet create -g "$RG" --vnet-name "$VNET" -n "$SNET_APP" \
+    --address-prefixes "$SNET_APP_CIDR" --delegations Microsoft.Web/serverFarms -o none
+  az network vnet subnet create -g "$RG" --vnet-name "$VNET" -n "$SNET_DATA" \
+    --address-prefixes "$SNET_DATA_CIDR" --network-security-group "$NSG" -o none
+}
+
+criar_cofre() {
+  # Um cofre apagado (soft-delete) segura o nome: ao recriar do zero, purga.
+  if [ -n "$(az keyvault list-deleted --query "[?name=='$KV_NAME'].name | [0]" -o tsv)" ]; then
+    info "purgando cofre removido anteriormente: $KV_NAME"
+    az keyvault purge --name "$KV_NAME" --location "$LOCATION" -o none
+  fi
+  if ! az keyvault show -n "$KV_NAME" >/dev/null 2>&1; then
+    az keyvault create -n "$KV_NAME" -g "$RG" -l "$LOCATION" \
+      --enable-rbac-authorization true --retention-days 7 -o none
+  fi
+  KV_ID="$(az keyvault show -n "$KV_NAME" --query id -o tsv)"
+  dar_papel "$(oid_chamador)" "$(tipo_chamador)" "Key Vault Secrets Officer" "$KV_ID"
+
+  segredo oracle-sys-password     ORACLE_SYS_PASSWORD     alnum 24
+  segredo oracle-app-password     ORACLE_APP_PASSWORD     alnum 24
+  segredo dotnet-jwt-key          DOTNET_JWT_KEY          b64   48
+  segredo iot-api-key             IOT_API_KEY             b64   32
+  segredo luna-api-key            LUNA_API_KEY            b64   32
+  segredo luna-inbound-api-key    LUNA_INBOUND_API_KEY    b64   32
+  segredo java-jwt-secret         JAVA_JWT_SECRET         b64   64
+  segredo foto-url-secret         FOTO_URL_SECRET         b64   48
+  segredo mongo-root-password     MONGO_ROOT_PASSWORD     hex   48
+  segredo mongo-java-password     MONGO_JAVA_PASSWORD     hex   48
+  segredo daily-api-key           DAILY_API_KEY           externo
+  segredo twilio-sid              TWILIO_SID              externo
+  segredo twilio-token            TWILIO_TOKEN            externo
+  segredo openai-api-key          OPENAI_API_KEY          externo
+}
+
+montar_script_vm() { # imprime o script que roda DENTRO da VM (como root, via run-command)
+  printf 'KV_NAME=%q\nORACLE_IMAGE=%q\nORACLE_SERVICE=%q\nORACLE_APP_USER=%q\n' \
+    "$KV_NAME" "$ORACLE_IMAGE" "$ORACLE_SERVICE" "$ORACLE_APP_USER"
+  printf 'MONGO_INIT_B64=%q\n' "$(base64 -w0 "$RAIZ/mongo/init/01-roles-usuarios.js")"
+  cat <<'VM_SCRIPT'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+# 1) Docker (pacotes do Ubuntu: docker.io + plugin compose v2)
+if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+  apt-get update -qq
+  apt-get install -y -qq docker.io docker-compose-v2 python3 curl ca-certificates >/dev/null
+fi
+systemctl enable --now docker
+
+# 2) Segredos: Key Vault, com a identidade gerenciada da VM (o papel pode levar minutos para propagar)
+segredo() {
+  local t v
+  for _ in $(seq 1 30); do
+    if t="$(curl -sf -H 'Metadata:true' 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net' \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')" \
+       && v="$(curl -sf -H "Authorization: Bearer $t" "https://${KV_NAME}.vault.azure.net/secrets/$1?api-version=7.4" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')" \
+       && [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+    sleep 10
+  done
+  echo "ERRO: segredo $1 inacessível no Key Vault" >&2; return 1
+}
+ORACLE_SYS_PASSWORD="$(segredo oracle-sys-password)"
+ORACLE_APP_PASSWORD="$(segredo oracle-app-password)"
+MONGO_ROOT_PASSWORD="$(segredo mongo-root-password)"
+MONGO_JAVA_PASSWORD="$(segredo mongo-java-password)"
+
+# 3) Arquivos do stack (permissão 600: só root lê)
+install -d -m 700 /opt/kura /opt/kura/mongo-init
+umask 077
+cat > /opt/kura/.env <<ENV
+ORACLE_IMAGE=${ORACLE_IMAGE}
+ORACLE_SYS_PASSWORD=${ORACLE_SYS_PASSWORD}
+ORACLE_APP_USER=${ORACLE_APP_USER}
+ORACLE_APP_PASSWORD=${ORACLE_APP_PASSWORD}
+KURA_MONGO_ROOT_USER=kura_root
+KURA_MONGO_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+KURA_MONGO_JAVA_PASSWORD=${MONGO_JAVA_PASSWORD}
+ENV
+printf '%s' "$MONGO_INIT_B64" | base64 -d > /opt/kura/mongo-init/01-roles-usuarios.js
+
+cat > /opt/kura/docker-compose.yml <<'YML'
+name: kura
+services:
+  oracle-db:
+    image: ${ORACLE_IMAGE}
+    container_name: kura_oracle_db
+    restart: unless-stopped
+    shm_size: 1g
+    ports: ["1521:1521"]
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_SYS_PASSWORD}
+      APP_USER: ${ORACLE_APP_USER}
+      APP_USER_PASSWORD: ${ORACLE_APP_PASSWORD}
+    volumes:
+      - kura-oracle-data:/opt/oracle/oradata
+
+  kura-mongo:
+    image: mongo:7.0.45-jammy
+    container_name: kura_mongo
+    restart: unless-stopped
+    command: ["--wiredTigerCacheSizeGB", "0.5"]
+    ports: ["27017:27017"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${KURA_MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${KURA_MONGO_ROOT_PASSWORD}
+    volumes:
+      - kura-mongo-data:/data/db
+    healthcheck:
+      # --host "$(hostname)" e de proposito, nao localhost: no 1o boot a imagem sobe um mongod
+      # temporario so em 127.0.0.1; o IP do container so responde com o mongod definitivo.
+      test: ["CMD-SHELL", "mongosh --quiet --host \"$$(hostname)\" --eval \"db.adminCommand('ping').ok\" | grep -qx 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  mongo-init:
+    image: mongo:7.0.45-jammy
+    container_name: kura_mongo_init
+    restart: "no"
+    depends_on:
+      kura-mongo:
+        condition: service_healthy
+    environment:
+      KURA_MONGO_ROOT_USER: ${KURA_MONGO_ROOT_USER}
+      KURA_MONGO_ROOT_PASSWORD: ${KURA_MONGO_ROOT_PASSWORD}
+      KURA_MONGO_JAVA_PASSWORD: ${KURA_MONGO_JAVA_PASSWORD}
+    volumes:
+      - /opt/kura/mongo-init:/scripts:ro
+    entrypoint: ["sh", "-c"]
+    command:
+      - "exec mongosh --host kura-mongo --quiet -u \"$$KURA_MONGO_ROOT_USER\" -p \"$$KURA_MONGO_ROOT_PASSWORD\" --authenticationDatabase admin --file /scripts/01-roles-usuarios.js"
+
+volumes:
+  kura-oracle-data:
+  kura-mongo-data:
+YML
+
+# 4) Sobe o stack (idempotente) e espera ficar pronto
+docker compose -f /opt/kura/docker-compose.yml --env-file /opt/kura/.env up -d
+
+oracle_pronto=0
+for _ in $(seq 1 180); do   # 1ª subida do Oracle leva alguns minutos (cria o banco)
+  out="$(printf 'connect %s/%s@//localhost:1521/%s\nselect 1 from dual;\n' "$ORACLE_APP_USER" "$ORACLE_APP_PASSWORD" "$ORACLE_SERVICE" \
+         | docker exec -i kura_oracle_db sqlplus -s /nolog 2>&1 || true)"
+  if grep -Eq '^ +1$' <<<"$out"; then oracle_pronto=1; break; fi
+  sleep 10
+done
+if [ "$oracle_pronto" != 1 ]; then
+  docker logs --tail 40 kura_oracle_db 2>&1 || true
+  echo "ERRO: Oracle não aceitou conexão de ${ORACLE_APP_USER} no service ${ORACLE_SERVICE}" >&2; exit 1
+fi
+
+for _ in $(seq 1 60); do
+  [ "$(docker inspect -f '{{.State.Health.Status}}' kura_mongo 2>/dev/null || true)" = healthy ] && break
+  sleep 5
+done
+rc="$(docker wait kura_mongo_init)"
+if [ "$rc" != 0 ]; then
+  docker logs --tail 40 kura_mongo_init 2>&1 || true
+  echo "ERRO: mongo-init terminou com código $rc" >&2; exit 1
+fi
+
+echo KURA_BOOTSTRAP_OK
+VM_SCRIPT
+}
+
+criar_vm() {
+  if ! az vm show -g "$RG" -n "$VM" >/dev/null 2>&1; then
+    # IP público só para SAÍDA (docker pull/apt): o NSG da sub-rede bloqueia toda entrada.
+    az vm create -g "$RG" -n "$VM" -l "$LOCATION" --image "$VM_IMAGE" --size "$VM_SIZE" \
+      --vnet-name "$VNET" --subnet "$SNET_DATA" --nsg "" --public-ip-sku Standard \
+      --assign-identity '[system]' --os-disk-size-gb 64 --storage-sku StandardSSD_LRS \
+      --admin-username azureuser --generate-ssh-keys -o none
+  fi
+  dar_papel "$(az vm show -g "$RG" -n "$VM" --query identity.principalId -o tsv)" ServicePrincipal \
+    "Key Vault Secrets User" "$KV_ID"
+
+  # Bootstrap por run-command. O código de saída do run-command não é confiável:
+  # o sucesso é provado pela linha sentinela que o script imprime ao final.
+  local tmp saida; tmp="$(mktemp)"
+  montar_script_vm > "$tmp"
+  saida="$(az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+            --scripts "@$tmp" --query 'value[0].message' -o tsv || true)"
+  rm -f "$tmp"
+  if ! grep -q KURA_BOOTSTRAP_OK <<<"$saida"; then
+    printf '%s\n' "$saida" | tail -n 40 >&2
+    die "bootstrap da VM não concluiu (sentinela ausente)"
+  fi
+  info "banco pronto em $(ip_vm) (Oracle ${ORACLE_SERVICE} + MongoDB)"
+}
+
+criar_webapp() { # criar_webapp <nome> <runtime> <path-de-saude>
+  local app=$1 runtime=$2 saude=$3 pid
+  if ! az webapp show -g "$RG" -n "$app" >/dev/null 2>&1; then
+    # hostname único e estável dentro do tenant (--domain-name-scope TenantReuse)
+    az webapp create -g "$RG" -n "$app" -p "$PLAN" --runtime "$runtime" \
+      --domain-name-scope TenantReuse -o none
+  fi
+  az webapp identity assign -g "$RG" -n "$app" -o none
+  pid="$(az webapp identity show -g "$RG" -n "$app" --query principalId -o tsv)"
+  dar_papel "$pid" ServicePrincipal "Key Vault Secrets User" "$KV_ID"
+
+  # Saída para o banco pela VNet (o banco só aceita a sub-rede dos Web Apps)
+  if [ -z "$(az webapp vnet-integration list -g "$RG" -n "$app" --query '[0].name' -o tsv)" ]; then
+    az webapp vnet-integration add -g "$RG" -n "$app" --vnet "$VNET" --subnet "$SNET_APP" -o none
+  fi
+
+  # Baseline de segurança e operação
+  az webapp update -g "$RG" -n "$app" --https-only true -o none
+  az webapp config set -g "$RG" -n "$app" --always-on true --min-tls-version 1.2 \
+    --ftps-state Disabled --http20-enabled true \
+    --generic-configurations "{\"healthCheckPath\": \"$saude\"}" -o none
+  az webapp log config -g "$RG" -n "$app" --application-logging filesystem --level information \
+    --docker-container-logging filesystem -o none
+  # Sem credenciais básicas (FTP/SCM): o deploy usa a identidade do Entra ID
+  local pol
+  for pol in ftp scm; do
+    az resource update -g "$RG" --namespace Microsoft.Web --resource-type basicPublishingCredentialsPolicies \
+      --parent "sites/$app" -n "$pol" --set properties.allow=false -o none
+  done
+}
+
+fase_infra() {
+  exigir_ferramentas
+  log "1/6  Runtimes disponíveis"; validar_runtimes
+  log "2/6  Rede: NSG, VNet e sub-redes"; criar_rede
+  log "3/6  Key Vault e segredos"; criar_cofre
+  log "4/6  VM do banco (Oracle + MongoDB)"; criar_vm
+  log "5/6  App Service: plano e Web Apps"
+  if ! az appservice plan show -g "$RG" -n "$PLAN" >/dev/null 2>&1; then
+    az appservice plan create -g "$RG" -n "$PLAN" -l "$LOCATION" --is-linux --sku "$PLAN_SKU" -o none
+  fi
+  criar_webapp "$APP_CLINICA" "$RUNTIME_DOTNET" /health
+  criar_webapp "$APP_TUTOR"   "$RUNTIME_JAVA"   /api/actuator/health
+  criar_webapp "$APP_LUNA"    "$RUNTIME_PYTHON" /health
+  log "6/6  Static Web Apps (web dos apps)"
+  local swa
+  for swa in "$SWA_CLINICA" "$SWA_TUTOR"; do
+    if ! az staticwebapp show -g "$RG" -n "$swa" >/dev/null 2>&1; then
+      az staticwebapp create -g "$RG" -n "$swa" -l "$SWA_LOCATION" --sku Free -o none
+    fi
+  done
+  fase_urls
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FASE build
+# ═════════════════════════════════════════════════════════════════════════════
+exigir_comandos() { # exigir_comandos <fase> <comando...>
+  local fase=$1 t; shift
+  for t in "$@"; do command -v "$t" >/dev/null 2>&1 || die "'$t' não encontrado no PATH (necessário na fase $fase)"; done
+}
+
+exigir_submodulos() { # exigir_submodulos <arquivo-relativo...>
+  local f
+  for f in "$@"; do
+    [ -f "$RAIZ/$f" ] || die "'$f' não encontrado: baixe os submódulos com 'git submodule update --init --recursive'"
+  done
+}
+
+fase_build() {
+  exigir_comandos build dotnet java zip
+  local jdk out
+  dotnet --list-sdks | grep -q '^10\.' || die "dotnet SDK 10 não encontrado ('dotnet --list-sdks')"
+  jdk="$(java -version 2>&1 | sed -n '1s/.*version "\([0-9][0-9]*\).*/\1/p')"
+  [ "${jdk:-0}" -ge 21 ] || die "JDK 21 ou superior necessário (encontrado: ${jdk:-desconhecido})"
+  exigir_submodulos dotnet-backend/src/Kura.Api/Kura.Api.csproj java-backend/mvnw luna-ia/luna/requirements.txt
+
+  mkdir -p "$ARTIFACTS_DIR"; out="$(cd "$ARTIFACTS_DIR" && pwd)"
+  rm -f "$out/clinica.zip" "$out/tutor.jar" "$out/luna.zip"
+
+  log "Build: clinica-api (.NET 10)"
+  rm -rf "$out/.clinica"
+  dotnet publish "$RAIZ/dotnet-backend/src/Kura.Api/Kura.Api.csproj" -c Release -o "$out/.clinica" --nologo -v q
+  ( cd "$out/.clinica" && zip -qr "$out/clinica.zip" . )
+  rm -rf "$out/.clinica"
+
+  # Os testes rodam no CI do repositório da API; aqui só empacota.
+  log "Build: tutor-api (Java 21)"
+  ( cd "$RAIZ/java-backend" && bash ./mvnw -B -ntp -DskipTests package )
+  cp "$RAIZ"/java-backend/target/kura-backend-tutor-*.jar "$out/tutor.jar"
+
+  # O Oryx do App Service instala o requirements.txt durante o deploy (SCM_DO_BUILD_DURING_DEPLOYMENT).
+  log "Build: luna-ai (Python 3.12)"
+  ( cd "$RAIZ/luna-ia/luna" && zip -qr "$out/luna.zip" src requirements.txt pyproject.toml \
+      -x '*/__pycache__/*' '*.pyc' )
+
+  info "artefatos em $out:"; ls -l "$out" | sed 's/^/    /'
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FASE apps
+# ═════════════════════════════════════════════════════════════════════════════
+configurar_apps() {
+  local ip clinica_url luna_url web_tutor cors
+  ip="$(ip_vm)"
+  clinica_url="https://$(host_app "$APP_CLINICA")"
+  luna_url="https://$(host_app "$APP_LUNA")"
+  web_tutor="https://$(host_swa "$SWA_TUTOR")"
+  cors="$web_tutor,https://$(host_swa "$SWA_CLINICA")${EXTRA_CORS_ORIGINS:+,$EXTRA_CORS_ORIGINS}"
+
+  # Segredos compostos (referência de Key Vault precisa ser o valor inteiro)
+  kv_gravar dotnet-oracle-connection-string \
+    "User Id=${ORACLE_APP_USER};Password=$(kv_ler oracle-app-password);Data Source=${ip}:1521/${ORACLE_SERVICE};Validate Connection=true;Connection Lifetime=180;Min Pool Size=0"
+  kv_gravar tutor-mongodb-uri \
+    "mongodb://kura_java:$(kv_ler mongo-java-password)@${ip}:27017/kura_docs?authSource=kura_docs&serverSelectionTimeoutMS=2000"
+
+  # .NET — clinica-api
+  az webapp config appsettings set -g "$RG" -n "$APP_CLINICA" -o none --settings \
+    "WEBSITES_PORT=8080" "ASPNETCORE_URLS=http://+:8080" \
+    "ASPNETCORE_ENVIRONMENT=$ASPNETCORE_ENVIRONMENT" \
+    "ConnectionStrings__DefaultConnection=$(kvref dotnet-oracle-connection-string)" \
+    "Jwt__Key=$(kvref dotnet-jwt-key)" "Jwt__Issuer=kura-api" "Jwt__Audience=kura-client" \
+    "IoT__ApiKey=$(kvref iot-api-key)" \
+    "Luna__ApiKey=$(kvref luna-api-key)" "Luna__InboundApiKey=$(kvref luna-inbound-api-key)" \
+    "Luna__BaseUrl=$luna_url" \
+    "Daily__ApiKey=$(kvref_opcional daily-api-key)" \
+    "CORS_ALLOWED_ORIGINS=$cors" "Storage__BasePath=$STORAGE_BASE_PATH" \
+    "Foto__UrlSecret=$(kvref foto-url-secret)" "Foto__UrlBase=$clinica_url" \
+    "Convite__UrlBaseAppTutor=$web_tutor"
+
+  # Java — tutor-api (o Flyway cria o schema Oracle ao subir)
+  az webapp config appsettings set -g "$RG" -n "$APP_TUTOR" -o none --settings \
+    "WEBSITES_PORT=8081" "SERVER_PORT=8081" "SPRING_PROFILES_ACTIVE=prod" "TZ=America/Sao_Paulo" \
+    "DB_URL=jdbc:oracle:thin:@//${ip}:1521/${ORACLE_SERVICE}" "DB_USERNAME=$ORACLE_APP_USER" \
+    "DB_PASSWORD=$(kvref oracle-app-password)" \
+    "SPRING_DATASOURCE_HIKARI_KEEPALIVE_TIME=120000" "SPRING_DATASOURCE_HIKARI_MAX_LIFETIME=180000" \
+    "JWT_SECRET=$(kvref java-jwt-secret)" "JWT_ACCESS_EXPIRATION_MINUTES=$JWT_ACCESS_EXPIRATION_MINUTES" \
+    "CORS_ALLOWED_ORIGINS=$cors" \
+    "FOTO_URL_SECRET=$(kvref foto-url-secret)" "FOTO_URL_BASE=$clinica_url" \
+    "SPRING_DATA_MONGODB_URI=$(kvref tutor-mongodb-uri)" \
+    "KURA_LOJA_MONGO_INIT_ENABLED=true" "KURA_LOJA_SEED_EXEMPLO_ENABLED=$LOJA_SEED_EXEMPLO"
+
+  # Python — luna-ai (instância única: o APScheduler roda dentro do processo)
+  az webapp config appsettings set -g "$RG" -n "$APP_LUNA" -o none --settings \
+    "WEBSITES_PORT=8000" "LUNA_HTTP_PORT=8000" "SCM_DO_BUILD_DURING_DEPLOYMENT=true" \
+    "ORACLE_DSN=${ip}:1521/${ORACLE_SERVICE}" "ORACLE_USER=$ORACLE_APP_USER" \
+    "ORACLE_PASSWORD=$(kvref oracle-app-password)" \
+    "KURA_API_BASE_URL=$clinica_url" "KURA_API_KEY=$(kvref luna-api-key)" "KURA_API_TIMEOUT=10" \
+    "LUNA_INBOUND_API_KEY=$(kvref luna-inbound-api-key)" "CORS_ALLOWED_ORIGINS=$cors" \
+    "TWILIO_SID=$(kvref_opcional twilio-sid)" "TWILIO_TOKEN=$(kvref_opcional twilio-token)" \
+    "TWILIO_FROM_NUMBER=$TWILIO_FROM_NUMBER" "WEBHOOK_PUBLIC_URL=$luna_url/webhook/twilio/whatsapp" \
+    "OPENAI_API_KEY=$(kvref_opcional openai-api-key)" \
+    "YOLO_WEIGHTS_PATH=src/ai/models/yolov8n.pt" "BREED_CLASSIFIER_WEIGHTS_PATH=src/ai/models/breed_classifier.pth" \
+    "LEMBRETE_CONFIRMACAO_HABILITADO=$LEMBRETE_CONFIRMACAO_HABILITADO" \
+    "LEMBRETE_CONFIRMACAO_HORA=$LEMBRETE_CONFIRMACAO_HORA" \
+    "LUNA_SCHEDULER_ENABLED=$LUNA_SCHEDULER_ENABLED" "LUNA_SCHEDULER_HORA=$LUNA_SCHEDULER_HORA" \
+    "LOG_LEVEL=INFO"
+  az webapp config set -g "$RG" -n "$APP_LUNA" -o none \
+    --startup-file "python -m uvicorn src.web.app:app --host 0.0.0.0 --port 8000"
+}
+
+implantar() { # implantar <app> <zip|jar> <arquivo>
+  [ -f "$3" ] || die "artefato não encontrado: $3 (gere-o antes: azure/deploy.sh build)"
+  az webapp deploy -g "$RG" -n "$1" --src-path "$3" --type "$2" --restart true --timeout 900000 -o none
+}
+
+fase_apps() {
+  exigir_ferramentas
+  log "Configurando app settings (Key Vault references)"; configurar_apps
+
+  # O tutor vai primeiro: o Flyway cria o schema que o .NET e a Luna consomem.
+  log "Deploy: tutor-api (Java) — Flyway aplica as migrations"
+  implantar "$APP_TUTOR" jar "$ARTIFACTS_DIR/tutor.jar"
+  aguardar_saude "https://$(host_app "$APP_TUTOR")/api/actuator/health" 60 15 \
+    || { diagnostico "$APP_TUTOR"; die "tutor-api não ficou saudável"; }
+
+  log "Deploy: clinica-api (.NET) e luna-ai (Python)"
+  implantar "$APP_CLINICA" zip "$ARTIFACTS_DIR/clinica.zip"
+  implantar "$APP_LUNA"    zip "$ARTIFACTS_DIR/luna.zip"
+  aguardar_saude "https://$(host_app "$APP_CLINICA")/health" 40 15 \
+    || { diagnostico "$APP_CLINICA"; die "clinica-api não ficou saudável"; }
+  aguardar_saude "https://$(host_app "$APP_LUNA")/health" 40 15 \
+    || { diagnostico "$APP_LUNA"; die "luna-ai não ficou saudável"; }
+  fase_urls
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FASE web
+# ═════════════════════════════════════════════════════════════════════════════
+construir_web() { # construir_web <submódulo> <pasta-de-saída> <url-da-api> <url-da-luna>
+  local repo=$1 saida=$2 api=$3 luna=$4 src
+  exigir_submodulos "$repo/package.json" "$repo/package-lock.json"
+  # Cópia de trabalho fora do submódulo: o app.json é ajustado e o node_modules criado só nela.
+  src="$(mktemp -d)"
+  tar -C "$RAIZ" --exclude=.git --exclude=node_modules -cf - "$repo" | tar -C "$src" -xf -
+  rm -rf "${WEB_DIR:?}/$saida"
+  (
+    cd "$src/$repo"
+    # O app roda como SPA: um único index.html + fallback no Static Web Apps.
+    node -e "
+      const fs=require('fs'); const j=JSON.parse(fs.readFileSync('app.json'));
+      if (j.expo.web && j.expo.web.output !== 'single') {
+        console.log('app.json: web.output ' + j.expo.web.output + ' -> single');
+        j.expo.web.output='single'; fs.writeFileSync('app.json', JSON.stringify(j,null,2));
+      }"
+    npm ci --no-audit --no-fund
+    # As URLs são embutidas no JavaScript (EXPO_PUBLIC_*): mudou a URL, refaça o build.
+    EXPO_PUBLIC_API_BASE_URL="$api" EXPO_PUBLIC_LUNA_BASE_URL="$luna" \
+    EXPO_PUBLIC_USE_MOCKS=false CI=1 EXPO_NO_TELEMETRY=1 \
+      npx expo export -p web --clear --output-dir "$WEB_DIR/$saida"
+  )
+  rm -rf "$src"
+}
+
+preparar_dist() {
+  local d=$1
+  [ -f "$d/index.html" ] || die "build web não encontrado em $d"
+  # O export do Expo põe assets de pacotes em assets/node_modules; pastas com esse nome são
+  # descartadas por várias hospedagens estáticas. Renomear + reescrever as referências é neutro
+  # para qualquer host.
+  if [ -d "$d/assets/node_modules" ]; then
+    mv "$d/assets/node_modules" "$d/assets/nm"
+    grep -rlI --include='*.js' --include='*.html' --include='*.json' '/assets/node_modules/' "$d" \
+      | xargs -r sed -i 's#/assets/node_modules/#/assets/nm/#g'
+  fi
+  cp "$RAIZ/azure/staticwebapp.config.json" "$d/staticwebapp.config.json"
+}
+
+publicar_swa() { # publicar_swa <static-web-app> <pasta-do-build>
+  local token
+  preparar_dist "$2"
+  # O token de deploy é lido na hora e passado por variável de ambiente (não fica em disco nem no ps).
+  token="$(az staticwebapp secrets list -g "$RG" -n "$1" --query properties.apiKey -o tsv)"
+  SWA_CLI_DEPLOYMENT_TOKEN="$token" \
+    npx --yes "@azure/static-web-apps-cli@$SWA_CLI_VERSION" deploy "$2" --env production
+}
+
+fase_web() {
+  exigir_ferramentas
+  exigir_comandos web node npm npx
+  [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 20 ] || die "Node.js 20 ou superior necessário (recomendado: 22 LTS)"
+  local clinica tutor luna
+  clinica="https://$(host_app "$APP_CLINICA")"
+  tutor="https://$(host_app "$APP_TUTOR")"
+  luna="https://$(host_app "$APP_LUNA")"
+  mkdir -p "$WEB_DIR"; WEB_DIR="$(cd "$WEB_DIR" && pwd)"
+
+  log "Build web da clínica";  construir_web mobile-clinica-rn clinica "$clinica" "$luna"
+  log "Build web do tutor";    construir_web mobile-tutor-rn   tutor   "$tutor"   "$luna"
+  log "Publicando web da clínica"; publicar_swa "$SWA_CLINICA" "$WEB_DIR/clinica"
+  log "Publicando web do tutor";   publicar_swa "$SWA_TUTOR"   "$WEB_DIR/tutor"
+  fase_urls
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FASE urls / destroy
+# ═════════════════════════════════════════════════════════════════════════════
+fase_urls() {
+  echo "CLINICA_API_URL=https://$(host_app "$APP_CLINICA")"
+  echo "TUTOR_API_URL=https://$(host_app "$APP_TUTOR")"
+  echo "LUNA_URL=https://$(host_app "$APP_LUNA")"
+  echo "CLINICA_WEB_URL=https://$(host_swa "$SWA_CLINICA")"
+  echo "TUTOR_WEB_URL=https://$(host_swa "$SWA_TUTOR")"
+}
+
+fase_destroy() {
+  exigir_ferramentas
+  [ "${CONFIRMA:-}" = sim ] || die "isto apaga TUDO em '$RG' (inclusive os dados do banco). Repita com CONFIRMA=sim"
+  az group delete -n "$RG" --yes -o none
+  az keyvault purge --name "$KV_NAME" --location "$LOCATION" -o none || true
+  info "grupo $RG removido e cofre $KV_NAME purgado"
+}
+
+case "${1:-}" in
+  infra)   fase_infra ;;
+  build)   fase_build ;;
+  apps)    fase_apps ;;
+  web)     fase_web ;;
+  urls)    exigir_ferramentas; fase_urls ;;
+  all)     fase_infra; fase_build; fase_apps; fase_web ;;
+  destroy) fase_destroy ;;
+  *)       awk 'NR > 1 && /^set -/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; exit 2 ;;
 esac
-case "$LEMBRETE_CONFIRMACAO_HORA" in
-    [0-9]|1[0-9]|2[0-3]) ;;
-    *) echo "❌ ERRO: LEMBRETE_CONFIRMACAO_HORA deve ser um inteiro de 0 a 23 (veio '"$LEMBRETE_CONFIRMACAO_HORA"')."; exit 1 ;;
-esac
-
-# ─── Tabela de segredos gerenciados no Key Vault ─────────────────────────────
-#   VARIAVEL_DE_AMBIENTE|nome-no-cofre|modo
-# O nome no cofre é kebab-case porque o Key Vault não aceita '_'.
-#
-# Modos:
-#   alnum   28 caracteres alfanuméricos. Usado nas senhas do Oracle DE PROPÓSITO:
-#           elas entram numa connection string ADO.NET
-#           ("User Id=...;Password=...;Data Source=...") e num JDBC URL, onde
-#           ';' '/' '+' '=' de um base64 quebrariam o parsing.
-#   b64:N   N bytes aleatórios em base64 — chave de assinatura JWT e API key
-#           interna, que trafegam como valor opaco.
-#   externo NUNCA é gerado. São credenciais emitidas por terceiros (Daily.co,
-#           Twilio, OpenAI, Docker Hub): inventar um valor aleatório produziria
-#           uma credencial inválida em vez de um erro claro. Se não vier do
-#           ambiente nem do cofre, segue vazio — todas são opcionais e quem as
-#           consome degrada de forma tratada quando faltam (as três de aplicação
-#           conforme o docker-compose.yml; a do Docker Hub conforme o passo
-#           [3/10], que cai para import anônimo).
-#
-# DOCKERHUB_USERNAME não é segredo — é público no perfil do Docker Hub. Está
-# aqui mesmo assim porque o Docker Hub autentica com o PAR username+PAT, e o PAT
-# só vale para o seu dono: separar os dois faria o cofre guardar meia credencial
-# e produziria um 401 sem explicação quando o segundo deploy herdasse só o token.
-SEGREDOS_GERENCIADOS="ORACLE_SYS_PASSWORD|oracle-sys-password|alnum
-ORACLE_APP_PASSWORD|oracle-app-password|alnum
-DOTNET_JWT_KEY|dotnet-jwt-key|b64:48
-IOT_API_KEY|iot-api-key|b64:32
-LUNA_API_KEY|luna-api-key|b64:32
-LUNA_INBOUND_API_KEY|luna-inbound-api-key|b64:32
-JAVA_JWT_SECRET|java-jwt-secret|b64:64
-FOTO_URL_SECRET|foto-url-secret|b64:48
-DAILY_API_KEY|daily-api-key|externo
-TWILIO_SID|twilio-sid|externo
-TWILIO_TOKEN|twilio-token|externo
-OPENAI_API_KEY|openai-api-key|externo
-DOCKERHUB_USERNAME|dockerhub-username|externo
-DOCKERHUB_TOKEN|dockerhub-token|externo"
-
-# ─── FQDNs pré-calculados ────────────────────────────────────────────────────
-# O FQDN de um ACI é determinístico: <dnsNameLabel>.<região>.azurecontainer.io,
-# e o dnsNameLabel é o nome do container group, definido logo acima. Calcular os
-# quatro ANTES de criar qualquer um resolve a dependência circular entre o .NET
-# e a Luna (cada um precisa do endereço do outro) sem exigir dois passos de
-# criação nem um update posterior — que o ACI não suporta de qualquer forma.
-fqdn_aci() { printf '%s.%s.azurecontainer.io' "$1" "$AZURE_LOCATION"; }
-ORACLE_FQDN="$(fqdn_aci "$ACI_ORACLE_NAME")"
-DOTNET_FQDN="$(fqdn_aci "$ACI_DOTNET_NAME")"
-JAVA_FQDN="$(fqdn_aci "$ACI_JAVA_NAME")"
-LUNA_FQDN="$(fqdn_aci "$ACI_LUNA_NAME")"
-
-mkdir -p "$GERADOS_DIR"
-
-# ─── Interpretador Python funcional ──────────────────────────────────────────
-# Em Windows, `python3` às vezes existe no PATH apenas como o stub de App
-# Execution Alias da Microsoft Store, que falha ao executar mesmo com
-# `command -v` retornando sucesso. Por isso testa a EXECUÇÃO, não a presença.
-resolver_python() {
-    local candidato
-    for candidato in python3 python; do
-        if command -v "$candidato" >/dev/null 2>&1 && "$candidato" -c "print(1)" >/dev/null 2>&1; then
-            echo "$candidato"
-            return 0
-        fi
-    done
-    echo "❌ ERRO: nenhum Python funcional encontrado (tentado: python3, python)." >&2
-    exit 1
-}
-PYTHON_BIN="$(resolver_python)"
-
-# ─── Substituição de placeholders __CHAVE__ ──────────────────────────────────
-# Usa Python, não sed: os valores incluem connection string com ';' e '=' e
-# senhas com '/', que quebram delimitador de sed com facilidade.
-#
-# Cada valor é passado em base64 e decodificado dentro do Python porque o Git
-# Bash reescreve silenciosamente qualquer argumento que PAREÇA caminho POSIX
-# (o default de STORAGE_BASE_PATH, "/data/kura/receituarios", viraria
-# "C:/Program Files/Git/data/kura/receituarios"). `export MSYS_NO_PATHCONV=1`
-# não serve aqui porque os caminhos do próprio template/saída estão no mesmo
-# comando e PRECISAM ser convertidos para o Python nativo do Windows.
-substituir_placeholders() {
-    local template="$1" saida="$2"
-    shift 2
-    local args=() par chave valor valor_b64
-    for par in "$@"; do
-        chave="${par%%=*}"
-        valor="${par#*=}"
-        valor_b64=$(printf '%s' "$valor" | base64 -w 0)
-        args+=("${chave}=${valor_b64}")
-    done
-    "$PYTHON_BIN" - "$template" "$saida" "${args[@]}" <<'PYEOF'
-import base64
-import re
-import sys
-import unicodedata
-template_path, saida_path = sys.argv[1], sys.argv[2]
-with open(template_path, "r", encoding="utf-8") as f:
-    conteudo = f.read()
-
-
-def para_ascii(texto):
-    """Dobra o texto para ASCII puro.
-
-    `az container create --file` é executado por `python.exe -IBm azure.cli`, e
-    o -I (modo isolado, implica -E) faz o Python do az IGNORAR todas as
-    variáveis PYTHON* — inclusive o PYTHONUTF8=1 exportado no topo deste
-    script. O YAML acaba lido com a codificação ANSI da máquina, cp1252 em
-    português. O cp1252 mapeia quase todo byte de UTF-8 para mojibake sem
-    reclamar, e comentário com mojibake o YAML ignora — por isso os manifestos
-    do Oracle e do Java sempre passaram. Mas cinco bytes são INDEFINIDOS no
-    cp1252 (0x81 0x8D 0x8F 0x90 0x9D), e aí o az morre com
-    "'charmap' codec can't decode byte 0x8d ... character maps to <undefined>".
-    Bastou um "Í" (0xC3 0x8D) num comentário do template do .NET para derrubar
-    o passo [8/10]; o template da Luna tinha dois 0x81 esperando no [9/10].
-
-    Dobrar resolve na origem: sem byte >127, nenhuma codificação de leitura
-    pode falhar. O NFKD separa o acento da letra e o encode descarta o que não
-    tem equivalente ASCII (acentos soltos, ─, →, ✅), então "DETERMINÍSTICO"
-    vira "DETERMINISTICO" e o comentário segue legível.
-    """
-    return unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
-
-
-# Dobra o TEMPLATE, antes de injetar qualquer valor: assim comentário acentuado
-# vira ASCII, mas senha, connection string e JWT entram depois e passam intactos
-# — dobrar um segredo o corromperia em silêncio.
-conteudo = para_ascii(conteudo)
-for par in sys.argv[3:]:
-    chave, _, valor_b64 = par.partition("=")
-    conteudo = conteudo.replace("__" + chave + "__", base64.b64decode(valor_b64).decode("utf-8"))
-# ─── secureValue vazio vira value: "" ────────────────────────────────────────
-# As credenciais EXTERNAS (Twilio, OpenAI, Daily) são opcionais e ficam vazias
-# no cofre quando ninguém as fornece. Substituir __TWILIO_SID__ por nada deixa
-# a linha como `secureValue:` pelada, que o YAML lê como null — e o ACI recusa
-# o container group inteiro com:
-#   (InvalidEnvironmentVariable) ... One and only one property of 'value' and
-#   'secureValue' can be specified in an environment variable.
-# porque null não conta como "especificado".
-#
-# Omitir a variável NÃO serve: em luna-ia/src/config/settings.py, TWILIO_SID e
-# TWILIO_TOKEN são declarados `str` SEM default, então o Pydantic Settings
-# aborta o boot com ValidationError se a env var não existir. A Luna precisa da
-# variável presente e vazia.
-#
-# Daí `value: ""`: string vazia é um valor especificado, satisfaz o ACI e o
-# Pydantic, e mantém a degradação documentada (TwilioGateway é dependência de
-# requisição, não de startup — sobe e só falha se alguém tentar enviar). Trocar
-# secureValue por value aqui não vaza nada: o que se esconderia é vazio.
-PADRAO_SECRETO_VAZIO = re.compile(r'^(\s*)secureValue:[ \t]*$', re.MULTILINE)
-conteudo = PADRAO_SECRETO_VAZIO.sub(r'\1value: ""', conteudo)
-
-# Placeholder real é __TUDO_MAIUSCULO__. Não confundir com a convenção .NET de
-# env var com "__" no meio em case misto ("ConnectionStrings__DefaultConnection",
-# "Jwt__Key"), que são valores legítimos do YAML final.
-PADRAO = re.compile(r"__[A-Z][A-Z0-9_]*__")
-# Linhas de comentário são ignoradas: o cabeçalho dos templates cita "__ALGO__"
-# como exemplo genérico, o que bateria com o próprio padrão de detecção.
-restantes = [l for l in conteudo.splitlines()
-             if not l.strip().startswith("#") and PADRAO.search(l)]
-with open(saida_path, "w", encoding="utf-8") as f:
-    f.write(conteudo)
-if restantes:
-    print("⚠️  Placeholders não substituídos em " + saida_path + ":", file=sys.stderr)
-    for l in restantes:
-        print("    " + l, file=sys.stderr)
-    sys.exit(1)
-PYEOF
-}
-
-# ─── Esperas ─────────────────────────────────────────────────────────────────
-aguardar_porta_tcp() {
-    local host="$1" porta="$2" max="$3" espera="$4" i
-    for i in $(seq 1 "$max"); do
-        if (exec 3<>"/dev/tcp/${host}/${porta}") 2>/dev/null; then
-            exec 3>&- 2>/dev/null || true
-            exec 3<&- 2>/dev/null || true
-            return 0
-        fi
-        echo "  ... tentativa $i/$max — $host:$porta ainda não responde (aguardando ${espera}s)"
-        sleep "$espera"
-    done
-    return 1
-}
-
-aguardar_http_ok() {
-    local url="$1" max="$2" espera="$3" i codigo
-    for i in $(seq 1 "$max"); do
-        codigo=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
-        echo "  ... tentativa $i/$max — GET $url → HTTP $codigo"
-        [ "$codigo" = "200" ] && return 0
-        sleep "$espera"
-    done
-    return 1
-}
-
-# ─── O escopo escolhido inclui este serviço? ─────────────────────────────────
-# Usada tanto pelo build quanto pela criação dos container groups, para que
-# `--service luna-ai` não builde as outras duas imagens (e, principalmente, para
-# que `--service clinica-api` não builde a da Luna, de ~9,8 GB).
-quer_servico() {
-    case "$MODO_ESCOPO" in
-        tudo|apps) return 0 ;;
-        db)        return 1 ;;
-        servico)   [ "$SERVICO_ALVO" = "$1" ] && return 0 || return 1 ;;
-    esac
-}
-
-# ─── Recria um container group (delete-se-existir + create) ──────────────────
-recriar_container_group() {
-    local nome="$1" arquivo="$2"
-    if az container show --name "$nome" --resource-group "$AZURE_RESOURCE_GROUP" -o none 2>/dev/null; then
-        echo "  Container group existe — apagando para recriar (ACI não faz update in-place)."
-        az container delete --name "$nome" --resource-group "$AZURE_RESOURCE_GROUP" --yes --output none
-    fi
-    az container create --resource-group "$AZURE_RESOURCE_GROUP" --file "$arquivo" --output none
-}
-
-# ─── Tag de imagem = SHA do commit fixado do submódulo ───────────────────────
-# Lido do gitlink na árvore DESTE repositório (`git ls-tree`), não do HEAD de
-# dentro do submódulo: funciona mesmo com o submódulo não inicializado, que é o
-# caso quando se roda só `--skip-build` para reimplantar uma tag já no ACR.
-tag_submodulo() {
-    local caminho="$1" sha
-    sha="$(git -C "$ROOT_DIR" ls-tree HEAD -- "$caminho" 2>/dev/null | awk '{print $3}')"
-    if [ -z "$sha" ]; then
-        echo "❌ ERRO: não foi possível ler o commit fixado do submódulo '$caminho'." >&2
-        echo "   Este script precisa rodar dentro do clone git do DevOps-Cloud." >&2
-        exit 1
-    fi
-    printf '%s' "${sha:0:12}"
-}
-
-DOTNET_IMAGE_TAG="$(tag_submodulo dotnet-backend)"
-JAVA_IMAGE_TAG="$(tag_submodulo java-backend)"
-LUNA_IMAGE_TAG="$(tag_submodulo luna-ia)"
-# Tag da imagem do Oracle ESPELHADA do Docker Hub, sem modificação.
-ORACLE_BASE_TAG="${ORACLE_BASE_TAG:-21-slim}"
-# Minutos do SQLNET.EXPIRE_TIME (dead connection detection) da imagem derivada.
-# Tem de ficar ABAIXO da janela de NAT (4 min no default da plataforma) para que
-# a sonda do servidor também mantenha a tradução viva — ver comentário do
-# azure/oracle-xe-dcd/Dockerfile.
-ORACLE_DCD_MINUTOS="${ORACLE_DCD_MINUTOS:-2}"
-# Tag que o container group REALMENTE roda: a base + DCD. O valor entra na tag
-# porque mudá-lo tem de produzir imagem nova — tag igual faria o ACI reaproveitar
-# a que ele já conhece e a mudança não chegaria ao ar.
-ORACLE_IMAGE_TAG="${ORACLE_IMAGE_TAG:-${ORACLE_BASE_TAG}-dcd${ORACLE_DCD_MINUTOS}}"
-
-# A derivada não pode ocupar a tag da base: sobrescreveria no ACR a única cópia
-# espelhada do Docker Hub, e o próximo build passaria a empilhar DCD sobre uma
-# imagem que já tem DCD, sem nunca mais tocar a imagem original.
-if [ "$ORACLE_IMAGE_TAG" = "$ORACLE_BASE_TAG" ]; then
-    echo "❌ ERRO: ORACLE_IMAGE_TAG ('$ORACLE_IMAGE_TAG') é igual a ORACLE_BASE_TAG."
-    echo "   A imagem derivada (com SQLNET.EXPIRE_TIME) precisa de tag própria."
-    echo "   Deixe ORACLE_IMAGE_TAG sem definir para usar o default"
-    echo "   '${ORACLE_BASE_TAG}-dcd${ORACLE_DCD_MINUTOS}', ou escolha outra tag."
-    exit 1
-fi
-
-echo ""
-echo "========================================================"
-echo " KURA · Deploy em ACR/ACI"
-echo "========================================================"
-echo " Resource Group : $AZURE_RESOURCE_GROUP"
-echo " Região         : $AZURE_LOCATION"
-echo " Key Vault      : $KEYVAULT_NAME"
-echo " ACR            : $ACR_NAME"
-echo " Storage        : $STORAGE_ACCOUNT_NAME"
-echo " Escopo         : $MODO_ESCOPO${SERVICO_ALVO:+ ($SERVICO_ALVO)}"
-echo ""
-echo " Tags de imagem (SHA do commit fixado de cada submódulo):"
-echo "   clinica-api : $DOTNET_IMAGE_TAG"
-echo "   tutor-api   : $JAVA_IMAGE_TAG"
-echo "   luna-ai     : $LUNA_IMAGE_TAG"
-echo "   oracle-xe   : $ORACLE_IMAGE_TAG"
-echo "                 (base $ORACLE_BASE_TAG espelhada do Docker Hub +"
-echo "                  SQLNET.EXPIRE_TIME=$ORACLE_DCD_MINUTOS, derivada no ACR)"
-echo "========================================================"
-
-# ─── [0/10] Azure CLI autenticada ────────────────────────────────────────────
-echo ""
-echo "[0/10] Verificando login da Azure CLI..."
-if ! az account show -o none 2>/dev/null; then
-    echo "❌ ERRO: não autenticado. Rode 'az login' antes."
-    exit 1
-fi
-echo "  ✅ Autenticado."
-
-# ─── [1/10] Resource Group + providers ───────────────────────────────────────
-echo ""
-echo "[1/10] Criando/confirmando Resource Group: $AZURE_RESOURCE_GROUP..."
-az group create --name "$AZURE_RESOURCE_GROUP" --location "$AZURE_LOCATION" --output none
-echo "  ✅ Resource Group pronto."
-
-for PROVIDER in Microsoft.ContainerInstance Microsoft.ContainerRegistry Microsoft.Storage Microsoft.KeyVault; do
-    ESTADO=$(az provider show --namespace "$PROVIDER" --query registrationState -o tsv 2>/dev/null || echo "NotRegistered")
-    if [ "$ESTADO" != "Registered" ]; then
-        echo "  Registrando provider $PROVIDER (estado atual: $ESTADO)..."
-        az provider register --namespace "$PROVIDER" -o none
-    fi
-done
-
-# ─── [2/10] Azure Key Vault ──────────────────────────────────────────────────
-echo ""
-echo "[2/10] Criando/confirmando Azure Key Vault: $KEYVAULT_NAME..."
-
-# Soft-delete em Key Vault é obrigatório e não desligável: apagar o resource
-# group NÃO libera o nome — o cofre fica recuperável por 90 dias e um
-# `az keyvault create` com o mesmo nome falha com (VaultAlreadyExists). Por isso
-# a ordem é: existe? → existe apagado? → cria.
-if az keyvault show --name "$KEYVAULT_NAME" --resource-group "$AZURE_RESOURCE_GROUP" -o none 2>/dev/null; then
-    echo "  Key Vault já existe, reaproveitando."
-elif [ -n "$(az keyvault list-deleted --query "[?name=='$KEYVAULT_NAME'].name" -o tsv 2>/dev/null || true)" ]; then
-    echo "  Key Vault em estado SOFT-DELETED — recuperando (os segredos voltam junto)..."
-    az keyvault recover --name "$KEYVAULT_NAME" --location "$AZURE_LOCATION" --output none
-    echo "  ✅ Key Vault recuperado."
-else
-    # --enable-rbac-authorization false mantém o modelo de access policy, no qual
-    # o próprio `az keyvault create` já concede ao criador acesso total a
-    # segredos. Evita depender de criar role assignment, que exige Owner ou User
-    # Access Administrator e nem sempre está disponível.
-    az keyvault create \
-        --name "$KEYVAULT_NAME" \
-        --resource-group "$AZURE_RESOURCE_GROUP" \
-        --location "$AZURE_LOCATION" \
-        --sku standard \
-        --enable-rbac-authorization false \
-        --tags projeto=kura ambiente=producao \
-        --output none
-    echo "  ✅ Key Vault criado."
-fi
-
-# Cofre pré-existente (ou criado por policy) em modo RBAC não tem access policy
-# automática — a permissão precisa vir de uma role. Best-effort: se falhar,
-# avisa, porque o erro real aparece logo abaixo com mensagem melhor.
-KV_RBAC=$(az keyvault show --name "$KEYVAULT_NAME" --query "properties.enableRbacAuthorization" -o tsv 2>/dev/null || echo "false")
-if [ "$KV_RBAC" = "true" ]; then
-    echo "  Cofre em modo RBAC — garantindo 'Key Vault Secrets Officer' para o usuário logado..."
-    KV_ID=$(az keyvault show --name "$KEYVAULT_NAME" --query id -o tsv)
-    KV_OBJECT_ID=$(az ad signed-in-user show --query id -o tsv 2>/dev/null || echo "")
-    if [ -n "$KV_OBJECT_ID" ]; then
-        az role assignment create --role "Key Vault Secrets Officer" \
-            --assignee-object-id "$KV_OBJECT_ID" --assignee-principal-type User \
-            --scope "$KV_ID" --output none 2>/dev/null \
-            || echo "  ℹ️  Role já existente ou sem permissão para criá-la — seguindo."
-    fi
-fi
-
-echo "  Aguardando o cofre aceitar operações de segredo..."
-KV_PRONTO=false
-for TENTATIVA in $(seq 1 12); do
-    if az keyvault secret list --vault-name "$KEYVAULT_NAME" --maxresults 1 -o none 2>/dev/null; then
-        KV_PRONTO=true
-        break
-    fi
-    echo "  ... tentativa $TENTATIVA/12 (aguardando 5s)"
-    sleep 5
-done
-if [ "$KV_PRONTO" != "true" ]; then
-    echo "❌ ERRO: o cofre $KEYVAULT_NAME não aceitou 'az keyvault secret list'."
-    echo "   Causa mais comum: o usuário logado não tem permissão de DADOS sobre o cofre."
-    echo "   Confira: az keyvault show --name $KEYVAULT_NAME --query properties.accessPolicies"
-    exit 1
-fi
-
-# Geração em Python (stdlib `secrets`, criptograficamente seguro) em vez de
-# `openssl rand`: o script já depende de Python, então não se acrescenta uma
-# dependência só para isso.
-gerar_segredo() {
-    "$PYTHON_BIN" - "$1" <<'PYSEGREDO'
-import base64
-import os
-import secrets
-import string
-import sys
-modo = sys.argv[1]
-if modo == "alnum":
-    print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(28)))
-else:
-    print(base64.b64encode(os.urandom(int(modo.split(":", 1)[1]))).decode("ascii"))
-PYSEGREDO
-}
-
-# Devolve string vazia (sem falhar) quando o segredo ainda não existe.
-ler_segredo_kv() {
-    az keyvault secret show --vault-name "$KEYVAULT_NAME" --name "$1" --query value -o tsv 2>/dev/null || true
-}
-
-garantir_segredo_kv() {
-    local var="$1" nome_kv="$2" modo="$3"
-    local valor_local="${!var:-}" valor_kv
-    valor_kv="$(ler_segredo_kv "$nome_kv")"
-    if [ -n "$valor_local" ] && [ "$valor_local" != "$valor_kv" ]; then
-        az keyvault secret set --vault-name "$KEYVAULT_NAME" --name "$nome_kv" --value "$valor_local" --output none
-        echo "  ↑ $nome_kv — semeado/atualizado a partir de \$$var."
-    elif [ -n "$valor_local" ]; then
-        echo "  = $nome_kv — já no cofre com o mesmo valor (sem versão nova)."
-    elif [ -n "$valor_kv" ]; then
-        echo "  ✓ $nome_kv — já no cofre, reaproveitado."
-    elif [ "$modo" = "externo" ]; then
-        echo "  ~ $nome_kv — credencial externa ausente; segue vazia (serviço degrada de forma tratada)."
-    else
-        valor_local="$(gerar_segredo "$modo")"
-        az keyvault secret set --vault-name "$KEYVAULT_NAME" --name "$nome_kv" --value "$valor_local" --output none
-        echo "  + $nome_kv — não existia; gerado agora e guardado no cofre."
-    fi
-}
-
-echo ""
-echo "  Sincronizando segredos (ambiente/.env → Key Vault):"
-while IFS='|' read -r SEG_VAR SEG_NOME SEG_MODO; do
-    [ -n "${SEG_VAR:-}" ] || continue
-    garantir_segredo_kv "$SEG_VAR" "$SEG_NOME" "$SEG_MODO"
-done <<EOF
-$SEGREDOS_GERENCIADOS
-EOF
-
-# Releitura: mesmo o segredo que veio do .env é relido do cofre, de propósito —
-# assim o valor que entra no manifesto é comprovadamente o que está guardado, e
-# não uma cópia local que poderia estar defasada.
-echo ""
-echo "  Lendo os segredos de volta do cofre (az keyvault secret show):"
-while IFS='|' read -r SEG_VAR SEG_NOME SEG_MODO; do
-    [ -n "${SEG_VAR:-}" ] || continue
-    SEG_VALOR="$(ler_segredo_kv "$SEG_NOME")"
-    if [ -z "$SEG_VALOR" ] && [ "$SEG_MODO" != "externo" ]; then
-        echo "❌ ERRO: segredo obrigatório '$SEG_NOME' não pôde ser lido do cofre."
-        exit 1
-    fi
-    # printf -v em vez de eval: atribuição indireta sem reinterpretar o valor
-    # (uma senha com aspas ou '$' seria reavaliada por eval).
-    printf -v "$SEG_VAR" '%s' "$SEG_VALOR"
-    echo "  ← \$$SEG_VAR ← $KEYVAULT_NAME/$SEG_NOME"
-done <<EOF
-$SEGREDOS_GERENCIADOS
-EOF
-unset SEG_VALOR
-echo "  ✅ Segredos em memória, vindos do Key Vault."
-
-# ─── [3/10] ACR ──────────────────────────────────────────────────────────────
-echo ""
-echo "[3/10] Criando/confirmando Azure Container Registry: $ACR_NAME..."
-if az acr show --name "$ACR_NAME" --resource-group "$AZURE_RESOURCE_GROUP" -o none 2>/dev/null; then
-    echo "  ACR já existe, reaproveitando."
-else
-    # SKU Standard, não Basic: a imagem da Luna tem ~9,8 GB e o Basic inclui só
-    # 10 GB de armazenamento no total — não caberia junto com as outras três.
-    az acr create --resource-group "$AZURE_RESOURCE_GROUP" --name "$ACR_NAME" \
-        --sku Standard --output none
-    echo "  ✅ ACR criado (SKU Standard)."
-fi
-az acr update --name "$ACR_NAME" --admin-enabled true --output none
-ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
-ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query username -o tsv)
-ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
-echo "  ✅ ACR pronto: $ACR_LOGIN_SERVER"
-
-# ─── Espelhamento da imagem do Oracle XE ─────────────────────────────────────
-# `az acr import` copia SERVER-SIDE (registry → registry), sem baixar os ~2,6 GB
-# para a máquina que roda o deploy. Espelhar em vez de deixar o ACI puxar do
-# Docker Hub evita o rate limit de pull anônimo, que é aplicado por IP de origem
-# — e os IPs de saída do ACI são compartilhados entre assinaturas, então o limite
-# pode ser atingido por tráfego de terceiros. Num container group com
-# `restartPolicy: Always` e sem volume para os datafiles, isso transformaria um
-# limite de terceiro em banco que não volta do restart.
-#
-# AUTENTICAÇÃO NA ORIGEM: o mesmo compartilhamento de IPs vale para o serviço de
-# import do ACR, que sai por IPs do Azure usados por muita gente — na prática o
-# import anônimo falha com 401/TOOMANYREQUESTS mesmo quando o `docker pull` da
-# mesma imagem funciona da estação de trabalho. Com DOCKERHUB_USERNAME+
-# DOCKERHUB_TOKEN o import passa a contar contra a quota da conta (100 pulls/h)
-# em vez da quota anônima compartilhada. PAT com escopo "Public Repo Read-only"
-# basta: a origem é uma imagem pública.
-#
-# Só roda quando o Oracle está no escopo — `--apps-only` e `--service X` não têm
-# o que fazer com esta imagem, e é por isso que o workflow de rollout (que só
-# usa esses dois escopos) nunca precisa de credencial do Docker Hub.
-if [ "$MODO_ESCOPO" != "tudo" ] && [ "$MODO_ESCOPO" != "db" ]; then
-    echo "  Escopo '$MODO_ESCOPO' — imagem do Oracle não é espelhada."
-elif az acr repository show --name "$ACR_NAME" --image "kura/oracle-xe:$ORACLE_BASE_TAG" -o none 2>/dev/null; then
-    echo "  Imagem base do Oracle já está no ACR, pulando o import."
-else
-    # Par indivisível: o PAT só autentica com o username do seu dono. Meio par é
-    # sempre erro de configuração, e falhar aqui é muito mais barato que deixar
-    # o `az acr import` responder 401 sem dizer o porquê.
-    if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -z "${DOCKERHUB_TOKEN:-}" ]; then
-        echo "❌ ERRO: DOCKERHUB_USERNAME definido sem DOCKERHUB_TOKEN."
-        echo "   O Docker Hub autentica com o par username+PAT — o token pertence ao usuário."
-        exit 1
-    fi
-    if [ -z "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
-        echo "❌ ERRO: DOCKERHUB_TOKEN definido sem DOCKERHUB_USERNAME."
-        echo "   Informe o usuário DONO do token (o username não é segredo)."
-        exit 1
-    fi
-
-    IMPORT_AUTH=()
-    if [ -n "${DOCKERHUB_USERNAME:-}" ]; then
-        IMPORT_AUTH=(--username "$DOCKERHUB_USERNAME" --password "$DOCKERHUB_TOKEN")
-        echo "  Espelhando gvenzl/oracle-xe:$ORACLE_BASE_TAG no ACR — autenticado como '$DOCKERHUB_USERNAME'..."
-    else
-        echo "  Espelhando gvenzl/oracle-xe:$ORACLE_BASE_TAG no ACR — ANÔNIMO (sem credencial do Docker Hub)..."
-    fi
-
-    # `if !` e não chamada direta: com `set -e` uma falha aqui abortaria o script
-    # com o stderr cru do az, e a causa (quota anônima) não está nessa mensagem.
-    if ! az acr import --name "$ACR_NAME" \
-        --source "docker.io/gvenzl/oracle-xe:$ORACLE_BASE_TAG" \
-        --image "kura/oracle-xe:$ORACLE_BASE_TAG" \
-        "${IMPORT_AUTH[@]}" \
-        --output none
-    then
-        echo ""
-        echo "❌ ERRO: não foi possível espelhar gvenzl/oracle-xe:$ORACLE_BASE_TAG."
-        if [ -z "${DOCKERHUB_USERNAME:-}" ]; then
-            echo "   O import foi anônimo. A causa mais provável é a quota de pull anônimo"
-            echo "   do Docker Hub, consumida pelos IPs compartilhados do serviço de import"
-            echo "   do ACR — não por você. Duas saídas:"
-            echo ""
-            echo "   1) Autenticar a ORIGEM (recomendado). Crie um PAT em"
-            echo "      hub.docker.com → Account Settings → Personal access tokens,"
-            echo "      escopo 'Public Repo Read-only', e preencha no .env:"
-            echo "        DOCKERHUB_USERNAME=<o dono do token>"
-            echo "        DOCKERHUB_TOKEN=<o PAT>"
-            echo "      É necessário UMA vez por ACR: o import acima é pulado depois."
-            echo ""
-            echo "   2) Sem conta no Docker Hub — espelhe pela sua máquina:"
-            echo "        docker pull gvenzl/oracle-xe:$ORACLE_BASE_TAG"
-            echo "        az acr login --name $ACR_NAME"
-            echo "        docker tag gvenzl/oracle-xe:$ORACLE_BASE_TAG \\"
-            echo "          $ACR_LOGIN_SERVER/kura/oracle-xe:$ORACLE_BASE_TAG"
-            echo "        docker push $ACR_LOGIN_SERVER/kura/oracle-xe:$ORACLE_BASE_TAG"
-            echo "      ~2,6 GB de download + upload, uma vez. Depois rode o deploy de novo."
-        else
-            echo "   O import foi autenticado como '$DOCKERHUB_USERNAME'. Verifique se o PAT"
-            echo "   pertence a esse usuário, não está expirado/revogado, e tem ao menos o"
-            echo "   escopo 'Public Repo Read-only'."
-        fi
-        exit 1
-    fi
-    echo "  ✅ Imagem base do Oracle espelhada."
-fi
-
-
-# ─── Imagem derivada do Oracle: dead connection detection ────────────────────
-# A base espelhada acima não tem `SQLNET.EXPIRE_TIME`, e sem ele o servidor nunca
-# descobre que um cliente desapareceu: como o tráfego de banco passa por NAT (não
-# há VNet comum entre container groups), toda conexão que morre por ociosidade
-# deixa uma SESSÃO ÓRFÃ no XE, que nada recolhe antes de um restart. A camada
-# derivada acrescenta essa única linha. O porquê completo — e o motivo de ser
-# imagem derivada, e não volume nem override de `command` — está no cabeçalho de
-# azure/oracle-xe-dcd/Dockerfile.
-#
-# `az acr build` roda DENTRO do ACR: o contexto enviado é só o Dockerfile, a base
-# é puxada registry-local e o resultado nasce lá — nada dos ~2,6 GB passa pela
-# máquina de quem faz o deploy, nem exige Docker instalado. Depende de ACR com
-# suporte a Tasks; o criado aqui é Standard.
-#
-# Mesmo escopo do import: `--apps-only` e `--service X` não têm o que fazer com a
-# imagem do banco. E `--skip-build` NÃO cobre este build — aquela flag existe para
-# pular o build/push das imagens de aplicação, que é o passo caro (a luna-ai tem
-# ~9,8 GB); este é uma camada de poucos KB construída server-side, e pulá-lo
-# deixaria o passo [6/10] apontando para uma tag que não existe no registry.
-if [ "$MODO_ESCOPO" != "tudo" ] && [ "$MODO_ESCOPO" != "db" ]; then
-    echo "  Escopo '$MODO_ESCOPO' — imagem derivada do Oracle não é construída."
-elif az acr repository show --name "$ACR_NAME" --image "kura/oracle-xe:$ORACLE_IMAGE_TAG" -o none 2>/dev/null; then
-    echo "  Imagem derivada kura/oracle-xe:$ORACLE_IMAGE_TAG já está no ACR, pulando o build."
-else
-    echo "  Derivando kura/oracle-xe:$ORACLE_IMAGE_TAG (SQLNET.EXPIRE_TIME=$ORACLE_DCD_MINUTOS) no ACR..."
-    if ! az acr build --registry "$ACR_NAME" \
-        --image "kura/oracle-xe:$ORACLE_IMAGE_TAG" \
-        --file "$SCRIPT_DIR/oracle-xe-dcd/Dockerfile" \
-        --build-arg "IMAGEM_BASE=$ACR_LOGIN_SERVER/kura/oracle-xe:$ORACLE_BASE_TAG" \
-        --build-arg "DCD_MINUTOS=$ORACLE_DCD_MINUTOS" \
-        "$SCRIPT_DIR/oracle-xe-dcd" \
-        --output none
-    then
-        echo ""
-        echo "❌ ERRO: o build da imagem derivada do Oracle falhou."
-        echo "   O log da task do ACR saiu acima — quando o build chega ao fim, ele"
-        echo "   imprime o sqlnet.ora resultante."
-        echo ""
-        echo "   Causas prováveis, em ordem:"
-        echo "   1) ACR sem suporte a Tasks (SKU). Confira:"
-        echo "        az acr show --name $ACR_NAME --query sku.name -o tsv"
-        echo "   2) A imagem base mudou e o diretório de rede do ORACLE_HOME deixou"
-        echo "      de ser gravável pelo usuário da imagem — o RUN falha explícito."
-        echo "   3) Base ausente no ACR: kura/oracle-xe:$ORACLE_BASE_TAG."
-        echo ""
-        echo "   Saída de emergência, para subir o banco SEM DCD (as sessões órfãs"
-        echo "   voltam a acumular, mas o ambiente sobe):"
-        echo "     ORACLE_IMAGE_TAG=$ORACLE_BASE_TAG ./azure/deploy.sh --db-only"
-        exit 1
-    fi
-    echo "  ✅ Imagem derivada pronta: kura/oracle-xe:$ORACLE_IMAGE_TAG"
-fi
-
-# ─── [4/10] Build + push das três imagens de aplicação ───────────────────────
-echo ""
-if [ "$PULAR_BUILD" = "true" ]; then
-    echo "[4/10] --skip-build — usando as tags já presentes no ACR."
-else
-    echo "[4/10] Build e push das imagens de aplicação..."
-
-    # Tabela: serviço|contexto de build|repositório no ACR|tag
-    # O contexto sai do submódulo, que está fixado num commit conhecido — é isso
-    # que dá sentido à tag por SHA. O antigo script-azure.sh buildava dentro da
-    # VM a partir de um `git clone` feito lá; aqui a árvore tem procedência
-    # verificável.
-    IMAGENS="clinica-api|dotnet-backend|kura/clinica-api|$DOTNET_IMAGE_TAG
-tutor-api|java-backend|kura/tutor-api|$JAVA_IMAGE_TAG
-luna-ai|luna-ia/luna|kura/luna-ai|$LUNA_IMAGE_TAG"
-
-    # Só builda o que o escopo pede. Sem isto, `--service clinica-api` arrastaria
-    # o build da Luna (~9,8 GB) junto — o que, além de lento, não cabe num runner
-    # hospedado do GitHub Actions.
-    ALGUM_BUILD=false
-    while IFS='|' read -r SVC CTX _REPO _TAG; do
-        [ -n "${SVC:-}" ] || continue
-        quer_servico "$SVC" || continue
-        ALGUM_BUILD=true
-        if [ ! -f "$ROOT_DIR/$CTX/Dockerfile" ]; then
-            echo "❌ ERRO: $CTX/Dockerfile não encontrado."
-            echo "   Os submódulos não estão inicializados. Rode:"
-            echo "     git submodule update --init --recursive"
-            echo "   (ou use --skip-build para reimplantar uma tag já no ACR)."
-            exit 1
-        fi
-    done <<EOF
-$IMAGENS
-EOF
-
-    if [ "$ALGUM_BUILD" = "false" ]; then
-        echo "  Nenhuma imagem no escopo '$MODO_ESCOPO' — nada a buildar."
-    else
-        # Login aqui só para falhar cedo se a credencial estiver quebrada — o
-        # push usa um token NOVO, pedido logo antes de cada envio. Ver abaixo.
-        az acr login --name "$ACR_NAME" --output none
-        echo "  ✅ Login no ACR OK."
-        while IFS='|' read -r SVC CTX REPO TAG; do
-            [ -n "${SVC:-}" ] || continue
-            quer_servico "$SVC" || continue
-            if [ "$SVC" = "luna-ai" ]; then
-                echo "  → build $SVC ($TAG) — imagem grande (~9,8 GB), pode demorar"
-            else
-                echo "  → build $SVC ($TAG)"
-            fi
-            docker build -t "${ACR_LOGIN_SERVER}/${REPO}:${TAG}" "$ROOT_DIR/$CTX"
-
-            # ─── Push com token renovado e retentativa ───────────────────────
-            # O refresh token de `az acr login` vale 3 HORAS. Com um único login
-            # no topo do laço, o build da luna-ai (~9,8 GB, medido em 4h numa
-            # conexão de ~4 Mbit/s) consome a validade inteira antes de o push
-            # começar, e o envio morre em "error from registry: authentication
-            # required" com TODAS as camadas em Waiting — nada enviado, depois
-            # de horas de build. Por isso o token é pedido por push, não por
-            # execução.
-            #
-            # A retentativa existe porque o próprio push pode estourar as 3h em
-            # link lento. Ela não é cara: `docker push` pula camada que já está
-            # no registry, então cada tentativa retoma de onde a anterior parou
-            # em vez de recomeçar.
-            echo "  → push $SVC"
-            PUSH_OK=false
-            for TENTATIVA in 1 2 3; do
-                az acr login --name "$ACR_NAME" --output none
-                if docker push "${ACR_LOGIN_SERVER}/${REPO}:${TAG}"; then
-                    PUSH_OK=true
-                    break
-                fi
-                if [ "$TENTATIVA" -lt 3 ]; then
-                    echo "  ⚠️  push de $SVC falhou (tentativa $TENTATIVA/3) — renovando token do ACR."
-                    echo "     As camadas já enviadas são preservadas; a retentativa continua de onde parou."
-                fi
-            done
-            if [ "$PUSH_OK" != "true" ]; then
-                echo ""
-                echo "❌ ERRO: push de $SVC falhou nas 3 tentativas."
-                echo "   A imagem local ${ACR_LOGIN_SERVER}/${REPO}:${TAG} está intacta —"
-                echo "   NÃO é preciso rebuildar. Verifique a conexão e rode de novo:"
-                echo "     ./azure/deploy.sh --service $SVC"
-                echo "   O build baterá no cache e o push retoma das camadas que faltam."
-                exit 1
-            fi
-        done <<EOF
-$IMAGENS
-EOF
-        echo "  ✅ Imagens do escopo enviadas ao ACR."
-    fi
-fi
-
-# ─── [5/10] Storage account + file shares ────────────────────────────────────
-echo ""
-echo "[5/10] Criando/confirmando Storage Account: $STORAGE_ACCOUNT_NAME..."
-if az storage account show --name "$STORAGE_ACCOUNT_NAME" --resource-group "$AZURE_RESOURCE_GROUP" -o none 2>/dev/null; then
-    echo "  Storage Account já existe, reaproveitando."
-else
-    az storage account create --name "$STORAGE_ACCOUNT_NAME" \
-        --resource-group "$AZURE_RESOURCE_GROUP" --location "$AZURE_LOCATION" \
-        --sku Standard_LRS --kind StorageV2 --output none
-    echo "  ✅ Storage Account criada."
-fi
-STORAGE_KEY=$(az storage account keys list --account-name "$STORAGE_ACCOUNT_NAME" \
-    --resource-group "$AZURE_RESOURCE_GROUP" --query "[0].value" -o tsv)
-
-# Dois shares com propósitos distintos:
-#   backup     → destino dos dumps do Data Pump (azure/backup-db.sh). É a
-#                durabilidade real do banco, já que o ACI não permite volume
-#                para os datafiles.
-#   documentos → PDFs de receituário, equivalente ao named volume
-#                kura_storage_documentos do compose.
-for SHARE in "$STORAGE_SHARE_BACKUP" "$STORAGE_SHARE_DOCUMENTOS"; do
-    az storage share create --name "$SHARE" --account-name "$STORAGE_ACCOUNT_NAME" \
-        --account-key "$STORAGE_KEY" --quota "$STORAGE_SHARE_QUOTA_GB" --output none
-    echo "  ✅ File share pronto: $SHARE"
-done
-
-# ─── [6/10] ACI do Oracle ────────────────────────────────────────────────────
-echo ""
-if [ "$MODO_ESCOPO" != "tudo" ] && [ "$MODO_ESCOPO" != "db" ]; then
-    echo "[6/10] Escopo '$MODO_ESCOPO' — container group do Oracle não é tocado."
-else
-    echo "[6/10] Oracle: $ACI_ORACLE_NAME..."
-    ORACLE_EXISTE=false
-    az container show --name "$ACI_ORACLE_NAME" --resource-group "$AZURE_RESOURCE_GROUP" -o none 2>/dev/null && ORACLE_EXISTE=true
-
-    if [ "$ORACLE_EXISTE" = "true" ] && [ "$RECRIAR_DB" = "false" ]; then
-        echo "  Container group já existe — PRESERVADO. O banco não foi tocado."
-        echo "  (para refazer do zero, e APAGAR os dados: --recreate-db)"
-    else
-        if [ "$ORACLE_EXISTE" = "true" ]; then
-            echo ""
-            echo "  ⚠️  --recreate-db: isto APAGA TODOS OS DADOS do banco."
-            echo "     O armazenamento do ACI é efêmero e não há volume para os"
-            echo "     datafiles — recriar o container group é começar do zero."
-            echo "     Rode ./azure/backup-db.sh antes, se ainda não rodou."
-            if [ "$PERGUNTAR" = "true" ]; then
-                echo ""
-                echo "     Digite o nome do container group para confirmar:"
-                read -r CONFIRMACAO
-                if [ "$CONFIRMACAO" != "$ACI_ORACLE_NAME" ]; then
-                    echo "❌ Nome não confere. Abortando — nada foi apagado."
-                    exit 1
-                fi
-            fi
-        fi
-        substituir_placeholders \
-            "$SCRIPT_DIR/aci-oracle-db.yaml" \
-            "$GERADOS_DIR/aci-oracle-db.yaml" \
-            "LOCATION=$AZURE_LOCATION" \
-            "ORACLE_ACI_NAME=$ACI_ORACLE_NAME" \
-            "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" \
-            "ACR_USERNAME=$ACR_USERNAME" \
-            "ACR_PASSWORD=$ACR_PASSWORD" \
-            "ORACLE_IMAGE_TAG=$ORACLE_IMAGE_TAG" \
-            "ORACLE_SYS_PASSWORD=$ORACLE_SYS_PASSWORD" \
-            "ORACLE_APP_USER=$ORACLE_APP_USER" \
-            "ORACLE_APP_PASSWORD=$ORACLE_APP_PASSWORD" \
-            "STORAGE_SHARE_BACKUP=$STORAGE_SHARE_BACKUP" \
-            "STORAGE_ACCOUNT_NAME=$STORAGE_ACCOUNT_NAME" \
-            "STORAGE_ACCOUNT_KEY=$STORAGE_KEY"
-        recriar_container_group "$ACI_ORACLE_NAME" "$GERADOS_DIR/aci-oracle-db.yaml"
-        echo "  ✅ Container group do Oracle criado."
-    fi
-
-    echo "  Aguardando o listener responder em $ORACLE_FQDN:1521"
-    echo "  (Oracle XE cria o PDB na primeira subida — pode levar vários minutos)..."
-    if ! aguardar_porta_tcp "$ORACLE_FQDN" 1521 30 30; then
-        echo "❌ Oracle não respondeu em 15 min. Ver logs:"
-        echo "   az container logs --name $ACI_ORACLE_NAME --resource-group $AZURE_RESOURCE_GROUP"
-        exit 1
-    fi
-    echo "  ✅ Oracle aceitando conexões."
-fi
-
-# Endereços derivados, usados pelos três manifestos de aplicação
-#
-# ─── POR QUE OS POOLS PRECISAM DE AJUSTE AQUI ────────────────────────────────
-# Os três clientes alcançam o Oracle pelo FQDN PÚBLICO (não há VNet comum entre
-# container groups — ver cabeçalho de aci-dotnet-api.yaml). Esse caminho sai do
-# container group, passa pelo balanceador/NAT do Azure e volta, e tem uma
-# propriedade que muda a configuração de pool: o fluxo TCP que fica OCIOSO é
-# descartado no meio do caminho — o NAT de saída do container group expira a
-# tradução (o default documentado da plataforma é 4 minutos) e não envia RST nem
-# FIN para nenhuma das duas pontas. Quem deixou a conexão parada no pool não é
-# avisado: descobre ao usar, e o erro chega como
-#   ORA-12537 TNS:connection closed   (ODP.NET / .NET)
-#   ORA-17008 Closed connection       (JDBC / Java)
-#
-# Como isto foi localizado, para quem for reinvestigar: o alert log do Oracle não
-# registra erro nem restart na janela da falha (o banco não caiu), e o log do
-# tutor-api mostra o Hikari reprovando UMA A UMA as conexões que abriu ~50 min
-# antes ("Failed to validate connection ... ORA-17008"), com a requisição
-# seguinte funcionando — ou seja, o que morre é o socket parado, não o banco.
-# Atenção a um falso negativo ao reproduzir: um socket ocioso aberto DE FORA para
-# o IP público do Oracle sobrevive a 300s (testado) — o caminho que expira é o de
-# SAÍDA dos container groups das aplicações, que é onde os pools vivem.
-#
-# Daí a regra que vale para os três: NENHUMA conexão pode ficar ociosa no pool
-# perto dos 4 minutos sem ser validada ou renovada. Isto não é ajuste de
-# performance — sem isto, a primeira chamada depois de alguns minutos de
-# ociosidade devolve 500.
-#
-# .NET (ODP.NET):
-#   Validate Connection=true  valida a conexão ao tirá-la do pool; se o socket
-#                             morreu, descarta e pega outra em vez de estourar
-#                             ORA-12537 na cara do endpoint.
-#   Connection Lifetime=180   aposenta a conexão 3 min após abri-la, antes de a
-#                             janela de risco existir. Como o fechamento
-#                             acontece com o socket ainda vivo, o logoff chega
-#                             ao servidor e não deixa sessão órfã no XE.
-#   Min Pool Size=0           o default (1) mantém uma conexão parada para
-#                             sempre — exatamente a que morre e reaparece como
-#                             erro intermitente.
-ORACLE_CONNECTION_STRING="User Id=${ORACLE_APP_USER};Password=${ORACLE_APP_PASSWORD};Data Source=${ORACLE_FQDN}:1521/${ORACLE_PDB_SERVICE};Validate Connection=true;Connection Lifetime=180;Min Pool Size=0"
-DB_URL_JAVA="jdbc:oracle:thin:@//${ORACLE_FQDN}:1521/${ORACLE_PDB_SERVICE}"
-ORACLE_DSN_LUNA="${ORACLE_FQDN}:1521/${ORACLE_PDB_SERVICE}"
-KURA_API_BASE_URL="http://${DOTNET_FQDN}:8080"
-LUNA_BASE_URL="http://${LUNA_FQDN}:8000"
-
-# ─── [7/10] ACI do Java (autoridade de DDL — Flyway) ─────────────────────────
-echo ""
-if quer_servico tutor-api; then
-    # Sobe ANTES do .NET de propósito: o Flyway deste serviço cria o schema, e
-    # com esta ordem o .NET já encontra as tabelas na primeira subida.
-    echo "[7/10] tutor-api (Flyway cria o schema): $ACI_JAVA_NAME..."
-    substituir_placeholders \
-        "$SCRIPT_DIR/aci-java-api.yaml" \
-        "$GERADOS_DIR/aci-java-api.yaml" \
-        "LOCATION=$AZURE_LOCATION" \
-        "JAVA_ACI_NAME=$ACI_JAVA_NAME" \
-        "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" \
-        "ACR_USERNAME=$ACR_USERNAME" \
-        "ACR_PASSWORD=$ACR_PASSWORD" \
-        "JAVA_IMAGE_TAG=$JAVA_IMAGE_TAG" \
-        "DB_URL=$DB_URL_JAVA" \
-        "ORACLE_APP_USER=$ORACLE_APP_USER" \
-        "ORACLE_APP_PASSWORD=$ORACLE_APP_PASSWORD" \
-        "JAVA_JWT_SECRET=$JAVA_JWT_SECRET" \
-        "JWT_ACCESS_EXPIRATION_MINUTES=$JWT_ACCESS_EXPIRATION_MINUTES" \
-        "CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS" \
-        "FOTO_URL_SECRET=$FOTO_URL_SECRET" \
-        "FOTO_URL_BASE=$FOTO_URL_BASE"
-    recriar_container_group "$ACI_JAVA_NAME" "$GERADOS_DIR/aci-java-api.yaml"
-    echo "  Aguardando health (o Flyway aplica as migrations na primeira subida)..."
-    if ! aguardar_http_ok "http://$JAVA_FQDN:8081/api/actuator/health" 30 20; then
-        echo "❌ tutor-api não respondeu 200 em 10 min. Ver logs:"
-        echo "   az container logs --name $ACI_JAVA_NAME --resource-group $AZURE_RESOURCE_GROUP"
-        echo "   (o schema não existir bloqueia as outras duas APIs — não siga sem resolver)"
-        exit 1
-    fi
-    echo "  ✅ tutor-api saudável, schema criado."
-else
-    echo "[7/10] Fora do escopo — tutor-api não alterado."
-fi
-
-# ─── [8/10] ACI do .NET ──────────────────────────────────────────────────────
-echo ""
-if quer_servico clinica-api; then
-    echo "[8/10] clinica-api: $ACI_DOTNET_NAME..."
-    substituir_placeholders \
-        "$SCRIPT_DIR/aci-dotnet-api.yaml" \
-        "$GERADOS_DIR/aci-dotnet-api.yaml" \
-        "LOCATION=$AZURE_LOCATION" \
-        "DOTNET_ACI_NAME=$ACI_DOTNET_NAME" \
-        "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" \
-        "ACR_USERNAME=$ACR_USERNAME" \
-        "ACR_PASSWORD=$ACR_PASSWORD" \
-        "DOTNET_IMAGE_TAG=$DOTNET_IMAGE_TAG" \
-        "ASPNETCORE_ENVIRONMENT=$ASPNETCORE_ENVIRONMENT" \
-        "ORACLE_CONNECTION_STRING=$ORACLE_CONNECTION_STRING" \
-        "DOTNET_JWT_KEY=$DOTNET_JWT_KEY" \
-        "IOT_API_KEY=$IOT_API_KEY" \
-        "LUNA_API_KEY=$LUNA_API_KEY" \
-        "DAILY_API_KEY=$DAILY_API_KEY" \
-        "LUNA_BASE_URL=$LUNA_BASE_URL" \
-        "LUNA_INBOUND_API_KEY=$LUNA_INBOUND_API_KEY" \
-        "STORAGE_BASE_PATH=$STORAGE_BASE_PATH" \
-        "STORAGE_SHARE_DOCUMENTOS=$STORAGE_SHARE_DOCUMENTOS" \
-        "STORAGE_ACCOUNT_NAME=$STORAGE_ACCOUNT_NAME" \
-        "STORAGE_ACCOUNT_KEY=$STORAGE_KEY" \
-        "CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS" \
-        "FOTO_URL_SECRET=$FOTO_URL_SECRET" \
-        "FOTO_URL_BASE=$FOTO_URL_BASE" \
-        "CONVITE_URL_BASE_APP_TUTOR=$CONVITE_URL_BASE_APP_TUTOR"
-    recriar_container_group "$ACI_DOTNET_NAME" "$GERADOS_DIR/aci-dotnet-api.yaml"
-    echo "  Aguardando health..."
-    if ! aguardar_http_ok "http://$DOTNET_FQDN:8080/health" 20 20; then
-        echo "⚠️  clinica-api não respondeu 200 em ~7 min. Ver logs:"
-        echo "   az container logs --name $ACI_DOTNET_NAME --resource-group $AZURE_RESOURCE_GROUP"
-    else
-        echo "  ✅ clinica-api saudável."
-    fi
-else
-    echo "[8/10] Fora do escopo — clinica-api não alterado."
-fi
-
-# ─── [9/10] ACI da Luna ──────────────────────────────────────────────────────
-echo ""
-if quer_servico luna-ai; then
-    echo "[9/10] luna-ai: $ACI_LUNA_NAME..."
-    echo "  (imagem de ~9,8 GB — o primeiro pull do container group é demorado)"
-    substituir_placeholders \
-        "$SCRIPT_DIR/aci-luna-ai.yaml" \
-        "$GERADOS_DIR/aci-luna-ai.yaml" \
-        "LOCATION=$AZURE_LOCATION" \
-        "LUNA_ACI_NAME=$ACI_LUNA_NAME" \
-        "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" \
-        "ACR_USERNAME=$ACR_USERNAME" \
-        "ACR_PASSWORD=$ACR_PASSWORD" \
-        "LUNA_IMAGE_TAG=$LUNA_IMAGE_TAG" \
-        "ORACLE_DSN=$ORACLE_DSN_LUNA" \
-        "ORACLE_APP_USER=$ORACLE_APP_USER" \
-        "ORACLE_APP_PASSWORD=$ORACLE_APP_PASSWORD" \
-        "KURA_API_BASE_URL=$KURA_API_BASE_URL" \
-        "LUNA_API_KEY=$LUNA_API_KEY" \
-        "LUNA_INBOUND_API_KEY=$LUNA_INBOUND_API_KEY" \
-        "CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS" \
-        "TWILIO_SID=$TWILIO_SID" \
-        "TWILIO_TOKEN=$TWILIO_TOKEN" \
-        "TWILIO_FROM_NUMBER=$TWILIO_FROM_NUMBER" \
-        "OPENAI_API_KEY=$OPENAI_API_KEY" \
-        "WEBHOOK_PUBLIC_URL=$WEBHOOK_PUBLIC_URL" \
-        "LEMBRETE_CONFIRMACAO_HABILITADO=$LEMBRETE_CONFIRMACAO_HABILITADO" \
-        "LEMBRETE_CONFIRMACAO_HORA=$LEMBRETE_CONFIRMACAO_HORA"
-    recriar_container_group "$ACI_LUNA_NAME" "$GERADOS_DIR/aci-luna-ai.yaml"
-    echo "  Aguardando health..."
-    if ! aguardar_http_ok "http://$LUNA_FQDN:8000/health" 30 20; then
-        echo "⚠️  luna-ai não respondeu 200 em 10 min. Ver logs:"
-        echo "   az container logs --name $ACI_LUNA_NAME --resource-group $AZURE_RESOURCE_GROUP"
-    else
-        echo "  ✅ luna-ai saudável."
-    fi
-else
-    echo "[9/10] Fora do escopo — luna-ai não alterado."
-fi
-
-# ─── [10/10] Resumo ──────────────────────────────────────────────────────────
-echo ""
-echo "========================================================"
-echo " DEPLOY CONCLUÍDO"
-echo "========================================================"
-echo ""
-echo "  Oracle   : $ORACLE_FQDN:1521/$ORACLE_PDB_SERVICE  (schema $ORACLE_APP_USER)"
-echo "  .NET API : http://$DOTNET_FQDN:8080/swagger   · health /health"
-echo "  Java API : http://$JAVA_FQDN:8081/api/swagger-ui/index.html · health /api/actuator/health"
-echo "  Luna IA  : http://$LUNA_FQDN:8000/docs        · health /health"
-echo ""
-echo "  Segredos (Key Vault $KEYVAULT_NAME):"
-echo "    az keyvault secret list --vault-name $KEYVAULT_NAME -o table"
-echo ""
-echo "  Próximos passos:"
-echo "    ./azure/verify.sh          valida tudo por FQDN público"
-echo "    ./azure/backup-db.sh       dump do banco para o share $STORAGE_SHARE_BACKUP"
-echo ""
-echo "  Redeploy de aplicação sem tocar no banco:"
-echo "    ./azure/deploy.sh --apps-only"
-echo "    ./azure/deploy.sh --service luna-ai --skip-build"
-echo ""
-echo "  Restaurar um dump (nesta ordem, para o Flyway não recriar o schema vazio):"
-echo "    ./azure/deploy.sh --db-only --recreate-db"
-echo "    ./azure/restore-db.sh <nome-do-dump>"
-echo "    ./azure/deploy.sh --apps-only"
-echo "========================================================"

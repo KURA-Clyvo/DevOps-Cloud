@@ -1,0 +1,5 @@
+# Fins de linha: o repositório guarda LF e entrega LF em qualquer máquina.
+# Scripts .sh e YAML executam em Linux (WSL, CI); CRLF os quebra
+# (`$'\r': command not found`), e é o que o Windows gera sem esta regra.
+* text=auto eol=lf
+*.webp binary

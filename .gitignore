@@ -1,11 +1,14 @@
+# Segredos locais (os seeds leem DEMO_SENHA e chaves daqui, quando existir)
 .env
 CLAUDE.md
 
-# Manifestos de ACI com os placeholders já substituídos por valor real.
-# azure/deploy.sh gera isto antes de chamar `az container create`; o conteúdo
-# leva segredo em texto e é recriado a cada execução.
-azure/.generated/
+# Artefatos gerados por `azure/deploy.sh build` e `azure/deploy.sh web`
+artifacts/
+web-dist/
+dist/
+dist-*/
+node_modules/
 
-# REC-05 (fix wave G2, m-seed): token/link de convite em texto puro, gerado
-# por scripts/seed-demo.sh a cada execução — nunca versionar.
+# REC-05: token/link de convite em texto puro, gerado por scripts/seed-demo.sh
+# a cada execução — nunca versionar.
 seed-demo-convites.local.txt
