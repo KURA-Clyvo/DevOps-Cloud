@@ -64,11 +64,12 @@ flowchart TB
 ## Fluxo de deploy
 
 Cada fase é um comando do `azure/deploy.sh`, executado de um terminal com `az login` (o passo a passo está no
-[README](../README.md#passo-a-passo-do-deploy-inicial)). `deploy.sh all` encadeia as quatro.
+[README](../README.md#passo-a-passo-do-deploy-inicial)). `deploy.sh all` roda o `check` e encadeia as quatro.
 
 ```mermaid
 flowchart LR
-  A["deploy.sh infra<br/>rede · Key Vault · VM · Web Apps · SWAs"] --> B["deploy.sh build<br/>.NET · Java · Luna → artifacts/"]
+  K["deploy.sh check<br/>ferramentas · login · submódulos · runtimes"] --> A["deploy.sh infra<br/>providers · rede · Key Vault · VM · Web Apps · SWAs"]
+  A --> B["deploy.sh build<br/>.NET · Java · Luna → artifacts/"]
   B --> C["deploy.sh apps<br/>app settings · tutor → clínica + Luna"]
   C --> D["deploy.sh web<br/>build com as URLs reais · publicação nos SWAs"]
 ```
@@ -105,6 +106,8 @@ Ordem e dependências que o `deploy.sh` resolve:
 | Submódulos com SHA fixado | O `build` compila uma versão reproduzível; rollback por commit | Sempre o `main` |
 | Oracle XE 21c como padrão | Imagem já validada no projeto; nenhuma migration do tutor exige recurso do 23ai/26ai; o 26ai não consta como versão suportada na documentação do Flyway | Oracle 26ai Free (continua disponível por `ORACLE_IMAGE`/`ORACLE_SERVICE`) |
 | MongoDB sempre provisionado | A Loja do tutor depende dele | Flag para desligar |
+| Windows nativo pelo Git Bash, sem WSL | O mesmo `deploy.sh` roda em Windows, Linux e macOS: detecta o Git Bash, impede a conversão de caminhos, remove o CR da saída de `az` e do Python e corrige o próprio CRLF | Reescrever em PowerShell; WSL2 |
+| Agente self-hosted Windows na pipeline do tutor | Mesma máquina do `deploy.sh`, sem WSL; os passos da pipeline usam cmd e PowerShell | Agente Linux (WSL2 ou VM) |
 
 ## Validação do deploy.sh
 
@@ -119,10 +122,14 @@ O que foi conferido antes da entrega, e o que só um deploy real prova:
 | Fase `web` | Executada com os dois apps reais: `expo export` com as URLs embutidas, `app.json` ajustado para SPA e `preparar_dist` |
 | Pacote da Luna | Gerado e listado (`src`, `requirements.txt`, `pyproject.toml`) |
 | Script de bootstrap da VM e compose embutido | Gerados, com `bash -n`, `shellcheck` e conferência estrutural do compose (job de CI) |
+| Versão atual do `deploy.sh` (fases `check` e `seed`, registro de providers, escolha de VM, `maven_pronto`) | `bash -n`, `shellcheck`, comandos `az` novos contra o `--help`, uso e `check` executados em Linux, correção automática de um arquivo em CRLF e os passos do CI contra ele |
+| Passos da pipeline do tutor (agente Windows) | Scripts PowerShell executados no PowerShell 7 com a lógica simulada (JDK, separação do `app.jar`, health check com 503 e depois 200) |
 
 Não foi possível executar neste ambiente, e ficam para o primeiro deploy: tudo que exige uma subscription (criação de
 recursos, referências do Key Vault, boot da VM, subida do Oracle e do Flyway), o `dotnet publish` (sem .NET SDK 10) e o
-`mvnw package` (sem acesso ao Maven Central).
+`mvnw package` (sem acesso ao Maven Central). Também não foram executados, por falta de um Windows: os ramos do
+`deploy.sh` específicos do Git Bash (`az.cmd`, `cygpath`, `--ssl-no-revoke`, conversão de caminhos) e o agente Windows da
+pipeline; a lógica é a mesma validada em Linux, mas a primeira execução no Windows é a prova.
 
 ## Dívidas conhecidas (fora do escopo desta entrega)
 
@@ -131,4 +138,4 @@ recursos, referências do Key Vault, boot da VM, subida do Oracle e do Flyway), 
 - `.nvmrc` dos apps RN pede Node 20 (fim de vida); a fase `web` exige Node 20 ou superior e foi validada com o 22.
 - O app mobile da clínica embute `EXPO_PUBLIC_LUNA_API_KEY` no pacote: o ideal é a Luna ser chamada via .NET.
 - Spring Boot 3.2.5 (tutor) está fora do suporte da comunidade.
-- Builds mobile (APK/IPA) ficam fora deste deploy (não há `eas.json`).
+- Builds mobile (APK/IPA) ficam fora deste deploy; veja o `eas.json` nos repositórios dos apps, quando houver.

@@ -34,7 +34,7 @@ flowchart LR
 - [Pré-requisitos](#pré-requisitos)
 - [Passo a passo do deploy inicial](#passo-a-passo-do-deploy-inicial)
   - [Passo 1: Baixar o repositório e os submódulos](#passo-1-baixar-o-repositório-e-os-submódulos)
-  - [Passo 2: Entrar no Azure](#passo-2-entrar-no-azure)
+  - [Passo 2: Entrar no Azure e conferir os pré-requisitos](#passo-2-entrar-no-azure-e-conferir-os-pré-requisitos)
   - [Passo 3: Ajustar a configuração (opcional)](#passo-3-ajustar-a-configuração-opcional)
   - [Passo 4: Criar a infraestrutura](#passo-4-criar-a-infraestrutura)
   - [Passo 5: Compilar as APIs](#passo-5-compilar-as-apis)
@@ -55,35 +55,41 @@ flowchart LR
 
 | Caminho | Para quê |
 |---|---|
-| `azure/deploy.sh` | Todos os comandos `az`: fases `infra`, `build`, `apps`, `web`, `urls`, `all` e `destroy` |
+| `azure/deploy.sh` | Todos os comandos `az`: fases `check`, `infra`, `build`, `apps`, `web`, `urls`, `seed`, `all` e `destroy` |
 | `azure/staticwebapp.config.json` | Fallback de SPA, cache e headers dos 2 Static Web Apps |
 | `mongo/init/` | Role/usuário do Java no MongoDB (enviado à VM pelo `deploy.sh`) |
 | `scripts/` | Seeds de demonstração, `preflight-next.sh` e `smoke-contratos.sh` (ver [Seeds e smoke](#seeds-e-smoke)) |
 | `docs/ARQUITETURA.md` | Arquitetura, rede, segredos e decisões |
 | `.github/workflows/ci.yml` | CI: valida os scripts e confere se os submódulos estão no `main` mais recente |
 | `.gitmodules` | 5 submódulos: 3 APIs e 2 apps RN. **O SHA gravado é a versão que o `build` compila** |
-| `.gitattributes` | Força LF (os scripts rodam em Linux) |
+| `.gitattributes` | Força LF (os scripts rodam em bash: Git Bash, Linux ou macOS) |
 
 ## Pré-requisitos
 
-Em Linux, macOS ou Windows com **WSL2** (os scripts são bash):
+Os scripts são **bash**. No Windows use o **Git Bash** (vem com o Git for Windows); **WSL não é necessário**. Linux e macOS
+funcionam direto. Instale, em qualquer sistema:
 
 | Ferramenta | Usada em | Observação |
 |---|---|---|
-| `git`, `bash`, `python3`, `curl` | todas as fases | |
+| Git (no Windows: **Git for Windows**, que traz o Git Bash), `curl`, Python 3 | todas as fases | No Windows, o Python vem do instalador oficial ou de `winget install Python.Python.3.12`; o atalho `python3` da Microsoft Store não serve |
 | Azure CLI (`az`) | todas as fases | recente; o `deploy.sh` foi conferido contra a 2.91 |
-| .NET SDK 10, JDK 21, `zip` | `build` | o script confere as versões |
-| Node.js 22 LTS (`npm`, `npx`) | `web` | o script exige Node 20 ou superior |
+| .NET SDK 10 e JDK 21 | `build` | o script confere as versões; `zip` é opcional (sem ele o script usa o Python) |
+| Node.js (`npm`, `npx`) | `web` | exige 20 ou superior; validado com a 22 LTS |
+
+A fase `check` confere tudo isso (e o login, os submódulos e os runtimes) sem criar nada: rode-a antes do primeiro deploy
+([Passo 2](#passo-2-entrar-no-azure-e-conferir-os-pré-requisitos)).
 
 Na subscription, a identidade que executa precisa de **Owner**, ou **Contributor + User Access Administrator**: o
 `deploy.sh` concede papéis do Key Vault às identidades dos Web Apps e da VM. Confirme também que a região escolhida tem
-cota para o plano **B2** do App Service e para a VM **Standard_B2ms**.
+cota para o plano **B2** do App Service e para uma VM de 2 vCPU e 8 GiB (o script testa alguns tamanhos e zonas).
 
 ## Passo a passo do deploy inicial
 
 Rode tudo a partir da raiz do repositório. Cada fase pode ser repetida: o script só cria o que ainda não existe.
 
 ### Passo 1: Baixar o repositório e os submódulos
+
+Abra o **Git Bash** (Windows) ou um terminal bash e rode todos os comandos deste guia nele.
 
 ```bash
 git clone --recurse-submodules <url-do-repositório>
@@ -95,13 +101,17 @@ git submodule update --init --recursive
 Confira que as pastas `dotnet-backend`, `java-backend`, `luna-ia`, `mobile-clinica-rn` e `mobile-tutor-rn` têm
 conteúdo. Vazias, as fases `build` e `web` param com a mensagem pedindo esse comando.
 
-### Passo 2: Entrar no Azure
+### Passo 2: Entrar no Azure e conferir os pré-requisitos
 
 ```bash
-az login                                   # no WSL/servidor sem navegador: az login --use-device-code
+az login                                   # sem navegador no terminal: az login --use-device-code
 az account set --subscription <id-ou-nome>
 az account show -o table                   # confirme a subscription ativa
+bash azure/deploy.sh check                 # confere ferramentas, login, submódulos e runtimes; não cria nada
 ```
+
+Cada linha do `check` aparece como `PASSOU` ou `FALHOU`; corrija as pendências e repita até aparecer `tudo pronto para o deploy`.
+Com várias subscriptions, `AZURE_SUBSCRIPTION=<id ou nome>` escolhe a que o script usa.
 
 ### Passo 3: Ajustar a configuração (opcional)
 
@@ -115,32 +125,34 @@ export TWILIO_SID=...  TWILIO_TOKEN=...  OPENAI_API_KEY=...  DAILY_API_KEY=...  
 ```
 
 > Variáveis que mudam nomes ou o banco (`PREFIX`, `RG`, `LOCATION`, `ORACLE_IMAGE`, `ORACLE_SERVICE`…) precisam ter o
-> **mesmo valor em todas as fases**. Mantenha-as no mesmo terminal.
+> **mesmo valor em todas as fases**. O `export` vale só para o terminal em que foi digitado: mantenha todas as fases no mesmo Git Bash.
 
 ### Passo 4: Criar a infraestrutura
 
 ```bash
-azure/deploy.sh infra
+bash azure/deploy.sh infra
 ```
 
 Cria, em 6 etapas numeradas: grupo de recursos, NSG/VNet/sub-redes, Key Vault e segredos, VM do banco (Oracle XE 21c +
 MongoDB em containers), plano e os 3 Web Apps, e os 2 Static Web Apps. É a fase mais demorada: a VM baixa as imagens e o
 Oracle cria o banco na primeira subida (o script espera até 30 minutos). Termina com `banco pronto em 10.20.2.x` e a
-lista de URLs.
+lista de URLs. Antes das 6 etapas, o script registra os providers da subscription que ainda não estiverem registrados e,
+sem `VM_SIZE`, testa tamanhos e zonas de VM até achar um disponível na sua conta.
 
 ### Passo 5: Compilar as APIs
 
 ```bash
-azure/deploy.sh build
+bash azure/deploy.sh build
 ```
 
 Compila, a partir dos submódulos, `clinica.zip` (.NET), `tutor.jar` (Java, sem rodar testes: eles rodam no CI do repo da
-API) e `luna.zip` (Python) em `artifacts/`, e lista os arquivos ao final.
+API) e `luna.zip` (Python) em `artifacts/`, e lista os arquivos ao final. O Maven vem do `mvnw`; se ele não conseguir preparar o
+Maven (no Git Bash falta o `unzip`), o script usa o `mvn` do PATH ou baixa o Maven sozinho.
 
 ### Passo 6: Implantar as APIs
 
 ```bash
-azure/deploy.sh apps
+bash azure/deploy.sh apps
 ```
 
 Grava os app settings (referências ao Key Vault) e implanta na ordem **tutor → clínica e Luna**: o Flyway do tutor cria o
@@ -150,7 +162,7 @@ e a Luna (`/health`). Se alguma não ficar saudável, o script mostra o log do W
 ### Passo 7: Compilar e publicar os apps web
 
 ```bash
-azure/deploy.sh web
+bash azure/deploy.sh web
 ```
 
 Compila os 2 apps Expo com as **URLs reais das APIs embutidas no JavaScript** (por isso vem depois do passo 6), em
@@ -159,7 +171,7 @@ Compila os 2 apps Expo com as **URLs reais das APIs embutidas no JavaScript** (p
 ### Passo 8: Conferir o resultado
 
 ```bash
-eval "$(azure/deploy.sh urls)"      # define CLINICA_API_URL, TUTOR_API_URL, LUNA_URL, CLINICA_WEB_URL, TUTOR_WEB_URL
+eval "$(bash azure/deploy.sh urls)"      # define CLINICA_API_URL, TUTOR_API_URL, LUNA_URL, CLINICA_WEB_URL, TUTOR_WEB_URL
 curl -s -o /dev/null -w 'clinica %{http_code}\n' "$CLINICA_API_URL/health"
 curl -s -o /dev/null -w 'tutor   %{http_code}\n' "$TUTOR_API_URL/api/actuator/health"
 curl -s -o /dev/null -w 'luna    %{http_code}\n' "$LUNA_URL/health"
@@ -173,7 +185,7 @@ podem levar alguns minutos após os papéis). Para popular dados de demonstraç�
 ## Atalho: tudo de uma vez
 
 ```bash
-azure/deploy.sh all      # infra → build → apps → web (passos 4 a 7)
+bash azure/deploy.sh all      # check → infra → build → apps → web (passos 4 a 7)
 ```
 
 ## Atualizar uma versão depois do deploy inicial
@@ -182,8 +194,8 @@ O `build` compila o commit que cada submódulo tem fixado. Para publicar uma ver
 
 ```bash
 git submodule update --remote java-backend         # ou dotnet-backend, luna-ia, mobile-*-rn
-azure/deploy.sh build && azure/deploy.sh apps      # APIs
-azure/deploy.sh web                                # apps web
+bash azure/deploy.sh build && bash azure/deploy.sh apps      # APIs
+bash azure/deploy.sh web                                     # apps web
 git add java-backend && git commit -m "chore: atualiza java-backend"   # registra o que foi implantado
 ```
 
@@ -199,7 +211,9 @@ Tudo é sobrescrevível por variável de ambiente (valores padrão entre parênt
 | `LOCATION` (`eastus2`), `SWA_LOCATION` (= `LOCATION`) | Região; troque `SWA_LOCATION` se a região não oferecer Static Web Apps |
 | `PREFIX` (`kura`), `RG` (`rg-$PREFIX`) | Prefixo dos nomes e grupo de recursos |
 | `NAME_SUFFIX`, `KV_NAME` | Sufixo/nome do Key Vault (padrão: hash estável da subscription; o nome é global) |
-| `VM_SIZE` (`Standard_B2ms`), `VM_IMAGE` (Ubuntu 24.04) | VM do banco |
+| `VM_SIZE` (vazio = automático), `VM_SIZE_CANDIDATOS`, `VM_ZONE`, `VM_IMAGE` (Ubuntu 24.04) | VM do banco: sem `VM_SIZE`, o script testa os candidatos (2 vCPU, 8 GiB) e as zonas com `az vm create --validate`; `VM_ZONE=1\|2\|3` fixa a zona e `VM_ZONE=` vazio força "sem zona" |
+| `AZURE_SUBSCRIPTION` | Subscription usada (id ou nome), quando há várias |
+| `KURA_TOOLS` (`~/.kura-tools`) | Onde o script guarda o Maven que baixar, se o `mvnw` falhar |
 | `ORACLE_IMAGE` (`gvenzl/oracle-xe:21-slim`), `ORACLE_SERVICE` (`XEPDB1`), `ORACLE_APP_USER` (`KURA`) | Banco. O 26ai Free (`gvenzl/oracle-free:slim` + `FREEPDB1`) ainda não foi validado com o Flyway do tutor |
 | `PLAN_SKU` (`B2`) | Plano do App Service |
 | `RUNTIME_DOTNET` (`DOTNETCORE:10.0`), `RUNTIME_JAVA` (`JAVA:21-java21`), `RUNTIME_PYTHON` (`PYTHON:3.12`) | Runtimes (o script confere com `az webapp list-runtimes`) |
@@ -208,6 +222,7 @@ Tudo é sobrescrevível por variável de ambiente (valores padrão entre parênt
 | `LUNA_SCHEDULER_ENABLED` (`false`), `LEMBRETE_CONFIRMACAO_HABILITADO` (`false`) | Agendadores da Luna |
 | `ARTIFACTS_DIR` (`./artifacts`), `WEB_DIR` (`./web-dist`) | Saída do `build` e do build web |
 | `CONFIRMA=sim` | Exigida pelo `destroy` |
+| `DEMO_SENHA`, `DEMO_WHATSAPP` / `SEED_SEM_WHATSAPP=1` | Exigidas pelo `seed` (ver [Seeds e smoke](#seeds-e-smoke)) |
 
 As demais (`TWILIO_FROM_NUMBER`, `JWT_ACCESS_EXPIRATION_MINUTES`, `STORAGE_BASE_PATH`…) estão no bloco *Configuração* do
 `deploy.sh`.
@@ -240,24 +255,23 @@ az vm run-command invoke -g rg-kura -n vm-kura-db --command-id RunShellScript --
 az webapp log tail -g rg-kura -n kura-tutor-api
 # cópia do disco da VM (crash-consistent; não há backup automático)
 az snapshot create -g rg-kura -n snap-db-$(date +%F) \
-  --source "$(az vm show -g rg-kura -n vm-kura-db --query storageProfile.osDisk.managedDisk.id -o tsv)"
+  --source "$(az vm show -g rg-kura -n vm-kura-db --query storageProfile.osDisk.managedDisk.id -o tsv | tr -d '\r')"
 ```
 
 Não há SSH: o NSG nega toda entrada além de Oracle/MongoDB vindos da sub-rede dos Web Apps.
 
 ## Seeds e smoke
 
-Populam e verificam as APIs **por HTTP real**. Contra o Azure, defina as URLs e as chaves por variável de ambiente:
+Populam e verificam as APIs **por HTTP real**. Com a stack no ar (`apps` concluído), a fase `seed` descobre as URLs, lê a
+chave da Luna no Key Vault e roda `seed-demo.sh`, `seed-demo-luna.sh`, `seed-demo-fotos.sh` e `seed-demo-contas.sh`:
 
 ```bash
-eval "$(azure/deploy.sh urls)"
-export API="$CLINICA_API_URL" TUTOR_API="$TUTOR_API_URL" LUNA_URL
-export LUNA_API_KEY="$(az keyvault secret show --vault-name <kv> --name luna-api-key --query value -o tsv)"
-export DEMO_SENHA='<senha do evento>'
-bash scripts/seed-demo.sh        # clínica, tutores e pets  ·  depois: seed-demo-contas.sh, seed-demo-fotos.sh
+export DEMO_SENHA='<senha própria da clínica demo>'    # obrigatória: as APIs do Azure são públicas
+export DEMO_WHATSAPP='<DDI+DDD+número>'                # ou SEED_SEM_WHATSAPP=1 para dispensar o lembrete por WhatsApp
+bash azure/deploy.sh seed
 ```
 
-O nome do cofre (`<kv>`) sai de `az keyvault list -g rg-kura --query '[0].name' -o tsv`.
+O `seed-demo.sh` não é idempotente: se a clínica demo já existe, ele falha de propósito.
 
 | Script | Função |
 |---|---|
@@ -285,16 +299,22 @@ funcionam contra o Azure.
 |---|---|
 | `runtime '...' indisponível` | O script lista as opções da região; exporte `RUNTIME_DOTNET`, `RUNTIME_JAVA` ou `RUNTIME_PYTHON` com uma delas |
 | `sem sessão Azure` | `az login` e `az account set --subscription <id>` |
-| `bootstrap da VM não concluiu (sentinela ausente)` | Repita `azure/deploy.sh infra` (é idempotente). Para ver o que houve: `az vm run-command invoke … --scripts "docker logs --tail 40 kura_oracle_db"` |
+| `bootstrap da VM não concluiu (sentinela ausente)` | Repita `bash azure/deploy.sh infra` (é idempotente). Para ver o que houve: `az vm run-command invoke … --scripts "docker logs --tail 40 kura_oracle_db"` |
 | Erros de permissão (RBAC) ao gravar segredos | O papel recém-concedido leva minutos para propagar; o script já repete a operação. Se persistir, confira Owner (ou Contributor + User Access Administrator) |
 | `build`: `'dotnet' não encontrado`, `JDK 21 ou superior necessário`, `dotnet SDK 10 não encontrado` | Instale a ferramenta indicada (ver [Pré-requisitos](#pré-requisitos)) |
 | `... não encontrado: baixe os submódulos` | `git submodule update --init --recursive` |
 | `tutor-api não ficou saudável` | O log do Web App é impresso; confira o banco (`az vm run-command` acima) e as referências do Key Vault |
 | Referência do Key Vault não resolvida | Aguarde alguns minutos após os papéis; reinicie o Web App (`az webapp restart -g rg-kura -n <app>`) |
 | Região sem Static Web Apps | Exporte `SWA_LOCATION` com outra região |
+| `check` mostra `FALHOU` | A linha diz o que falta: instale a ferramenta, rode `az login` ou baixe os submódulos, e repita |
+| Windows: `Python 3 não encontrado` | Instale o Python 3 pelo instalador oficial ou `winget install Python.Python.3.12`; o atalho `python3` da Microsoft Store não conta. Reabra o Git Bash depois |
+| Windows: `Permission denied` ao rodar `azure/deploy.sh` | Use `bash azure/deploy.sh <fase>` |
+| `nenhum tamanho de VM disponível` | O script testou os tamanhos e zonas e nenhum está liberado na subscription/região: veja a lista que ele imprime e exporte `VM_SIZE` ou outra `LOCATION` |
+| `não consegui baixar o Maven` | Antivírus ou proxy bloqueando `repo.maven.apache.org`: libere o acesso ou instale o Maven (`winget install Apache.Maven`) |
+| `MissingSubscriptionRegistration` | O registro dos providers ainda não terminou: aguarde alguns minutos e repita a fase |
 
 ## Remover o ambiente
 
 ```bash
-CONFIRMA=sim azure/deploy.sh destroy    # apaga o grupo de recursos (inclusive os dados do banco) e purga o Key Vault
+CONFIRMA=sim bash azure/deploy.sh destroy    # apaga o grupo de recursos (inclusive os dados do banco) e purga o Key Vault
 ```
