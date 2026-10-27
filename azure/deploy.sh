@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+if [ -z "${KURA_LF_OK:-}" ] && grep -q $'\r' "${BASH_SOURCE[0]}" 2>/dev/null; then _lf="$(mktemp)"; tr -d '\r' < "${BASH_SOURCE[0]}" > "$_lf"; KURA_LF_OK=1 KURA_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" exec bash "$_lf" "$@"; fi # CRLF -> LF
 # =============================================================================
 # azure/deploy.sh — provisiona e implanta o Kura no Azure (deploy inicial)
 #
@@ -15,11 +16,25 @@
 #   apps     app settings + deploy das 3 APIs, a partir de $ARTIFACTS_DIR
 #   web      compila os 2 apps web com as URLs reais das APIs ($WEB_DIR) e publica nos Static Web Apps
 #   urls     imprime CHAVE=VALOR com as URLs públicas
-#   all      infra, build, apps e web em sequência (deploy inicial completo)
+#   check    confere pré-requisitos (ferramentas, login, submódulos, runtimes) sem criar nada
+#   all      check, infra, build, apps e web em sequência (deploy inicial completo)
+#   seed     (opcional, depois do deploy) popula dados de demonstração com scripts/seed-demo*.sh
 #   destroy  apaga o grupo de recursos e purga o Key Vault (exige CONFIRMA=sim)
 #
-# Pré-requisitos: az logado (az login), python3, curl.
-#   fase build: dotnet SDK 10, JDK 21 e zip      fase web: Node.js 22 LTS (npm/npx)
+# Pré-requisitos: az logado (az login), Python 3, curl.
+#   fase build: dotnet SDK 10 e JDK 21 (o zip é opcional: sem ele o script usa o Python)
+#   fase web:   Node.js 22 LTS (npm/npx)
+#
+# Linux, macOS, WSL2 ou Windows (Git Bash). No Windows, instale: Git for Windows, Azure CLI,
+# Python 3 (winget install Python.Python.3.12), .NET SDK 10, JDK 21 e Node.js 22; rode no Git Bash
+# (ou pelo azure/deploy.ps1, que chama o Git Bash). Finais de linha CRLF são corrigidos sozinhos.
+#
+# Várias subscriptions: AZURE_SUBSCRIPTION=<id ou nome> escolhe a que será usada.
+# Seed: DEMO_SENHA (obrigatória, senha própria: as APIs são públicas) e DEMO_WHATSAPP=<DDI+DDD+número>
+# (ou SEED_SEM_WHATSAPP=1).
+#
+# Máquina do banco: VM_SIZE fixa o tamanho; sem ele, o script testa (az vm create --validate) os
+# tamanhos de VM_SIZE_CANDIDATOS e as zonas (VM_ZONE=1|2|3 fixa; VM_ZONE= vazio força "sem zona").
 # Os submódulos precisam estar baixados (git submodule update --init --recursive).
 # A identidade precisa criar role assignments (Owner, ou Contributor + User Access
 # Administrator) — o script concede papéis no Key Vault às identidades dos Web Apps e da VM.
@@ -32,7 +47,51 @@
 set -Eeuo pipefail
 trap 'echo "ERRO na linha $LINENO: $BASH_COMMAND" >&2' ERR
 
-RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+_dir="${KURA_SCRIPT_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
+RAIZ="$(cd "$_dir/.." && pwd)"
+
+# ─── Compatibilidade Windows (Git Bash/MSYS) ─────────────────────────────────
+case "$(uname -s 2>/dev/null || true)" in MINGW* | MSYS* | CYGWIN*) WINDOWS=1 ;; *) WINDOWS=0 ;; esac
+AZBIN=az
+PYBIN=""
+export PYTHONUTF8=1
+if [ "$WINDOWS" = 1 ]; then
+  # Sem isto o Git Bash reescreve argumentos que começam com "/" (--scope /subscriptions/...,
+  # STORAGE_BASE_PATH=/home/..., @//ip no JDBC) para caminhos do Windows. Os caminhos de ARQUIVO
+  # passados a programas nativos (az, dotnet, node, python) são convertidos por caminho_nativo().
+  export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
+  if ! command -v az >/dev/null 2>&1; then
+    if command -v az.cmd >/dev/null 2>&1; then AZBIN=az.cmd; fi
+  fi
+  # O az do Windows devolve CRLF: sem remover o \r, toda variável capturada por $(az ...) ficaria suja.
+  az() { command "$AZBIN" "$@" | tr -d '\r'; return "${PIPESTATUS[0]}"; }
+fi
+
+CURL_EXTRA=()
+if [ "$WINDOWS" = 1 ]; then CURL_EXTRA=(--ssl-no-revoke); fi
+
+caminho_nativo() { # caminho que programas nativos do Windows entendem (C:/...); igual no Linux/macOS
+  if [ "$WINDOWS" = 1 ] && command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi
+}
+
+achar_python() { # um Python 3 de verdade (o atalho python3 da Microsoft Store não conta)
+  local c v
+  for c in python3 python py; do
+    command -v "$c" >/dev/null 2>&1 || continue
+    if [ "$c" = py ]; then v="$(py -3 -c 'import sys;print(sys.version_info[0])' 2>/dev/null | tr -d '\r' || true)"
+    else v="$("$c" -c 'import sys;print(sys.version_info[0])' 2>/dev/null | tr -d '\r' || true)"; fi
+    if [ "$v" = 3 ]; then
+      if [ "$c" = py ]; then PYBIN="py -3"; else PYBIN="$c"; fi
+      return 0
+    fi
+  done
+  return 1
+}
+# O Python do Windows imprime CRLF: pyx remove o \r (senão senhas e ids ficariam com \r no fim).
+pyx() {
+  if [ -z "$PYBIN" ]; then achar_python || die "Python 3 não encontrado (Windows: 'winget install Python.Python.3.12'; o atalho python3 da Microsoft Store não serve)"; fi
+  $PYBIN "$@" | tr -d '\r'; return "${PIPESTATUS[0]}"
+}
 
 # ─── Configuração ────────────────────────────────────────────────────────────
 LOCATION="${LOCATION:-eastus2}"
@@ -47,6 +106,7 @@ SNET_DATA="snet-data"; SNET_DATA_CIDR="10.20.2.0/24"    # VM do banco
 NSG="nsg-$PREFIX-data"
 
 # Key Vault (nome global: sufixo estável derivado da subscription)
+if [ -n "${AZURE_SUBSCRIPTION:-}" ]; then az account set --subscription "$AZURE_SUBSCRIPTION" >/dev/null 2>&1 || true; fi
 SUFFIX="${NAME_SUFFIX:-}"
 if [ -z "$SUFFIX" ]; then
   SUB_ID="$(az account show --query id -o tsv 2>/dev/null || true)"
@@ -56,7 +116,8 @@ KV_NAME="${KV_NAME:-kv-$PREFIX-${SUFFIX:-x0000}}"
 
 # VM do banco (Oracle ≤ 2 GB de SGA+PGA; MongoDB limitado a 0,5 GB de cache; 8 GiB dá folga)
 VM="vm-$PREFIX-db"
-VM_SIZE="${VM_SIZE:-Standard_B2ms}"
+VM_SIZE="${VM_SIZE:-}"   # vazio: o script escolhe entre os candidatos (2 vCPU / 8 GiB)
+VM_SIZE_CANDIDATOS="${VM_SIZE_CANDIDATOS:-Standard_B2ms Standard_D2s_v3 Standard_B2s_v2 Standard_B2as_v2 Standard_D2as_v4}"
 VM_IMAGE="${VM_IMAGE:-Canonical:ubuntu-24_04-lts:server:latest}"
 
 # Banco: Oracle XE 21c (service XEPDB1), a imagem validada no projeto, e MongoDB 7 (Loja do tutor).
@@ -70,9 +131,9 @@ PLAN="plan-$PREFIX"; PLAN_SKU="${PLAN_SKU:-B2}"
 APP_CLINICA="$PREFIX-clinica-api"; APP_TUTOR="$PREFIX-tutor-api"; APP_LUNA="$PREFIX-luna-ai"
 SWA_CLINICA="$PREFIX-clinica-web"; SWA_TUTOR="$PREFIX-tutor-web"
 # Strings de runtime: confira com `az webapp list-runtimes --os-type linux` (o script valida)
-RUNTIME_DOTNET="${RUNTIME_DOTNET:-DOTNETCORE:10.0}"
-RUNTIME_JAVA="${RUNTIME_JAVA:-JAVA:21-java21}"
-RUNTIME_PYTHON="${RUNTIME_PYTHON:-PYTHON:3.12}"
+RUNTIME_DOTNET="${RUNTIME_DOTNET:-DOTNETCORE|10.0}"; RUNTIME_DOTNET="${RUNTIME_DOTNET//:/|}"
+RUNTIME_JAVA="${RUNTIME_JAVA:-JAVA|21-java21}";     RUNTIME_JAVA="${RUNTIME_JAVA//:/|}"
+RUNTIME_PYTHON="${RUNTIME_PYTHON:-PYTHON|3.12}";    RUNTIME_PYTHON="${RUNTIME_PYTHON//:/|}"
 
 # Valores de aplicação
 ASPNETCORE_ENVIRONMENT="${ASPNETCORE_ENVIRONMENT:-Production}"
@@ -105,13 +166,17 @@ tentar() { # tentar <tentativas> <espera-s> <comando...>
 }
 
 exigir_ferramentas() {
-  local t
-  for t in az python3 curl; do command -v "$t" >/dev/null 2>&1 || die "'$t' não encontrado no PATH"; done
+  (unset -f az 2>/dev/null; command -v "$AZBIN" >/dev/null 2>&1) || die "'az' (Azure CLI) não encontrado no PATH"
+  command -v curl >/dev/null 2>&1 || die "'curl' não encontrado no PATH"
+  achar_python || die "Python 3 não encontrado (Windows: 'winget install Python.Python.3.12'; o atalho python3 da Microsoft Store não serve)"
   az account show >/dev/null 2>&1 || die "sem sessão Azure: rode 'az login' (ou use a service connection)"
+  if [ -n "${AZURE_SUBSCRIPTION:-}" ]; then
+    az account set --subscription "$AZURE_SUBSCRIPTION" || die "subscription '$AZURE_SUBSCRIPTION' não encontrada (veja: az account list -o table)"
+  fi
 }
 
 gerar() { # gerar <alnum|hex|b64> <tamanho>
-  python3 - "$1" "$2" <<'PY'
+  pyx - "$1" "$2" <<'PY'
 import secrets, string, sys
 tipo, n = sys.argv[1], int(sys.argv[2])
 if tipo == "alnum":   # começa com letra: senhas Oracle e connection strings
@@ -125,11 +190,13 @@ PY
 }
 
 oid_chamador() { # object id de quem executa (usuário ou service principal), lido do token — sem Graph
-  az account get-access-token --query accessToken -o tsv | python3 -c '
-import sys, json, base64
-p = sys.stdin.read().strip().split(".")[1]
+  local tok; tok="$(az account get-access-token --query accessToken -o tsv)"
+  KURA_TOK="$tok" pyx - <<'PY'
+import os, json, base64
+p = os.environ["KURA_TOK"].strip().split(".")[1]
 p += "=" * (-len(p) % 4)
-print(json.loads(base64.urlsafe_b64decode(p))["oid"])'
+print(json.loads(base64.urlsafe_b64decode(p))["oid"])
+PY
 }
 tipo_chamador() {
   if [ "$(az account show --query user.type -o tsv)" = "servicePrincipal" ]; then echo ServicePrincipal; else echo User; fi
@@ -182,16 +249,19 @@ aguardar_saude() { # aguardar_saude <url> [tentativas] [espera-s]
 
 diagnostico() { # últimas linhas do log do Web App quando algo falha
   info "log de $1 (últimos segundos):"
-  timeout 25 az webapp log tail -g "$RG" -n "$1" 2>&1 | tail -n 40 || true
+  timeout 25 "$AZBIN" webapp log tail -g "$RG" -n "$1" 2>&1 | tail -n 40 || true
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
 # FASE infra
 # ═════════════════════════════════════════════════════════════════════════════
 validar_runtimes() {
-  local lista r; lista="$(az webapp list-runtimes --os-type linux -o tsv)"
+  # O az novo devolve várias colunas por linha (nome, fim de suporte, SO...): compara só o nome,
+  # e aceita os dois separadores (":" e "|").
+  local lista r n; lista="$(az webapp list-runtimes --os-type linux -o tsv | cut -f1 | tr ':' '|')"
   for r in "$RUNTIME_DOTNET" "$RUNTIME_JAVA" "$RUNTIME_PYTHON"; do
-    grep -qix "$r" <<<"$lista" || die "runtime '$r' indisponível. Opções:
+    n="${r//:/|}"
+    grep -Fqix -- "$n" <<<"$lista" || die "runtime '$r' indisponível. Opções:
 $lista"
   done
 }
@@ -248,9 +318,11 @@ criar_cofre() {
 }
 
 montar_script_vm() { # imprime o script que roda DENTRO da VM (como root, via run-command)
+  # O run-command executa com /bin/sh (dash no Ubuntu), que não tem 'set -o pipefail': reexecuta no bash.
+  printf '%s\n' '[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"'
   printf 'KV_NAME=%q\nORACLE_IMAGE=%q\nORACLE_SERVICE=%q\nORACLE_APP_USER=%q\n' \
     "$KV_NAME" "$ORACLE_IMAGE" "$ORACLE_SERVICE" "$ORACLE_APP_USER"
-  printf 'MONGO_INIT_B64=%q\n' "$(base64 -w0 "$RAIZ/mongo/init/01-roles-usuarios.js")"
+  printf 'MONGO_INIT_B64=%q\n' "$(tr -d '\r' < "$RAIZ/mongo/init/01-roles-usuarios.js" | base64 -w0)"
   cat <<'VM_SCRIPT'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -359,7 +431,7 @@ oracle_pronto=0
 for _ in $(seq 1 180); do   # 1ª subida do Oracle leva alguns minutos (cria o banco)
   out="$(printf 'connect %s/%s@//localhost:1521/%s\nselect 1 from dual;\n' "$ORACLE_APP_USER" "$ORACLE_APP_PASSWORD" "$ORACLE_SERVICE" \
          | docker exec -i kura_oracle_db sqlplus -s /nolog 2>&1 || true)"
-  if grep -Eq '^ +1$' <<<"$out"; then oracle_pronto=1; break; fi
+  if grep -Eq '^[[:space:]]*1[[:space:]]*$' <<<"$out"; then oracle_pronto=1; break; fi
   sleep 10
 done
 if [ "$oracle_pronto" != 1 ]; then
@@ -381,23 +453,45 @@ echo KURA_BOOTSTRAP_OK
 VM_SCRIPT
 }
 
+provisionar_vm() { # cria a VM só se não existir; testa tamanhos/zonas com --validate (capacidade varia por conta)
+  az vm show -g "$RG" -n "$VM" >/dev/null 2>&1 && return 0
+  local args tamanhos zonas s z zarg rotulo ok=0
+  # IP público só para SAÍDA (docker pull/apt): o NSG da sub-rede bloqueia toda entrada.
+  args=(-g "$RG" -n "$VM" -l "$LOCATION" --image "$VM_IMAGE"
+        --vnet-name "$VNET" --subnet "$SNET_DATA" --nsg "" --public-ip-sku Standard
+        --assign-identity '[system]' --os-disk-size-gb 64 --storage-sku StandardSSD_LRS
+        --admin-username azureuser --generate-ssh-keys)
+  tamanhos="${VM_SIZE:-$VM_SIZE_CANDIDATOS}"
+  if [ "${VM_ZONE+set}" = set ]; then zonas="${VM_ZONE:-none}"; else zonas="none 1 3 2"; fi
+  for s in $tamanhos; do
+    for z in $zonas; do
+      zarg=(); rotulo="sem zona"
+      if [ "$z" != none ]; then zarg=(--zone "$z"); rotulo="zona $z"; fi
+      info "verificando $s ($rotulo)"
+      if az vm create "${args[@]}" --size "$s" ${zarg[@]+"${zarg[@]}"} --validate -o none >/dev/null 2>&1; then
+        ok=1; break 2
+      fi
+    done
+  done
+  [ "$ok" = 1 ] || die "nenhum tamanho de VM disponível em $LOCATION para esta subscription (testados: $tamanhos).
+Veja os tamanhos liberados:  az vm list-skus -l $LOCATION --resource-type virtualMachines -o table
+e exporte VM_SIZE=<tamanho> (2 vCPU e 8 GiB ou mais), ou outra LOCATION."
+  info "criando a VM: $s ($rotulo)"
+  az vm create "${args[@]}" --size "$s" ${zarg[@]+"${zarg[@]}"} -o none
+}
+
 criar_vm() {
-  if ! az vm show -g "$RG" -n "$VM" >/dev/null 2>&1; then
-    # IP público só para SAÍDA (docker pull/apt): o NSG da sub-rede bloqueia toda entrada.
-    az vm create -g "$RG" -n "$VM" -l "$LOCATION" --image "$VM_IMAGE" --size "$VM_SIZE" \
-      --vnet-name "$VNET" --subnet "$SNET_DATA" --nsg "" --public-ip-sku Standard \
-      --assign-identity '[system]' --os-disk-size-gb 64 --storage-sku StandardSSD_LRS \
-      --admin-username azureuser --generate-ssh-keys -o none
-  fi
+  provisionar_vm
   dar_papel "$(az vm show -g "$RG" -n "$VM" --query identity.principalId -o tsv)" ServicePrincipal \
     "Key Vault Secrets User" "$KV_ID"
 
   # Bootstrap por run-command. O código de saída do run-command não é confiável:
   # o sucesso é provado pela linha sentinela que o script imprime ao final.
+  # O script vai por ARQUIVO (--scripts @arquivo): argumento multilinha quebra no az do Windows.
   local tmp saida; tmp="$(mktemp)"
-  montar_script_vm > "$tmp"
+  montar_script_vm | tr -d '\r' > "$tmp"
   saida="$(az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
-            --scripts "@$tmp" --query 'value[0].message' -o tsv || true)"
+            --scripts "@$(caminho_nativo "$tmp")" --query 'value[0].message' -o tsv || true)"
   rm -f "$tmp"
   if ! grep -q KURA_BOOTSTRAP_OK <<<"$saida"; then
     printf '%s\n' "$saida" | tail -n 40 >&2
@@ -425,8 +519,11 @@ criar_webapp() { # criar_webapp <nome> <runtime> <path-de-saude>
   # Baseline de segurança e operação
   az webapp update -g "$RG" -n "$app" --https-only true -o none
   az webapp config set -g "$RG" -n "$app" --always-on true --min-tls-version 1.2 \
-    --ftps-state Disabled --http20-enabled true \
-    --generic-configurations "{\"healthCheckPath\": \"$saude\"}" -o none
+    --ftps-state Disabled --http20-enabled true -o none
+  if ! az webapp config set -g "$RG" -n "$app" --generic-configurations "{\"healthCheckPath\": \"$saude\"}" -o none 2>/dev/null \
+     && ! az webapp config set -g "$RG" -n "$app" --generic-configurations "healthCheckPath=$saude" -o none 2>/dev/null; then
+    info "aviso: healthCheckPath de $app não foi definido ($saude): ajuste no portal (Monitoring > Health check)"
+  fi
   az webapp log config -g "$RG" -n "$app" --application-logging filesystem --level information \
     --docker-container-logging filesystem -o none
   # Sem credenciais básicas (FTP/SCM): o deploy usa a identidade do Entra ID
@@ -437,8 +534,29 @@ criar_webapp() { # criar_webapp <nome> <runtime> <path-de-saude>
   done
 }
 
+registrar_providers() { # subscription nova pode não ter os providers registrados (MissingSubscriptionRegistration)
+  local ns st i pend=()
+  for ns in Microsoft.Compute Microsoft.Network Microsoft.KeyVault Microsoft.Web; do
+    st="$(az provider show -n "$ns" --query registrationState -o tsv 2>/dev/null || true)"
+    [ "$st" = Registered ] && continue
+    info "registrando o provider $ns (estado: ${st:-desconhecido})"
+    az provider register -n "$ns" -o none 2>/dev/null || info "aviso: não consegui registrar $ns (precisa de Owner ou Contributor)"
+    pend+=("$ns")
+  done
+  for ns in ${pend[@]+"${pend[@]}"}; do
+    st=""
+    for ((i = 1; i <= 60; i++)); do
+      st="$(az provider show -n "$ns" --query registrationState -o tsv 2>/dev/null || true)"
+      [ "$st" = Registered ] && break
+      sleep 5
+    done
+    [ "$st" = Registered ] || info "aviso: $ns ainda está '${st:-desconhecido}'; se o deploy falhar com MissingSubscriptionRegistration, espere e repita"
+  done
+}
+
 fase_infra() {
   exigir_ferramentas
+  log "Providers da subscription"; registrar_providers
   log "1/6  Runtimes disponíveis"; validar_runtimes
   log "2/6  Rede: NSG, VNet e sub-redes"; criar_rede
   log "3/6  Key Vault e segredos"; criar_cofre
@@ -475,8 +593,61 @@ exigir_submodulos() { # exigir_submodulos <arquivo-relativo...>
   done
 }
 
+zipar() { # zipar <zip-destino> <itens...> [-x padrões...] — a partir do diretório atual; usa zip ou, sem ele, Python
+  local dest=$1; shift
+  if command -v zip >/dev/null 2>&1; then zip -qr "$dest" "$@"; return; fi
+  pyx - "$(caminho_nativo "$dest")" "$@" <<'PY'
+import sys, os, zipfile, fnmatch
+dest, args = sys.argv[1], sys.argv[2:]
+itens, excl = args, []
+if "-x" in args:
+    i = args.index("-x"); itens, excl = args[:i], args[i + 1:]
+def ignorado(nome): return any(fnmatch.fnmatch(nome, p) for p in excl)
+if os.path.exists(dest): os.remove(dest)
+with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+    for item in itens:
+        if os.path.isdir(item):
+            for raiz, _, arqs in os.walk(item):
+                for a in arqs:
+                    cam = os.path.join(raiz, a)
+                    nome = os.path.relpath(cam, ".").replace(os.sep, "/")
+                    if not ignorado(nome): z.write(cam, nome)
+        else:
+            nome = os.path.relpath(item, ".").replace(os.sep, "/")
+            if not ignorado(nome): z.write(item, nome)
+PY
+}
+
+MVN=()
+maven_pronto() { # define MVN para o java-backend: mvnw; senão mvn do PATH; senão baixa o Maven (versão do mvnw)
+  local dir="$RAIZ/java-backend" props url name home zip
+  # o mvnw e suas propriedades precisam de LF (checkout no Windows pode trazer CRLF)
+  sed -i 's/\r$//' "$dir/mvnw" "$dir/.mvn/wrapper/maven-wrapper.properties" 2>/dev/null || true
+  if ( cd "$dir" && bash ./mvnw -B --version >/dev/null 2>&1 ); then MVN=(bash ./mvnw); return 0; fi
+  # O mvnw baixa o Maven com curl e extrai com unzip: o Git Bash não traz unzip e o curl pode falhar na rede.
+  info "o mvnw não conseguiu preparar o Maven (diagnóstico: cd java-backend && MVNW_VERBOSE=true bash ./mvnw --version)"
+  if command -v mvn >/dev/null 2>&1; then info "usando o mvn do PATH"; MVN=(mvn); return 0; fi
+  props="$dir/.mvn/wrapper/maven-wrapper.properties"
+  url="$(sed -n 's/^distributionUrl=//p' "$props" 2>/dev/null | head -n1 | tr -d '\r\\')"
+  [ -n "$url" ] || url="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.11/apache-maven-3.9.11-bin.zip"
+  name="$(basename "$url" -bin.zip)"
+  home="${KURA_TOOLS:-$HOME/.kura-tools}"
+  if [ ! -f "$home/$name/bin/mvn" ]; then
+    mkdir -p "$home"; zip="$home/$name-bin.zip"
+    info "baixando o Maven: $url"
+    curl -fsSL --retry 3 --retry-delay 3 --max-time 600 ${CURL_EXTRA[@]+"${CURL_EXTRA[@]}"} -o "$zip" "$url" \
+      || die "não consegui baixar o Maven. Instale-o (Windows: 'winget install Apache.Maven') ou libere o acesso a repo.maven.apache.org (proxy/antivírus) e rode de novo"
+    pyx - "$(caminho_nativo "$zip")" "$(caminho_nativo "$home")" <<'PY'
+import sys, zipfile
+zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
+PY
+    rm -f "$zip"
+  fi
+  MVN=(bash "$home/$name/bin/mvn")
+}
+
 fase_build() {
-  exigir_comandos build dotnet java zip
+  exigir_comandos build dotnet java
   local jdk out
   dotnet --list-sdks | grep -q '^10\.' || die "dotnet SDK 10 não encontrado ('dotnet --list-sdks')"
   jdk="$(java -version 2>&1 | sed -n '1s/.*version "\([0-9][0-9]*\).*/\1/p')"
@@ -488,18 +659,20 @@ fase_build() {
 
   log "Build: clinica-api (.NET 10)"
   rm -rf "$out/.clinica"
-  dotnet publish "$RAIZ/dotnet-backend/src/Kura.Api/Kura.Api.csproj" -c Release -o "$out/.clinica" --nologo -v q
-  ( cd "$out/.clinica" && zip -qr "$out/clinica.zip" . )
+  dotnet publish "$(caminho_nativo "$RAIZ/dotnet-backend/src/Kura.Api/Kura.Api.csproj")" -c Release \
+    -o "$(caminho_nativo "$out/.clinica")" --nologo -v q
+  ( cd "$out/.clinica" && zipar "$out/clinica.zip" . )
   rm -rf "$out/.clinica"
 
   # Os testes rodam no CI do repositório da API; aqui só empacota.
   log "Build: tutor-api (Java 21)"
-  ( cd "$RAIZ/java-backend" && bash ./mvnw -B -ntp -DskipTests package )
+  maven_pronto
+  ( cd "$RAIZ/java-backend" && "${MVN[@]}" -B -ntp -DskipTests package )
   cp "$RAIZ"/java-backend/target/kura-backend-tutor-*.jar "$out/tutor.jar"
 
   # O Oryx do App Service instala o requirements.txt durante o deploy (SCM_DO_BUILD_DURING_DEPLOYMENT).
   log "Build: luna-ai (Python 3.12)"
-  ( cd "$RAIZ/luna-ia/luna" && zip -qr "$out/luna.zip" src requirements.txt pyproject.toml \
+  ( cd "$RAIZ/luna-ia/luna" && zipar "$out/luna.zip" src requirements.txt pyproject.toml \
       -x '*/__pycache__/*' '*.pyc' )
 
   info "artefatos em $out:"; ls -l "$out" | sed 's/^/    /'
@@ -569,7 +742,28 @@ configurar_apps() {
 
 implantar() { # implantar <app> <zip|jar> <arquivo>
   [ -f "$3" ] || die "artefato não encontrado: $3 (gere-o antes: azure/deploy.sh build)"
-  az webapp deploy -g "$RG" -n "$1" --src-path "$3" --type "$2" --restart true --timeout 900000 -o none
+  local app=$1 antes atual st i
+  antes="$(az webapp log deployment list -g "$RG" -n "$app" --query '[0].id' -o tsv 2>/dev/null || true)"
+  if az webapp deploy -g "$RG" -n "$app" --src-path "$(caminho_nativo "$3")" --type "$2" --restart true \
+       --timeout 900000 -o none; then
+    return 0
+  fi
+  # O gateway devolve 504 quando o Oryx demora (pip install na Luna), mas o deploy segue no servidor.
+  info "az webapp deploy retornou erro (504 é comum enquanto o Oryx instala dependências); conferindo no servidor..."
+  for ((i = 1; i <= 60; i++)); do
+    atual="$(az webapp log deployment list -g "$RG" -n "$app" --query '[0].id' -o tsv 2>/dev/null || true)"
+    st="$(az webapp log deployment list -g "$RG" -n "$app" --query '[0].status' -o tsv 2>/dev/null || true)"
+    if [ -n "$atual" ] && [ "$atual" != "$antes" ]; then
+      case "$st" in
+        4) info "deploy de $app concluído no servidor"; return 0 ;;
+        3) die "deploy de $app falhou no servidor (az webapp log deployment show -g $RG -n $app)" ;;
+      esac
+    elif [ "$i" -gt 8 ]; then
+      die "o deploy de $app não foi registrado no servidor"
+    fi
+    sleep 15
+  done
+  die "o deploy de $app não concluiu a tempo"
 }
 
 fase_apps() {
@@ -605,23 +799,49 @@ construir_web() { # construir_web <submódulo> <pasta-de-saída> <url-da-api> <u
   (
     cd "$src/$repo"
     # O app roda como SPA: um único index.html + fallback no Static Web Apps.
-    node -e "
-      const fs=require('fs'); const j=JSON.parse(fs.readFileSync('app.json'));
-      if (j.expo.web && j.expo.web.output !== 'single') {
-        console.log('app.json: web.output ' + j.expo.web.output + ' -> single');
-        j.expo.web.output='single'; fs.writeFileSync('app.json', JSON.stringify(j,null,2));
-      }"
+    node - <<'JS'
+const fs = require('fs'); const j = JSON.parse(fs.readFileSync('app.json'));
+if (j.expo.web && j.expo.web.output !== 'single') {
+  console.log('app.json: web.output ' + j.expo.web.output + ' -> single');
+  j.expo.web.output = 'single'; fs.writeFileSync('app.json', JSON.stringify(j, null, 2));
+}
+JS
     npm ci --no-audit --no-fund
     # As URLs são embutidas no JavaScript (EXPO_PUBLIC_*): mudou a URL, refaça o build.
     EXPO_PUBLIC_API_BASE_URL="$api" EXPO_PUBLIC_LUNA_BASE_URL="$luna" \
     EXPO_PUBLIC_USE_MOCKS=false CI=1 EXPO_NO_TELEMETRY=1 \
-      npx expo export -p web --clear --output-dir "$WEB_DIR/$saida"
+      npx expo export -p web --clear --output-dir "$(caminho_nativo "$WEB_DIR")/$saida"
   )
   rm -rf "$src"
 }
 
+garantir_swa_config() { # o arquivo deve ficar versionado em azure/; se faltar, gera o padrão
+  local f="$RAIZ/azure/staticwebapp.config.json"
+  [ -f "$f" ] && return 0
+  info "azure/staticwebapp.config.json ausente: gerando o padrão (versione o arquivo no repositório)"
+  cat > "$f" <<'JSON'
+{
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/_expo/*", "/assets/*", "/*.ico", "/*.png", "/*.jpg", "/*.svg", "/*.json", "/*.ttf", "/*.js", "/*.css"]
+  },
+  "routes": [
+    { "route": "/_expo/static/*", "headers": { "cache-control": "public, max-age=31536000, immutable" } },
+    { "route": "/assets/*", "headers": { "cache-control": "public, max-age=31536000, immutable" } },
+    { "route": "/index.html", "headers": { "cache-control": "no-cache" } }
+  ],
+  "globalHeaders": {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "SAMEORIGIN",
+    "Referrer-Policy": "strict-origin-when-cross-origin"
+  }
+}
+JSON
+}
+
 preparar_dist() {
   local d=$1
+  garantir_swa_config
   [ -f "$d/index.html" ] || die "build web não encontrado em $d"
   # O export do Expo põe assets de pacotes em assets/node_modules; pastas com esse nome são
   # descartadas por várias hospedagens estáticas. Renomear + reescrever as referências é neutro
@@ -640,13 +860,13 @@ publicar_swa() { # publicar_swa <static-web-app> <pasta-do-build>
   # O token de deploy é lido na hora e passado por variável de ambiente (não fica em disco nem no ps).
   token="$(az staticwebapp secrets list -g "$RG" -n "$1" --query properties.apiKey -o tsv)"
   SWA_CLI_DEPLOYMENT_TOKEN="$token" \
-    npx --yes "@azure/static-web-apps-cli@$SWA_CLI_VERSION" deploy "$2" --env production
+    npx --yes "@azure/static-web-apps-cli@$SWA_CLI_VERSION" deploy "$(caminho_nativo "$2")" --env production
 }
 
 fase_web() {
   exigir_ferramentas
   exigir_comandos web node npm npx
-  [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 20 ] || die "Node.js 20 ou superior necessário (recomendado: 22 LTS)"
+  [ "$(node -p 'process.versions.node.split(".")[0]' | tr -d '\r')" -ge 20 ] || die "Node.js 20 ou superior necessário (recomendado: 22 LTS)"
   local clinica tutor luna
   clinica="https://$(host_app "$APP_CLINICA")"
   tutor="https://$(host_app "$APP_TUTOR")"
@@ -671,6 +891,80 @@ fase_urls() {
   echo "TUTOR_WEB_URL=https://$(host_swa "$SWA_TUTOR")"
 }
 
+fase_check() { # só leitura: aponta tudo o que faltaria antes de gastar 30 minutos no infra
+  local nf=0
+  chk() { # chk <descrição> <função/comando...>
+    local d=$1; shift
+    if "$@" >/dev/null 2>&1; then printf '  PASSOU  %s\n' "$d"; else printf '  FALHOU  %s\n' "$d"; nf=$((nf + 1)); fi
+  }
+  tem_az() { (unset -f az 2>/dev/null; command -v "$AZBIN" >/dev/null 2>&1); }
+  tem_git() { command -v git; }
+  tem_curl() { command -v curl; }
+  tem_dotnet10() { dotnet --list-sdks | grep -q '^10\.'; }
+  tem_java21() { local v; v="$(java -version 2>&1 | sed -n '1s/.*version "\([0-9][0-9]*\).*/\1/p')"; [ "${v:-0}" -ge 21 ]; }
+  tem_node20() { [ "$(node -p 'process.versions.node.split(".")[0]' | tr -d '\r')" -ge 20 ]; }
+  tem_npm() { command -v npm && command -v npx; }
+  tem_login() { az account show; }
+  tem_runtimes() { ( validar_runtimes ); }
+  tem_arq() { local f; for f in "$@"; do [ -f "$RAIZ/$f" ] || return 1; done; }
+
+  log "Verificando pré-requisitos"
+  chk "git" tem_git
+  chk "Azure CLI (az)" tem_az
+  chk "curl" tem_curl
+  chk "Python 3 (não o atalho da Microsoft Store)" achar_python
+  chk "dotnet SDK 10" tem_dotnet10
+  chk "JDK 21 ou superior" tem_java21
+  chk "Node.js 20 ou superior" tem_node20
+  chk "npm e npx" tem_npm
+  chk "submódulos das 3 APIs baixados" tem_arq dotnet-backend/src/Kura.Api/Kura.Api.csproj java-backend/mvnw luna-ia/luna/requirements.txt
+  chk "submódulos dos 2 apps baixados" tem_arq mobile-clinica-rn/package.json mobile-clinica-rn/package-lock.json mobile-tutor-rn/package.json mobile-tutor-rn/package-lock.json
+  chk "sessão Azure ativa (az login)" tem_login
+  if tem_login >/dev/null 2>&1; then
+    info "subscription: $(az account show --query '[name, state]' -o tsv | tr '\t' ' ' | tr -d '\r')  |  região: $LOCATION  |  grupo: $RG"
+    chk "runtimes $RUNTIME_DOTNET, $RUNTIME_JAVA e $RUNTIME_PYTHON disponíveis em $LOCATION" tem_runtimes
+  fi
+  curl -sI --max-time 15 https://repo.maven.apache.org/maven2/ >/dev/null 2>&1 \
+    || info "aviso: sem acesso a repo.maven.apache.org (o build do tutor baixa o Maven e as dependências de lá)"
+  [ -f "$RAIZ/azure/staticwebapp.config.json" ] || info "aviso: azure/staticwebapp.config.json ausente (o deploy gera o padrão; versione o arquivo)"
+  if [ "$nf" -gt 0 ]; then
+    printf '\n  %s pendência(s). Corrija e rode de novo: azure/deploy.sh check\n' "$nf" >&2
+    return 1
+  fi
+  info "tudo pronto para o deploy"
+}
+
+fase_seed() { # dados de demonstração por HTTP real (scripts/seed-demo*.sh), com a stack já no ar
+  exigir_ferramentas
+  [ -d "$RAIZ/scripts" ] || die "pasta scripts/ não encontrada em $RAIZ"
+  [ -n "${DEMO_SENHA:-}" ] || die "defina DEMO_SENHA (senha própria da clínica demo: as APIs do Azure são públicas). Ex.: DEMO_SENHA='...' azure/deploy.sh seed"
+  [ "$DEMO_SENHA" != 'SenhaDemo123!' ] || die "DEMO_SENHA não pode ser a senha pública do repositório"
+  [ -n "${DEMO_WHATSAPP:-}" ] || [ "${SEED_SEM_WHATSAPP:-}" = 1 ] || \
+    die "defina DEMO_WHATSAPP=<DDI+DDD+número> (ou SEED_SEM_WHATSAPP=1 para dispensar o lembrete por WhatsApp)"
+
+  local k
+  # scripts em CRLF (cópia do Windows) quebram no bash
+  find "$RAIZ/scripts" -name '*.sh' -exec sed -i 's/\r$//' {} +
+
+  eval "$(fase_urls)"
+  for k in "$CLINICA_API_URL/health" "$TUTOR_API_URL/api/actuator/health" "$LUNA_URL/health"; do
+    [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$k" || true)" = 200 ] \
+      || die "a API não respondeu 200 em $k: rode 'azure/deploy.sh apps' antes do seed"
+  done
+  LUNA_API_KEY="$(kv_ler luna-api-key)"
+  [ -n "$LUNA_API_KEY" ] || die "segredo luna-api-key não encontrado no Key Vault $KV_NAME"
+
+  for k in seed-demo.sh seed-demo-luna.sh seed-demo-fotos.sh seed-demo-contas.sh; do
+    log "Seed: $k"
+    # Os scripts de seed tratam caminhos do Windows sozinhos: rodam sem as variáveis MSYS deste script.
+    # (segredos só pelo ambiente, nunca como argumento de comando)
+    ( cd "$RAIZ" && export API="$CLINICA_API_URL" TUTOR_API="$TUTOR_API_URL" LUNA_URL LUNA_API_KEY \
+        && env -u MSYS_NO_PATHCONV -u MSYS2_ARG_CONV_EXCL bash "scripts/$k" ) \
+      || die "$k falhou. O seed-demo.sh não é idempotente: se a clínica demo já existe, ele falha de propósito"
+  done
+  info "seed concluído. Confira o login nos apps: $CLINICA_WEB_URL  $TUTOR_WEB_URL"
+}
+
 fase_destroy() {
   exigir_ferramentas
   [ "${CONFIRMA:-}" = sim ] || die "isto apaga TUDO em '$RG' (inclusive os dados do banco). Repita com CONFIRMA=sim"
@@ -685,7 +979,9 @@ case "${1:-}" in
   apps)    fase_apps ;;
   web)     fase_web ;;
   urls)    exigir_ferramentas; fase_urls ;;
-  all)     fase_infra; fase_build; fase_apps; fase_web ;;
+  check)   fase_check || exit 1 ;;
+  seed)    fase_seed ;;
+  all)     fase_check || die "pré-requisitos pendentes (veja acima)"; fase_infra; fase_build; fase_apps; fase_web ;;
   destroy) fase_destroy ;;
-  *)       awk 'NR > 1 && /^set -/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; exit 2 ;;
+  *)       awk 'NR > 1 && /^set -/ { exit } NR > 1 && /^#/ { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; exit 2 ;;
 esac
