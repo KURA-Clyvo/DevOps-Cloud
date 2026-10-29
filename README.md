@@ -304,15 +304,20 @@ CONFIRMA=sim azure/deploy.sh db-packages-remover  # saída de emergência: remov
   `DEMO S4-DB-0x: INICIO … FIM`, as 2 demonstrações abertas e fechadas, as 2 linhas `RESUMO: n OK, 0 FALHOU`, nenhum objeto
   inválido no schema, os 9 objetos (4 specs, 4 bodies e a trigger) `VALID`, **nenhuma das 4 rotinas standalone da Sprint 3**
   (`FUNCTION` `FN_COBRANCA_JSON` e `FN_CALCULAR_SCORE_URGENCIA`, `PROCEDURE` `PRC_LISTAR_COBRANCAS_JSON` e
-  `PRC_RELATORIO_COBRANCAS`) ainda em `user_objects` e a senha ausente do log. Remover: `EXIT=0`, nenhum `ORA-`, os 5
-  objetos ausentes de `user_objects` e a senha ausente do log.
+  `PRC_RELATORIO_COBRANCAS`) ainda em `user_objects` — com a resposta coerente: 1 linha `S3RESTANTES:n` e exatamente `n`
+  linhas `S3RESTANTE:` distintas; resposta divergente, duplicada ou sem a contagem reprova — e a senha ausente do log.
+  Remover: `EXIT=0`, nenhum `ORA-`, os 5 objetos ausentes de `user_objects` e a senha ausente do log.
 - **Ordem das demonstrações e fim do arquivo** (as duas fases): o log é lido como uma sequência, não por contagem. Instalar
   exige, nesta ordem e cada um **uma vez**: `DEMO S4-DB-02: INICIO` → `RESUMO` da 02 → `DEMO S4-DB-02: FIM` →
   `DEMO S4-DB-03: INICIO` → `RESUMO` da 03 → `DEMO S4-DB-03: FIM` → `=== FIM DO ARQUIVO 2TDSPF_2026_Packages_Integrantes.sql ===`.
-  Remover exige só `=== FIM DO ARQUIVO 2TDSPF_2026_Packages_Remover.sql ===`. O `.sql` imprime essa linha por último, sob
-  `WHENEVER SQLERROR EXIT`: ela só aparece se tudo antes dela rodou. Marcador duplicado, ausente, fora de ordem, com o nome de
-  outro arquivo, ou **qualquer linha não vazia depois do fim do arquivo**, reprova com `FALHOU: … SEQUENCIA_DEMOS` e/ou
-  `FIM_DO_ARQUIVO` — é o que impede a sentinela quando o SQL chega incompleto ao `sqlplus`. O resumo mostra
+  Remover exige só `=== FIM DO ARQUIVO 2TDSPF_2026_Packages_Remover.sql ===`. O `.sql` imprime essa linha por último; o
+  marcador prova **só que o `sqlplus` chegou ao fim do arquivo** (o SQL não chegou cortado ao `sqlplus`), não que cada
+  instrução anterior deu certo. O sucesso das instruções é provado pelas **outras** condições, em conjunto: o
+  `WHENEVER SQLERROR EXIT` (um erro de SQL ou PL/SQL encerra o `sqlplus` com `EXIT≠0` antes do marcador), a busca de
+  `ORA-`/`SP2-` fora das demos (erros do próprio SQL*Plus, `SP2-`, não acionam o `WHENEVER`), os `RESUMO … 0 FALHOU` e a
+  consulta final a `user_objects` (objetos válidos e rotinas da Sprint 3 removidas). Marcador duplicado, ausente, fora de
+  ordem, com o nome de outro arquivo, ou **qualquer linha não vazia depois do fim do arquivo**, reprova com
+  `FALHOU: … SEQUENCIA_DEMOS` e/ou `FIM_DO_ARQUIVO` — é o que impede a sentinela quando o SQL chega incompleto ao `sqlplus`. O resumo mostra
   `SEQUENCIA_DEMOS fase=n/7` (instalar) ou `SEQUENCIA fase=n/7` (remover); sucesso é `fase=7/7 desordem=0`.
 - **Log na VM:** `/opt/kura/logs/db-packages-AAAAMMDD-HHMMSS.log` (`db-packages-remover-…` no remover), modo `600`. Para ler,
   um segundo run-command, por exemplo `az vm run-command invoke -g rg-kura -n vm-kura-db --command-id RunShellScript --scripts 'tail -n 80 $(ls -t /opt/kura/logs/db-packages-*.log | head -n 1)'`.

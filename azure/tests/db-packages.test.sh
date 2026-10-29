@@ -602,11 +602,29 @@ done
 printf 'PKGVALIDOS:9\nS3RESTANTE:FUNCTION FN_CALCULAR_SCORE_URGENCIA\nS3RESTANTE:FUNCTION FN_COBRANCA_JSON\nS3RESTANTE:PROCEDURE PRC_LISTAR_COBRANCAS_JSON\nS3RESTANTE:PROCEDURE PRC_RELATORIO_COBRANCAS\nS3RESTANTES:4\n' > "$FX/q-s3-todas.txt"
 vm_run "$AI" FIX_QOUT="$FX/q-s3-todas.txt"
 afirma "T20 instalar: as 4 ainda presentes (BLOCOS 1 e 9 não rodaram): falha com S3_RESTANTES" sent_no_s3
+afirma "T20 instalar: as 4 coerentes são reconhecidas (S3_RESTANTES=4, linhas 4/4/1)" \
+  test "$(grep -c '^S3_RESTANTES=4$' "$T/vm.out")$(grep -c '^S3_LINHAS detalhe/distintas/contagens=4 4 1$' "$T/vm.out")" = 11
+# Resposta inconsistente: a contagem tem de bater com as linhas S3RESTANTE: (distintas), e haver 1 só linha de contagem.
+s3_incoerente() { # s3_incoerente <descrição> <conteúdo do printf>
+  printf 'PKGVALIDOS:9\n%b' "$2" > "$FX/q-s3-inc.txt"
+  vm_run "$AI" FIX_QOUT="$FX/q-s3-inc.txt"
+  afirma "T20 instalar: $1: falha fechada (S3_RESTANTES=-1, sem sentinela, motivo S3_RESTANTES)" \
+    test "$(grep -c '^S3_RESTANTES=-1$' "$T/vm.out")" = 1 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0 -a "$VM_RC" != 0
+  afirma "T20 instalar: $1: a falha nomeia S3_RESTANTES" grep -q "^FALHOU:.* S3_RESTANTES" "$T/vm.out"
+}
+s3_incoerente "S3RESTANTE:FUNCTION FN_COBRANCA_JSON com S3RESTANTES:0" 'S3RESTANTE:FUNCTION FN_COBRANCA_JSON\nS3RESTANTES:0\n'
+s3_incoerente "2 linhas de rotina com S3RESTANTES:1" 'S3RESTANTE:FUNCTION FN_COBRANCA_JSON\nS3RESTANTE:PROCEDURE PRC_RELATORIO_COBRANCAS\nS3RESTANTES:1\n'
+s3_incoerente "1 linha de rotina com S3RESTANTES:3" 'S3RESTANTE:PROCEDURE PRC_LISTAR_COBRANCAS_JSON\nS3RESTANTES:3\n'
+s3_incoerente "linha de rotina duplicada com S3RESTANTES:2" 'S3RESTANTE:FUNCTION FN_COBRANCA_JSON\nS3RESTANTE:FUNCTION FN_COBRANCA_JSON\nS3RESTANTES:2\n'
+s3_incoerente "contagem repetida (S3RESTANTES:0 duas vezes)" 'S3RESTANTES:0\nS3RESTANTES:0\n'
+afirma "T20 inconsistência controle: o último fixture tem 2 linhas de contagem e 0 de rotina" \
+  test "$(grep -c '^S3RESTANTES:' "$FX/q-s3-inc.txt")$(grep -c '^S3RESTANTE:' "$FX/q-s3-inc.txt")" = 20
 printf 'PKGVALIDOS:9\n' > "$FX/q-s3-sem.txt"
 vm_run "$AI" FIX_QOUT="$FX/q-s3-sem.txt"
 afirma "T20 instalar: consulta sem a linha S3RESTANTES: falha fechada (S3_RESTANTES=-1)" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0 -a "$(grep -c '^S3_RESTANTES=-1$' "$T/vm.out")" = 1
 vm_run "$AI" FIX_QOUT="$FX/q-ok.txt"
 afirma "T20 instalar controle: nenhuma rotina antiga: sucesso e S3_RESTANTES=0" test "$(ultima_linha "$T/vm.out")" = "$SENT_I" -a "$(grep -c '^S3_RESTANTES=0$' "$T/vm.out")" = 1
+afirma "T20 instalar controle: zero coerente mostra linhas 0/0/1" grep -q '^S3_LINHAS detalhe/distintas/contagens=0 0 1$' "$T/vm.out"
 afirma "T20 a consulta enviada ao sqlplus pergunta pelas 4 rotinas com o tipo certo" \
   test "$(grep -c "object_type = 'FUNCTION' and object_name in ('FN_COBRANCA_JSON', 'FN_CALCULAR_SCORE_URGENCIA')" "$T/stdin/stdin2")$(grep -c "object_type = 'PROCEDURE' and object_name in ('PRC_LISTAR_COBRANCAS_JSON', 'PRC_RELATORIO_COBRANCAS')" "$T/stdin/stdin2")" = 22
 if [ -f "$MAST/$ARQ_INST" ] && [ -f "$MAST/2TDSPF_2026_CodigoSql_Integrantes.sql" ]; then

@@ -1157,7 +1157,13 @@ if [ "$ec_q" = 0 ] && [ "$ORA_Q" = 0 ]; then
     pv="$(printf '%s\n' "$SAIDA_Q" | sed -n 's/^PKGVALIDOS:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
     if [ -n "$pv" ]; then PACKAGES_VALIDOS="$pv"; INVALIDOS="$(printf '%s\n' "$SAIDA_Q" | conta -E '^INVALIDO:')"; fi
     s3="$(printf '%s\n' "$SAIDA_Q" | sed -n 's/^S3RESTANTES:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
-    if [ -n "$s3" ]; then S3_RESTANTES="$s3"; fi
+    # Coerência da resposta: exatamente 1 linha de contagem, e a contagem = nº de linhas S3RESTANTE: (todas distintas).
+    # Divergência, duplicação ou contagem repetida deixam S3_RESTANTES=-1 (falha fechada). Um awk só, sem grep|sort|wc:
+    # sob pipefail, um grep sem linhas derrubaria o script.
+    S3_LINHAS="$(printf '%s\n' "$SAIDA_Q" | awk '/^S3RESTANTE:/ { d++; if (!(v[$0]++)) u++ } /^S3RESTANTES:/ { c++ }
+      END { print d + 0, u + 0, c + 0 }')"
+    s3_det="${S3_LINHAS%% *}"; s3_resto="${S3_LINHAS#* }"; s3_uniq="${s3_resto%% *}"; s3_ncont="${s3_resto#* }"
+    if [ -n "$s3" ] && [ "$s3_ncont" = 1 ] && [ "$s3_det" = "$s3" ] && [ "$s3_uniq" = "$s3_det" ]; then S3_RESTANTES="$s3"; fi
   else
     rs="$(printf '%s\n' "$SAIDA_Q" | sed -n 's/^RESTANTES:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
     if [ -n "$rs" ]; then RESTANTES="$rs"; fi
@@ -1196,6 +1202,7 @@ if [ "$PKG_MODO" = instalar ]; then
   echo "RESUMOS_OK=$RESUMOS_OK RESUMOS_FALHOU=$RESUMOS_FALHOU"
   echo "INVALIDOS=$INVALIDOS PACKAGES_VALIDOS=$PACKAGES_VALIDOS"
   echo "S3_RESTANTES=$S3_RESTANTES"
+  echo "S3_LINHAS detalhe/distintas/contagens=${S3_LINHAS:-n/a}"
 else
   echo "SEQUENCIA fase=$SEQ_FASE/7 desordem=$SEQ_DESORDEM"
   echo "RESTANTES=$RESTANTES"
