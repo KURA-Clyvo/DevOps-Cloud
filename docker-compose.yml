@@ -308,6 +308,13 @@ services:
       # (dev/teste nao tocam o Mongo); so o compose liga. Seed = D-LOJA-10 (catalogo exemplo=true).
       KURA_LOJA_MONGO_INIT_ENABLED: "true"
       KURA_LOJA_SEED_EXEMPLO_ENABLED: "true"
+      # S4-JAVA-04: runner do schema/indices de `documentos_tutor` (desligado por padrao no Java,
+      # como o da Loja). Mongo fora nao derruba o boot: o runner tolera e reaplica no proximo.
+      KURA_DOCUMENTOS_MONGO_INIT_ENABLED: "true"
+      # S4-JAVA-04: o ARQUIVO do laudo e servido pela .NET (porta 8080), nao pelo Java; a URL
+      # assinada usa o MESMO FOTO_URL_SECRET acima. Mesma origem da foto por padrao (segue o
+      # FOTO_URL_BASE do .env, p.ex. IP da LAN); vazio => `urlArquivo` do laudo sai null.
+      LAUDO_URL_BASE: ${LAUDO_URL_BASE:-${FOTO_URL_BASE:-http://localhost:8080}}
     depends_on:
       oracle-db:
         condition: service_healthy
