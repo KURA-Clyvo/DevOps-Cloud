@@ -101,7 +101,8 @@ gerar_log() { # variáveis: L_ORA_INI L_PAD L_ORA_DEMO L_R3 L_DEMOS L_SENHA L_OR
   echo "RESUMO: 60 OK, 0 FALHOU"
   echo "$M2_FIM"
   if [ "${L_DEMOS:-2}" = 2 ]; then
-    echo; echo "$M3_INI"
+    echo
+    [ -n "${L_SEM_INI3:-}" ] || echo "$M3_INI"
     if [ -n "${L_ORA_DEMO:-}" ]; then
       echo "ORA-06502: PL/SQL: numeric or value error: character string buffer too small"
       echo "ORA-20001: p_id_clinica e obrigatorio"
@@ -110,7 +111,7 @@ gerar_log() { # variáveis: L_ORA_INI L_PAD L_ORA_DEMO L_R3 L_DEMOS L_SENHA L_OR
       echo "ORA-20002: valor invalido"
     fi
     echo "RESUMO: ${L_R3:-70 OK, 0 FALHOU}"
-    echo "$M3_FIM"
+    [ -n "${L_SEM_FIM3:-}" ] || echo "$M3_FIM"
   fi
   [ -z "${L_ORA_FORA:-}" ] || echo "ORA-04063: package body \"KURA.PKG_AUDITORIA\" has errors"
   echo "verificacao OK: 4 packages (spec + body) e TRG_AUDITORIA_COBRANCA VALID, 0 dependente(s) externo(s) recompilado(s) e VALID, 0 erros de compilacao, AUDITORIA_COBRANCA VALID."
@@ -129,6 +130,9 @@ gerar_log_remover() {
 ( L_ORA_INI=1 L_PAD=300 gerar_log ) > "$FX/ora-inicio-grande.log"
 ( L_R3="70 OK, 1 FALHOU" gerar_log ) > "$FX/falhou.log"
 ( L_DEMOS=1 gerar_log ) > "$FX/cortado.log"
+( L_SEM_FIM3=1 gerar_log ) > "$FX/sem-fim3.log"
+( L_SEM_INI3=1 gerar_log ) > "$FX/sem-ini3.log"
+( L_R3="70 OK, 0 FALHOU" gerar_log; echo "RESUMO: 5 OK, 2 FALHOU" ) > "$FX/resumo-extra.log"
 ( L_SENHA=1 gerar_log ) > "$FX/senha.log"
 ( L_ORA_FORA=1 gerar_log ) > "$FX/ora-fora.log"
 ( gerar_log_remover ) > "$FX/rem-ok.log"
@@ -235,6 +239,15 @@ echo "== T5: log cortado (1 FIM, 1 RESUMO), sqlplus EXIT=0"
 vm_run "$AI" FIX_LOG="$FX/cortado.log"
 afirma "T5 VM: falha" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0
 afirma "T5 o resumo mostra DEMOS_FECHADAS=1 e RESUMOS_OK=1" grep -qE 'DEMOS_FECHADAS=1|RESUMOS_OK=1' "$T/vm.out"
+vm_run "$AI" FIX_LOG="$FX/sem-fim3.log"
+afirma "T5b 2 demos abertas, RESUMO 2 OK, mas a 2a nunca fechou (log cortado antes do FIM): falha" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0
+afirma "T5b o resumo mostra DEMOS_FECHADAS=1" grep -q "DEMOS_FECHADAS=1" "$T/vm.out"
+vm_run "$AI" FIX_LOG="$FX/sem-ini3.log"
+afirma "T5c FIM sem o INICIO correspondente: falha" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0
+afirma "T5c o resumo mostra DEMOS_ABERTAS=1" grep -q "DEMOS_ABERTAS=1" "$T/vm.out"
+vm_run "$AI" FIX_LOG="$FX/resumo-extra.log"
+afirma "T4c 2 RESUMO 0 FALHOU mais uma 3a linha com FALHOU diferente de 0: falha" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0
+afirma "T4c o resumo mostra RESUMOS_OK=2 RESUMOS_FALHOU=1" grep -q "RESUMOS_OK=2 RESUMOS_FALHOU=1" "$T/vm.out"
 
 echo "== T6: objetos inválidos / packages válidos ≠ 9 / consulta com ORA-"
 vm_run "$AI" FIX_QOUT="$FX/q-inv1.txt"
@@ -260,18 +273,18 @@ deploy_run db-packages AZ_MODE=msg AZ_MSG_FILE="$T/msg8c.txt"
 afirma "T8c controle positivo: a linha exata é aceita (EXIT=0)" test "$DEP_RC" = 0
 
 echo "== T9: o arquivo da Sprint 3 renomeado para o nome do Packages"
-mkdir -p "$T/sql-s3"
-if [ -f "$MAST/2TDSPF_2026_CodigoSql_Integrantes.sql" ]; then
-  cp "$MAST/2TDSPF_2026_CodigoSql_Integrantes.sql" "$T/sql-s3/$ARQ_INST"; FONTE_S3="arquivo real da S3"
-else
-  printf "CREATE OR REPLACE PACKAGE BODY PKG_COBRANCA AS END;\n/\nBEGIN EXECUTE IMMEDIATE 'DROP TABLE AUDITORIA_COBRANCA CASCADE CONSTRAINTS PURGE'; EXCEPTION WHEN OTHERS THEN NULL; END;\n" > "$T/sql-s3/$ARQ_INST"; FONTE_S3="sintético"
-fi
-echo "   (fixture da S3: $FONTE_S3)"
-afirma "T9 controle: o fixture tem DROP TABLE" grep -qi 'drop table' "$T/sql-s3/$ARQ_INST"
+mkdir -p "$T/sql-s3" "$T/sql-s3r"
+# (a) sintético COM o marcador positivo dos packages + a linha real do BLOCO 1 da S3: só o DROP TABLE pode recusar
+printf "CREATE OR REPLACE PACKAGE BODY PKG_COBRANCA AS END;\n/\nBEGIN EXECUTE IMMEDIATE 'DROP TABLE AUDITORIA_COBRANCA CASCADE CONSTRAINTS PURGE';    EXCEPTION WHEN OTHERS THEN NULL; END;\n" > "$T/sql-s3/$ARQ_INST"
+# (b) o arquivo real da S3, se existir ao lado
+if [ -f "$MAST/2TDSPF_2026_CodigoSql_Integrantes.sql" ]; then cp "$MAST/2TDSPF_2026_CodigoSql_Integrantes.sql" "$T/sql-s3r/$ARQ_INST"; else cp "$T/sql-s3/$ARQ_INST" "$T/sql-s3r/$ARQ_INST"; fi
+afirma "T9 controle: o fixture (a) tem DROP TABLE e o marcador de packages" test "$(grep -ciE 'drop table|package body pkg_cobranca' "$T/sql-s3/$ARQ_INST")" = 2
 deploy_run db-packages DB_PACKAGES_SQL_DIR="$T/sql-s3"
 afirma "T9 recusa: EXIT≠0" test "$DEP_RC" != 0
 afirma "T9 recusa ANTES de qualquer run-command (0 chamadas)" test "$(chamadas_run)" = 0
-afirma "T9 a mensagem diz 'recusado'" grep -q 'recusado' "$T/dep.out"
+afirma "T9 a recusa é por DROP TABLE (não pelo marcador ausente)" grep -q 'DROP TABLE' "$T/dep.out"
+deploy_run db-packages DB_PACKAGES_SQL_DIR="$T/sql-s3r"
+afirma "T9r arquivo real da S3 renomeado: EXIT≠0, 0 run-command, recusa por DROP TABLE" test "$DEP_RC" != 0 -a "$(chamadas_run)" = 0 -a "$(grep -c 'DROP TABLE' "$T/dep.out")" -ge 1
 deploy_run db-packages DB_PACKAGES_SQL_DIR="$T/nao-existe"
 afirma "T9b diretório sem os arquivos: EXIT≠0, 0 run-command, instrução de clonar" test "$DEP_RC" != 0 -a "$(chamadas_run)" = 0 -a "$(grep -c 'git clone' "$T/dep.out")" -ge 1
 
