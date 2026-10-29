@@ -143,6 +143,9 @@ printf 'INVALIDO:VIEW VW_VACINAS_VENCENDO INVALID\nPKGVALIDOS:9\n' > "$FX/q-inv1
 printf 'PKGVALIDOS:8\n' > "$FX/q-pk8.txt"
 echo "ORA-01017: invalid username/password; logon denied" > "$FX/q-ora.txt"
 echo "RESTANTES:0" > "$FX/qr-ok.txt"
+printf 'PKGVALIDOS:9
+connected as KURA/%s
+' "$SENHA" > "$FX/q-senha.txt"
 echo "RESTANTES:1" > "$FX/qr-1.txt"
 
 # SQL de entrada: os arquivos reais do Mastering, se existirem ao lado; senão, sintéticos mínimos
@@ -261,6 +264,8 @@ vm_run "$AI" FIX_QOUT="$FX/q-pk8.txt"
 afirma "T6b PACKAGES_VALIDOS=8: falha" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0
 vm_run "$AI" FIX_QOUT="$FX/q-ora.txt" FIX_EXIT2=1
 afirma "T6c consulta de objetos com ORA-: contagem inválida, falha" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0
+vm_run "$AI" FIX_QOUT="$FX/q-senha.txt"
+afirma "T6d saída da consulta de objetos com a senha (valores corretos): falha, senha não impressa" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0 -a "$(ocorrencias "$T/vm.out" "$SENHA")" = 0
 
 echo "== T7/T8: decisão do deploy.sh pela sentinela exata"
 printf 'Enable succeeded: \n[stdout]\ndb-packages modo=instalar\nEXIT_SQLPLUS=0\n[stderr]\n' > "$T/msg7.txt"
