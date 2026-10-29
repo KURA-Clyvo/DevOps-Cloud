@@ -1040,7 +1040,7 @@ done
 [ "$(docker inspect -f '{{.State.Running}}' "$CONT" 2>/dev/null || true)" = true ] || falhar "o container $CONT não está rodando"
 
 SQL_DIR="$KURA_BASE/sql"; LOG_DIR="$KURA_BASE/logs"
-install -d -m 700 "$SQL_DIR" "$LOG_DIR"
+mkdir -p "$SQL_DIR" "$LOG_DIR"; chmod 700 "$SQL_DIR" "$LOG_DIR"
 SQL_LOCAL="$SQL_DIR/$PKG_SQL_NAME"
 LOG="$LOG_DIR/$PREF-$(date +%Y%m%d-%H%M%S).log"
 limpar() { rm -f "$SQL_LOCAL"; docker exec "$CONT" rm -f "/tmp/$PKG_SQL_NAME" >/dev/null 2>&1 || true; }
