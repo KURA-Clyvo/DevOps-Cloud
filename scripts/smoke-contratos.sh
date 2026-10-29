@@ -1702,6 +1702,122 @@ else
   rm -f "$BODY_FILE.hdr"
 fi
 
+# ─── 27. tutor/pets/{id}/documentos e /laudos (S4-JAVA-04) ──────────────────
+# Origem: DocumentoTutorController e LaudoTutorController @ java-backend 76f77cb (contrato HTTP em
+# s4-java-01-g0.md secao 5, repo de planejamento). Multipart: partes `arquivo`, `tipo`, `emissor?`,
+# `numero?`; o tipo do arquivo vem da ASSINATURA (magic bytes), nao do Content-Type do cliente.
+# Isolamento por tutor: o tutor 2 e criado aqui (convite -> register-invite) com PET PROPRIO, para o
+# 404 do arquivo ser o do id alheio e nao o 403 do vinculo ao pet. Este bloco assume o Mongo de pe
+# (com o Mongo fora o contrato e 503).
+DOC_PNG_FILE=$(mktemp)
+trap 'rm -f "$BODY_FILE" "$PAYLOAD_FILE" "$FOTO_THUMB_FILE" "$FOTO_MEDIA_FILE" "$DOC_PNG_FILE"' EXIT
+# PNG 1x1 valido (assinatura 89 50 4E 47 0D 0A 1A 0A + IHDR/IDAT/IEND).
+"$PY" -c "
+import base64
+open('$(caminho_nativo "$DOC_PNG_FILE")','wb').write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='))
+"
+
+chamar_upload_documento() {  # chamar_upload_documento <nome> <esperado> <url> <arquivo> <token>
+  local nome=$1 esperado=$2 url=$3 arquivo=$4 token=$5
+  local code
+  code=$(curl -s -o "$BODY_FILE" -w '%{http_code}' -X POST "$url" \
+    -H "Authorization: Bearer $token" \
+    -F "arquivo=@$(caminho_nativo "$arquivo");type=image/png" \
+    -F "tipo=RG_ANIMAL" -F "emissor=SINPATINHAS" -F "numero=SMK-$SUFIXO")
+  if [ "$code" != "$esperado" ]; then
+    echo "FALHA  $nome: esperado $esperado, obtido $code"
+    head -c 300 "$BODY_FILE"; echo
+    FALHAS=$((FALHAS+1))
+  else
+    echo "ok     $nome ($code)"
+  fi
+}
+
+# GET do arquivo: confere o status e, quando se passa o arquivo enviado, Content-Type gravado + bytes iguais.
+baixar_documento() {  # baixar_documento <nome> <esperado> <url> <token> [arquivo_enviado]
+  local nome=$1 esperado=$2 url=$3 token=$4 enviado=${5:-}
+  local code tipo
+  code=$(curl -s -o "$BODY_FILE" -D "$BODY_FILE.hdr" -w '%{http_code}' "$url" -H "Authorization: Bearer $token")
+  tipo=$(grep -i '^content-type:' "$BODY_FILE.hdr" | tr -d '\r' | head -1 | sed 's/^[^:]*: *//')
+  rm -f "$BODY_FILE.hdr"
+  if [ "$code" != "$esperado" ]; then
+    echo "FALHA  $nome: esperado $esperado, obtido $code"
+    head -c 300 "$BODY_FILE"; echo
+    FALHAS=$((FALHAS+1))
+  elif [ -n "$enviado" ] && { [ "$tipo" != "image/png" ] || ! cmp -s "$BODY_FILE" "$enviado"; }; then
+    echo "FALHA  $nome: 200, mas Content-Type '$tipo' (esperado image/png) ou bytes diferentes dos enviados"
+    FALHAS=$((FALHAS+1))
+  else
+    echo "ok     $nome ($code${enviado:+, image/png, bytes iguais aos enviados})"
+  fi
+}
+
+# Tutor 2: cadastro pela clinica -> convite -> register-invite (JWT proprio) + pet proprio.
+CPF_TUTOR_DOC2=$(gerar_cpf)
+FONE_TUTOR_DOC2="119$("$PY" -c 'import random; print(random.SystemRandom().randint(10000000, 99999999))')"
+PAYLOAD_TUTOR_DOC2=$(cat <<JSON
+{
+  "nmTutor": "Tutor Doc2 Smoke $SUFIXO",
+  "nrCpf": "$CPF_TUTOR_DOC2",
+  "dsEmail": "tutor-doc2-smoke-$SUFIXO@kura-smoke.test",
+  "nrTelefone": "$FONE_TUTOR_DOC2",
+  "stAvisoPrivacidadeInformado": true,
+  "dsCanalConvite": "EMAIL"
+}
+JSON
+)
+chamar_mascarando_token "s4-java-04/setup tutor 2 (POST /tutores)" 201 POST "$API/api/v1/tutores" "$PAYLOAD_TUTOR_DOC2" "$TOKEN"
+ID_TUTOR_DOC2=$(campo id)
+INVITE_TOKEN_DOC2=$(campo invite.nrToken)
+PAYLOAD_REGISTER_DOC2=$(cat <<JSON
+{
+  "token": "$INVITE_TOKEN_DOC2",
+  "senha": "SmokeTest123",
+  "aceites": [
+    { "tipo": "LEMBRETES", "versaoTermo": "v1.0", "aceito": true }
+  ]
+}
+JSON
+)
+chamar_mascarando_token "s4-java-04/setup tutor 2 (register-invite)" 201 POST "$TUTOR_API/api/v1/auth/register-invite" "$PAYLOAD_REGISTER_DOC2" ""
+TUTOR_TOKEN_DOC2=$(campo accessToken)
+PAYLOAD_PET_DOC2=$(cat <<JSON
+{
+  "idEspecie": 1,
+  "idRaca": 1,
+  "nmPet": "Pet Doc2 Smoke $SUFIXO",
+  "dtNascimento": "2022-01-01T00:00:00Z",
+  "sgSexo": "F",
+  "sgPorte": "P",
+  "idTutor": $ID_TUTOR_DOC2,
+  "stPrincipal": true,
+  "dsVinculo": "PROPRIETARIO"
+}
+JSON
+)
+chamar "s4-java-04/setup pet do tutor 2 (POST /pets)" 201 POST "$API/api/v1/pets" "$PAYLOAD_PET_DOC2" "$TOKEN"
+ID_PET_DOC2=$(campo id)
+
+DOCS_URL="$TUTOR_API/api/v1/tutor/pets/$ID_PET/documentos"
+chamar_upload_documento "tutor/pets/{id}/documentos (POST, PNG, RG_ANIMAL)" 201 "$DOCS_URL" "$DOC_PNG_FILE" "$TUTOR_TOKEN"
+ID_DOC=$(campo id)
+afirmar "tutor/pets/{id}/documentos (POST): corpo traz tipo, contentType, tamanho e urlArquivo relativa, sem bytes" \
+  "d['tipo']=='RG_ANIMAL' and d['contentType']=='image/png' and d['tamanhoBytes']>0 and d['urlArquivo'].endswith('/documentos/'+d['id']+'/arquivo') and 'conteudo' not in d"
+chamar "tutor/pets/{id}/documentos (GET lista)" 200 GET "$DOCS_URL" '' "$TUTOR_TOKEN"
+afirmar "tutor/pets/{id}/documentos (GET lista): exatamente 1 item, o enviado" \
+  "len(d['itens'])==1 and d['itens'][0]['id']=='$ID_DOC'"
+baixar_documento "tutor/pets/{id}/documentos/{id}/arquivo (GET, dono)" 200 "$DOCS_URL/$ID_DOC/arquivo" "$TUTOR_TOKEN" "$DOC_PNG_FILE"
+# Outro tutor: pet alheio => 403 (vinculo); id de documento alheio sob pet PROPRIO => 404 (nao 403).
+chamar "tutor/pets/{id}/documentos (GET lista, pet de outro tutor)" 403 GET "$DOCS_URL" '' "$TUTOR_TOKEN_DOC2"
+baixar_documento "tutor/pets/{id}/documentos/{id}/arquivo (GET, pet de outro tutor)" 403 "$DOCS_URL/$ID_DOC/arquivo" "$TUTOR_TOKEN_DOC2"
+baixar_documento "tutor/pets/{id}/documentos/{id}/arquivo (GET, doc de outro tutor sob pet proprio)" 404 "$TUTOR_API/api/v1/tutor/pets/$ID_PET_DOC2/documentos/$ID_DOC/arquivo" "$TUTOR_TOKEN_DOC2"
+chamar "tutor/pets/{id}/documentos (DELETE, doc de outro tutor sob pet proprio)" 404 DELETE "$TUTOR_API/api/v1/tutor/pets/$ID_PET_DOC2/documentos/$ID_DOC" '' "$TUTOR_TOKEN_DOC2"
+chamar "tutor/pets/{id}/documentos (DELETE, dono)" 204 DELETE "$DOCS_URL/$ID_DOC" '' "$TUTOR_TOKEN"
+chamar "tutor/pets/{id}/documentos (GET lista, apos DELETE)" 200 GET "$DOCS_URL" '' "$TUTOR_TOKEN"
+afirmar "tutor/pets/{id}/documentos (GET lista, apos DELETE): vazia (exclusao fisica)" "d['itens']==[]"
+chamar "tutor/pets/{id}/laudos (GET)" 200 GET "$TUTOR_API/api/v1/tutor/pets/$ID_PET/laudos" '' "$TUTOR_TOKEN"
+afirmar "tutor/pets/{id}/laudos (GET): corpo {itens:[...]}" "isinstance(d['itens'], list)"
+
 # ─── resultado ─────────────────────────────────────────────────────────────
 echo
 if [ "$PULADOS" -gt 0 ]; then
