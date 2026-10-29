@@ -311,6 +311,7 @@ criar_cofre() {
   segredo foto-url-secret         FOTO_URL_SECRET         b64   48
   segredo mongo-root-password     MONGO_ROOT_PASSWORD     hex   48
   segredo mongo-java-password     MONGO_JAVA_PASSWORD     hex   48
+  segredo mongo-dotnet-password   MONGO_DOTNET_PASSWORD   hex   48
   segredo daily-api-key           DAILY_API_KEY           externo
   segredo twilio-sid              TWILIO_SID              externo
   segredo twilio-token            TWILIO_TOKEN            externo
@@ -351,6 +352,7 @@ ORACLE_SYS_PASSWORD="$(segredo oracle-sys-password)"
 ORACLE_APP_PASSWORD="$(segredo oracle-app-password)"
 MONGO_ROOT_PASSWORD="$(segredo mongo-root-password)"
 MONGO_JAVA_PASSWORD="$(segredo mongo-java-password)"
+MONGO_DOTNET_PASSWORD="$(segredo mongo-dotnet-password)"
 
 # 3) Arquivos do stack (permissão 600: só root lê)
 install -d -m 700 /opt/kura /opt/kura/mongo-init
@@ -363,6 +365,7 @@ ORACLE_APP_PASSWORD=${ORACLE_APP_PASSWORD}
 KURA_MONGO_ROOT_USER=kura_root
 KURA_MONGO_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
 KURA_MONGO_JAVA_PASSWORD=${MONGO_JAVA_PASSWORD}
+KURA_MONGO_DOTNET_PASSWORD=${MONGO_DOTNET_PASSWORD}
 ENV
 printf '%s' "$MONGO_INIT_B64" | base64 -d > /opt/kura/mongo-init/01-roles-usuarios.js
 
@@ -413,6 +416,7 @@ services:
       KURA_MONGO_ROOT_USER: ${KURA_MONGO_ROOT_USER}
       KURA_MONGO_ROOT_PASSWORD: ${KURA_MONGO_ROOT_PASSWORD}
       KURA_MONGO_JAVA_PASSWORD: ${KURA_MONGO_JAVA_PASSWORD}
+      KURA_MONGO_DOTNET_PASSWORD: ${KURA_MONGO_DOTNET_PASSWORD}
     volumes:
       - /opt/kura/mongo-init:/scripts:ro
     entrypoint: ["sh", "-c"]
@@ -694,6 +698,8 @@ configurar_apps() {
     "User Id=${ORACLE_APP_USER};Password=$(kv_ler oracle-app-password);Data Source=${ip}:1521/${ORACLE_SERVICE};Validate Connection=true;Connection Lifetime=180;Min Pool Size=0"
   kv_gravar tutor-mongodb-uri \
     "mongodb://kura_java:$(kv_ler mongo-java-password)@${ip}:27017/kura_docs?authSource=kura_docs&serverSelectionTimeoutMS=2000"
+  # S4-NET-05: usuario kura_dotnet (role kura_dotnet_runtime: escreve laudos, le documentos_tutor).
+  kv_gravar dotnet-mongodb-uri \n    "mongodb://kura_dotnet:$(kv_ler mongo-dotnet-password)@${ip}:27017/kura_docs?authSource=kura_docs&serverSelectionTimeoutMS=3000"
 
   # .NET — clinica-api
   az webapp config appsettings set -g "$RG" -n "$APP_CLINICA" -o none --settings \
@@ -707,7 +713,7 @@ configurar_apps() {
     "Daily__ApiKey=$(kvref_opcional daily-api-key)" \
     "CORS_ALLOWED_ORIGINS=$cors" "Storage__BasePath=$STORAGE_BASE_PATH" \
     "Foto__UrlSecret=$(kvref foto-url-secret)" "Foto__UrlBase=$clinica_url" \
-    "Convite__UrlBaseAppTutor=$web_tutor"
+    "Convite__UrlBaseAppTutor=$web_tutor" \n    "Mongo__ConnectionString=$(kvref dotnet-mongodb-uri)" "Mongo__InitEnabled=true"
 
   # Java — tutor-api (o Flyway cria o schema Oracle ao subir)
   az webapp config appsettings set -g "$RG" -n "$APP_TUTOR" -o none --settings \
