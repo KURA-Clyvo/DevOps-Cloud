@@ -474,7 +474,7 @@ afirma "T17 P2 PULADO + PULADOS: 1 + RESUMO 70 OK: sucesso" sent_ok
 afirma "T17 P5 controle: o log tem 2 RESUMO, os dois da demo 02" test "$(grep -c '^RESUMO: 60 OK' "$FX/p5.log")$(grep -c '^RESUMO: 70' "$FX/p5.log")" = 20
 vm_run "$AI" FIX_LOG="$FX/p5.log"
 afirma "T17 P5 RESUMO duplicado na demo 02 e ausente na 03: falha" sent_no
-afirma "T17 P5 o resumo mostra SEQUENCIA_DEMOS com desordem" grep -qE 'SEQUENCIA_DEMOS fase=[0-9]/6 desordem=[1-9]' "$T/vm.out"
+afirma "T17 P5 o resumo mostra SEQUENCIA_DEMOS com desordem" grep -qE 'SEQUENCIA_DEMOS fase=[0-9]/7 desordem=[1-9]' "$T/vm.out"
 # P8: FIM da 02 duplicado, demo 03 sem FIM e um ORA- depois (fora do que deveria ser demo)
 ( gerar_log | awk -v f="$M2_FIM" '{print} $0==f{print}' | grep -vxF "$M3_FIM" | sed "s/^=== FIM DO ARQUIVO/ORA-00942: table or view does not exist\n=== FIM DO ARQUIVO/" ) > "$FX/p8.log"
 afirma "T17 P8 controle: 2 FIM (ambos da 02), 2 INICIO, 1 ORA-" test "$(grep -c ': FIM ' "$FX/p8.log")$(grep -c ': INICIO ' "$FX/p8.log")$(grep -c 'ORA-' "$FX/p8.log")" = 221
@@ -519,6 +519,75 @@ vm_run "$AI" FIX_EXIT2=1
 afirma "T18 P15 consulta com EXIT=1 e PKGVALIDOS:9, sem ORA-: falha (o ec_q da consulta)" sent_no
 vm_run "$AI"
 afirma "T18 controle: o mesmo log e a mesma consulta sem o defeito: sucesso" sent_ok
+
+echo "== T19: R-1 da re-G2 — fim do arquivo exigido 1x, na posição certa (instalar e remover)"
+FIM_I="=== FIM DO ARQUIVO $ARQ_INST ==="; FIM_R="=== FIM DO ARQUIVO $ARQ_REM ==="
+sent_no_motivo() { sent_no && grep -q "^FALHOU:.* FIM_DO_ARQUIVO" "$T/vm.out"; }
+rem_ok() { test "$VM_RC" = 0 -a "$(ultima_linha "$T/vm.out")" = "$SENT_R"; }
+rem_no_motivo() { test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_R")" = 0 && grep -q "^FALHOU:.* FIM_DO_ARQUIVO" "$T/vm.out"; }
+# Q8 da re-G2: log cortado logo depois do FIM da demo 03 (sem o BLOCO 8 final nem o fim do arquivo)
+( gerar_log | awk -v f="$M3_FIM" '{print} $0==f{exit}' ) > "$FX/r1-corte.log"
+afirma "T19 corte controle: termina no FIM 03, 2 INICIO, 2 FIM, 2 RESUMO, 0 fim do arquivo, 0 verificacao" \
+  test "$(ultima_linha "$FX/r1-corte.log" | grep -cxF "$M3_FIM")$(grep -c ': INICIO ' "$FX/r1-corte.log")$(grep -c ': FIM ' "$FX/r1-corte.log")$(grep -c '^RESUMO: ' "$FX/r1-corte.log")$(grep -c 'FIM DO ARQUIVO' "$FX/r1-corte.log")$(grep -c '^verificacao OK' "$FX/r1-corte.log")" = 122200
+vm_run "$AI" FIX_LOG="$FX/r1-corte.log"
+afirma "T19 instalar: log cortado depois do FIM 03: falha com FIM_DO_ARQUIVO" sent_no_motivo
+afirma "T19 instalar: o resumo mostra a fase 6 de 7" grep -q '^SEQUENCIA_DEMOS fase=6/7 desordem=0$' "$T/vm.out"
+( gerar_log | grep -v '^=== FIM DO ARQUIVO ' ) > "$FX/r1-sem.log"
+afirma "T19 sem marcador controle: tem a verificacao final e 0 fim do arquivo" \
+  test "$(grep -c '^verificacao OK' "$FX/r1-sem.log")$(grep -c 'FIM DO ARQUIVO' "$FX/r1-sem.log")" = 10
+vm_run "$AI" FIX_LOG="$FX/r1-sem.log"
+afirma "T19 instalar: marcador ausente: falha com FIM_DO_ARQUIVO" sent_no_motivo
+( gerar_log; echo "$FIM_I" ) > "$FX/r1-dup.log"
+vm_run "$AI" FIX_LOG="$FX/r1-dup.log"
+afirma "T19 instalar: marcador duplicado: falha com FIM_DO_ARQUIVO" sent_no_motivo
+( gerar_log | grep -vxF "$FIM_I" | awk -v f="$M2_FIM" -v m="$FIM_I" '{print} $0==f{print m}' ) > "$FX/r1-ordem.log"
+afirma "T19 fora de ordem controle: 1 fim do arquivo, entre o FIM 02 e o INICIO 03" \
+  test "$(grep -cxF "$FIM_I" "$FX/r1-ordem.log")$(grep -A1 -xF "$M2_FIM" "$FX/r1-ordem.log" | tail -n 1 | grep -cxF "$FIM_I")" = 11
+vm_run "$AI" FIX_LOG="$FX/r1-ordem.log"
+afirma "T19 instalar: marcador antes da demo 03: falha com FIM_DO_ARQUIVO" sent_no_motivo
+( gerar_log | sed "s/^=== FIM DO ARQUIVO .*/$FIM_R/" ) > "$FX/r1-nome.log"
+vm_run "$AI" FIX_LOG="$FX/r1-nome.log"
+afirma "T19 instalar: fim do arquivo de OUTRO .sql (o do Remover): falha com FIM_DO_ARQUIVO" sent_no_motivo
+( gerar_log; echo "ORA-03113: end-of-file on communication channel" ) > "$FX/r1-ora-depois.log"
+vm_run "$AI" FIX_LOG="$FX/r1-ora-depois.log"
+afirma "T19 instalar: ORA- depois do fim do arquivo não é perdoado" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0 -a "$(grep -c '^ORA_FORA_DEMO=1$' "$T/vm.out")" = 1
+( gerar_log | sed 's/^\(=== FIM DO ARQUIVO .* ===\)$/\1   /' ) > "$FX/r1-espaco.log"
+afirma "T19 espaço final controle: a linha do fim do arquivo termina em espaços" test "$(grep -c '^=== FIM DO ARQUIVO .* ===   $' "$FX/r1-espaco.log")" = 1
+vm_run "$AI" FIX_LOG="$FX/r1-espaco.log"
+afirma "T19 instalar: espaço no fim da linha do marcador (sqlplus) continua aceito" sent_ok
+vm_run "$AI" FIX_LOG="$FX/ok.log"
+afirma "T19 instalar controle: log completo: sucesso e fase 7 de 7" test "$(ultima_linha "$T/vm.out")" = "$SENT_I" -a "$(grep -c '^SEQUENCIA_DEMOS fase=7/7 desordem=0$' "$T/vm.out")" = 1
+( gerar_log_remover | grep -v '^=== FIM DO ARQUIVO ' ) > "$FX/r1-rem-sem.log"
+vm_run "$AR" FIX_LOG="$FX/r1-rem-sem.log" FIX_QOUT="$FX/qr-ok.txt"
+afirma "T19 remover: marcador ausente: falha com FIM_DO_ARQUIVO" rem_no_motivo
+( gerar_log_remover; echo "$FIM_R" ) > "$FX/r1-rem-dup.log"
+vm_run "$AR" FIX_LOG="$FX/r1-rem-dup.log" FIX_QOUT="$FX/qr-ok.txt"
+afirma "T19 remover: marcador duplicado: falha com FIM_DO_ARQUIVO" rem_no_motivo
+( gerar_log_remover | sed "s/^=== FIM DO ARQUIVO .*/$FIM_I/" ) > "$FX/r1-rem-nome.log"
+vm_run "$AR" FIX_LOG="$FX/r1-rem-nome.log" FIX_QOUT="$FX/qr-ok.txt"
+afirma "T19 remover: fim do arquivo do instalador (outro .sql): falha com FIM_DO_ARQUIVO" rem_no_motivo
+{ echo "$FIM_R"; gerar_log_remover | grep -vxF "$FIM_R"; } > "$FX/r1-rem-ordem.log"
+afirma "T19 remover fora de ordem controle: 1 fim do arquivo, na 1ª linha" test "$(grep -cxF "$FIM_R" "$FX/r1-rem-ordem.log")$(head -n 1 "$FX/r1-rem-ordem.log" | grep -cxF "$FIM_R")" = 11
+vm_run "$AR" FIX_LOG="$FX/r1-rem-ordem.log" FIX_QOUT="$FX/qr-ok.txt"
+afirma "T19 remover: marcador antes do trabalho de remoção (não é a última saída): falha com FIM_DO_ARQUIVO" rem_no_motivo
+( gerar_log; echo "verificacao OK: linha extra depois do fim" ) > "$FX/r1-depois.log"
+vm_run "$AI" FIX_LOG="$FX/r1-depois.log"
+afirma "T19 instalar: linha não vazia depois do fim do arquivo: falha com FIM_DO_ARQUIVO" sent_no_motivo
+( gerar_log; printf '\n   \n' ) > "$FX/r1-branco.log"
+vm_run "$AI" FIX_LOG="$FX/r1-branco.log"
+afirma "T19 instalar: só linhas em branco depois do fim do arquivo: sucesso" sent_ok
+vm_run "$AR" FIX_LOG="$FX/rem-ok.log" FIX_QOUT="$FX/qr-ok.txt"
+afirma "T19 remover controle: log completo: sucesso e fase 7 de 7" test "$(ultima_linha "$T/vm.out")" = "$SENT_R" -a "$(grep -c '^SEQUENCIA fase=7/7 desordem=0$' "$T/vm.out")" = 1
+if [ -f "$MAST/$ARQ_INST" ] && [ -f "$MAST/$ARQ_REM" ]; then
+  # âncora: o .sql real imprime o fim do arquivo 1x, DEPOIS do FIM da demo 03 (instalar), e 1x no Remover
+  li_fim3="$(grep -nF "PROMPT $M3_FIM" "$MAST/$ARQ_INST" | cut -d: -f1)"
+  li_fimarq="$(grep -nxF "PROMPT $FIM_I" "$MAST/$ARQ_INST" | cut -d: -f1)"
+  afirma "T19 âncora: o .sql do instalar imprime '$FIM_I' 1x" test "$(grep -cxF "PROMPT $FIM_I" "$MAST/$ARQ_INST")" = 1
+  afirma "T19 âncora: e depois do FIM da demo 03 (linha $li_fimarq > $li_fim3)" test "${li_fimarq:-0}" -gt "${li_fim3:-999999}"
+  afirma "T19 âncora: o .sql do Remover imprime '$FIM_R' 1x" test "$(grep -cxF "PROMPT $FIM_R" "$MAST/$ARQ_REM")" = 1
+else
+  echo "PULADO: âncora do fim do arquivo (Mastering-Relational-Database não está ao lado)"
+fi
 
 echo "== extras"
 vm_run "$AI" FIX_NAO_RODANDO=1

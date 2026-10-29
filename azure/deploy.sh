@@ -1094,11 +1094,21 @@ lf() { tr -d '\r' < "$LOG"; }
 conta() { grep -c "$@" || true; }
 # Máquina de estados por demo, em ordem: INICIO 02 -> RESUMO -> FIM 02 -> INICIO 03 -> RESUMO -> FIM 03.
 # fase: 0 aguarda INICIO 02 | 1 dentro da 02, sem RESUMO | 2 RESUMO da 02 visto, aguarda FIM 02 | 3 aguarda INICIO 03 |
-# 4 dentro da 03, sem RESUMO | 5 RESUMO da 03 visto, aguarda FIM 03 | 6 concluído. Marcador ou RESUMO fora de lugar
-# (duplicado, faltando, fora de ordem) conta em `desordem`. ORA-/SP2- só é perdoado nas fases 1, 2, 4 e 5 (dentro de
-# uma região INICIO..FIM); como qualquer região malformada reprova o veredito (fase final != 6 ou desordem != 0), o
-# perdão só vale para região bem formada.
-SEQ_RES="$(lf | awk '
+# 4 dentro da 03, sem RESUMO | 5 RESUMO da 03 visto, aguarda FIM 03 | 6 demos concluídas | 7 fim do arquivo visto.
+# A fase 7 (R-1 da re-G2) exige a linha exata "=== FIM DO ARQUIVO <arquivo enviado> ===" UMA vez: no instalar, logo
+# depois do FIM 03 (o .sql a imprime depois do BLOCO 8 final, sob WHENEVER SQLERROR EXIT: se algo falhar antes, ela não
+# sai); no remover, que não tem demo, a partir da fase 0. Sem ela, um log que termina no FIM 03 (SQL incompleto no
+# stdin) soltaria a sentinela. Marcador, RESUMO ou fim de arquivo fora de lugar (duplicado, faltando, fora de ordem,
+# nome de outro arquivo) conta em `desordem`. ORA-/SP2- só é perdoado nas fases 1, 2, 4 e 5 (dentro de uma região
+# INICIO..FIM); como qualquer região malformada reprova o veredito (desordem != 0), o perdão só vale para região bem
+# formada. Depois do fim do arquivo (fase 7) ele tem de ser a ÚLTIMA saída: qualquer linha não vazia depois dele conta
+# em `desordem` (o sqlplus -s não imprime nada no EXIT), e um ORA-/SP2- ali conta também em `fora`.
+SEQ_RES="$(lf | awk -v modo="$PKG_MODO" -v marca="=== FIM DO ARQUIVO $PKG_SQL_NAME ===" '
+  fase == 7 { if ($0 ~ /[^ \t]/) desordem++; if ($0 ~ /(ORA|SP2)-[0-9]+/) fora++; next }
+  /^=== FIM DO ARQUIVO / {
+    l = $0; sub(/[ \t]+$/, "", l)
+    if (l == marca && ((modo == "instalar" && fase == 6) || (modo != "instalar" && fase == 0))) fase = 7; else desordem++
+    next }
   /^#+[ \t]+DEMO S4-DB-[0-9]+: INICIO[ \t]+#+[ \t]*$/ {
     match($0, /S4-DB-[0-9]+/); id = substr($0, RSTART + 6, RLENGTH - 6)
     if (fase == 0 && id == "02") fase = 1; else if (fase == 3 && id == "03") fase = 4; else desordem++
@@ -1108,7 +1118,7 @@ SEQ_RES="$(lf | awk '
     if (fase == 2 && id == "02") fase = 3; else if (fase == 5 && id == "03") fase = 6; else desordem++
     next }
   /^RESUMO: / { if (fase == 1 || fase == 4) fase++; else desordem++; next }
-  /(ORA|SP2)-[0-9]+/ { if (fase == 0 || fase == 3 || fase == 6) fora++ }
+  /(ORA|SP2)-[0-9]+/ { if (fase != 1 && fase != 2 && fase != 4 && fase != 5) fora++ }
   END { print fase + 0, desordem + 0, fora + 0 }')"
 # sem here-string (<<<): o script da VM tem de continuar parseável por dash (T14 da suíte)
 SEQ_FASE="${SEQ_RES%% *}"; SEQ_RES="${SEQ_RES#* }"; SEQ_DESORDEM="${SEQ_RES%% *}"; ORA_FORA_DEMO="${SEQ_RES#* }"
@@ -1149,11 +1159,12 @@ MOTIVOS=""
 [ "$ec_sql" = 0 ]        || MOTIVOS="$MOTIVOS EXIT_SQLPLUS"
 [ "$SENHA_NO_LOG" = 0 ]  || MOTIVOS="$MOTIVOS SENHA_NO_LOG"
 [ "$SENHA_NA_CONSULTA" = 0 ] || MOTIVOS="$MOTIVOS SENHA_NA_CONSULTA"
+{ [ "$SEQ_FASE" = 7 ] && [ "$SEQ_DESORDEM" = 0 ]; } || MOTIVOS="$MOTIVOS FIM_DO_ARQUIVO"
 if [ "$PKG_MODO" = instalar ]; then
   [ "$ORA_FORA_DEMO" = 0 ]      || MOTIVOS="$MOTIVOS ORA_FORA_DEMO"
   [ "$DEMOS_ABERTAS" = 2 ]      || MOTIVOS="$MOTIVOS DEMOS_ABERTAS"
   [ "$DEMOS_FECHADAS" = 2 ]     || MOTIVOS="$MOTIVOS DEMOS_FECHADAS"
-  { [ "$SEQ_FASE" = 6 ] && [ "$SEQ_DESORDEM" = 0 ]; } || MOTIVOS="$MOTIVOS SEQUENCIA_DEMOS"
+  { [ "$SEQ_FASE" -ge 6 ] && [ "$SEQ_DESORDEM" = 0 ]; } || MOTIVOS="$MOTIVOS SEQUENCIA_DEMOS"
   [ "$RESUMOS_OK" = 2 ]         || MOTIVOS="$MOTIVOS RESUMOS_OK"
   [ "$RESUMOS_FALHOU" = 0 ]     || MOTIVOS="$MOTIVOS RESUMOS_FALHOU"
   [ "$INVALIDOS" = 0 ]          || MOTIVOS="$MOTIVOS INVALIDOS"
@@ -1170,10 +1181,11 @@ echo "EXIT_SQLPLUS=$ec_sql"
 echo "ORA_FORA_DEMO=$ORA_FORA_DEMO"
 if [ "$PKG_MODO" = instalar ]; then
   echo "DEMOS_ABERTAS=$DEMOS_ABERTAS DEMOS_FECHADAS=$DEMOS_FECHADAS"
-  echo "SEQUENCIA_DEMOS fase=$SEQ_FASE/6 desordem=$SEQ_DESORDEM"
+  echo "SEQUENCIA_DEMOS fase=$SEQ_FASE/7 desordem=$SEQ_DESORDEM"
   echo "RESUMOS_OK=$RESUMOS_OK RESUMOS_FALHOU=$RESUMOS_FALHOU"
   echo "INVALIDOS=$INVALIDOS PACKAGES_VALIDOS=$PACKAGES_VALIDOS"
 else
+  echo "SEQUENCIA fase=$SEQ_FASE/7 desordem=$SEQ_DESORDEM"
   echo "RESTANTES=$RESTANTES"
 fi
 echo "SENHA_NO_LOG=$SENHA_NO_LOG"
