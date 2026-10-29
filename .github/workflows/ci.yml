@@ -33,7 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           for f in azure/deploy.sh scripts/*.sh; do bash -n "$f"; done
-          shellcheck -S warning azure/deploy.sh
+          shellcheck -S warning azure/deploy.sh scripts/db-select.sh
           python3 -c "import json; json.load(open('azure/staticwebapp.config.json'))"
           node --check mongo/init/01-roles-usuarios.js
 
