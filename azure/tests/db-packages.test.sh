@@ -98,7 +98,7 @@ gerar_log() { # variáveis: L_ORA_INI L_PAD L_ORA_DEMO L_R3 L_DEMOS L_SENHA L_OR
   [ -z "${L_SENHA:-}" ] || echo "connect KURA/$SENHA@//localhost:1521/XEPDB1"
   echo; echo "$M2_INI"
   echo "ancoras: clinica=100 outra=101 sem_cobranca=102 evento=100"
-  echo "RESUMO: 60 OK, 0 FALHOU"
+  [ -n "${L_SEM_RESUMO:-}" ] || echo "RESUMO: 60 OK, 0 FALHOU"
   echo "$M2_FIM"
   if [ "${L_DEMOS:-2}" = 2 ]; then
     echo
@@ -110,7 +110,7 @@ gerar_log() { # variáveis: L_ORA_INI L_PAD L_ORA_DEMO L_R3 L_DEMOS L_SENHA L_OR
       echo "ORA-20002: valor invalido"
       echo "ORA-20002: valor invalido"
     fi
-    echo "RESUMO: ${L_R3:-70 OK, 0 FALHOU}"
+    [ -n "${L_SEM_RESUMO:-}" ] || echo "RESUMO: ${L_R3:-70 OK, 0 FALHOU}"
     [ -n "${L_SEM_FIM3:-}" ] || echo "$M3_FIM"
   fi
   [ -z "${L_ORA_FORA:-}" ] || echo "ORA-04063: package body \"KURA.PKG_AUDITORIA\" has errors"
@@ -132,6 +132,7 @@ gerar_log_remover() {
 ( L_DEMOS=1 gerar_log ) > "$FX/cortado.log"
 ( L_SEM_FIM3=1 gerar_log ) > "$FX/sem-fim3.log"
 ( L_SEM_INI3=1 gerar_log ) > "$FX/sem-ini3.log"
+( L_SEM_RESUMO=1 gerar_log ) > "$FX/sem-resumo.log"
 ( L_R3="70 OK, 0 FALHOU" gerar_log; echo "RESUMO: 5 OK, 2 FALHOU" ) > "$FX/resumo-extra.log"
 ( L_SENHA=1 gerar_log ) > "$FX/senha.log"
 ( L_ORA_FORA=1 gerar_log ) > "$FX/ora-fora.log"
@@ -248,6 +249,9 @@ afirma "T5c o resumo mostra DEMOS_ABERTAS=1" grep -q "DEMOS_ABERTAS=1" "$T/vm.ou
 vm_run "$AI" FIX_LOG="$FX/resumo-extra.log"
 afirma "T4c 2 RESUMO 0 FALHOU mais uma 3a linha com FALHOU diferente de 0: falha" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0
 afirma "T4c o resumo mostra RESUMOS_OK=2 RESUMOS_FALHOU=1" grep -q "RESUMOS_OK=2 RESUMOS_FALHOU=1" "$T/vm.out"
+vm_run "$AI" FIX_LOG="$FX/sem-resumo.log"
+afirma "T4d demos abertas e fechadas mas NENHUMA linha RESUMO (0 FALHOU, 0 OK): falha" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0
+afirma "T4d o resumo mostra RESUMOS_OK=0 RESUMOS_FALHOU=0" grep -q "RESUMOS_OK=0 RESUMOS_FALHOU=0" "$T/vm.out"
 
 echo "== T6: objetos inválidos / packages válidos ≠ 9 / consulta com ORA-"
 vm_run "$AI" FIX_QOUT="$FX/q-inv1.txt"
@@ -285,6 +289,9 @@ afirma "T9 recusa ANTES de qualquer run-command (0 chamadas)" test "$(chamadas_r
 afirma "T9 a recusa é por DROP TABLE (não pelo marcador ausente)" grep -q 'DROP TABLE' "$T/dep.out"
 deploy_run db-packages DB_PACKAGES_SQL_DIR="$T/sql-s3r"
 afirma "T9r arquivo real da S3 renomeado: EXIT≠0, 0 run-command, recusa por DROP TABLE" test "$DEP_RC" != 0 -a "$(chamadas_run)" = 0 -a "$(grep -c 'DROP TABLE' "$T/dep.out")" -ge 1
+# regressão do flake de SIGPIPE/pipefail: 10 repetições, todas têm de recusar
+rec=0; for i in 1 2 3 4 5 6 7 8 9 10; do deploy_run db-packages DB_PACKAGES_SQL_DIR="$T/sql-s3r"; if [ "$DEP_RC" != 0 ] && grep -q "DROP TABLE" "$T/dep.out" && [ "$(chamadas_run)" = 0 ]; then rec=$((rec + 1)); fi; done
+afirma "T9r recusa estável: $rec/10 repetições recusadas por DROP TABLE" test "$rec" = 10
 deploy_run db-packages DB_PACKAGES_SQL_DIR="$T/nao-existe"
 afirma "T9b diretório sem os arquivos: EXIT≠0, 0 run-command, instrução de clonar" test "$DEP_RC" != 0 -a "$(chamadas_run)" = 0 -a "$(grep -c 'git clone' "$T/dep.out")" -ge 1
 

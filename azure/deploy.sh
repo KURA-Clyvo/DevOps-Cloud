@@ -1002,17 +1002,19 @@ DB_PACKAGES_SENT_REMOVER="KURA_DB_PACKAGES_REMOVIDO_OK"
 validar_sql_packages() { # validar_sql_packages <arquivo> <instalar|remover> — recusa o .sql errado ANTES de qualquer chamada à Azure
   local f=$1 modo=$2
   [ -s "$f" ] || die "arquivo vazio ou ilegível: $f"
-  # O arquivo da Sprint 3 (2TDSPF_2026_CodigoSql_Integrantes.sql) tem, no BLOCO 1, DROP TABLE das 30 tabelas do
-  # KURA. Os arquivos de packages não têm nenhum DROP TABLE/DROP USER/TRUNCATE: qualquer ocorrência é motivo de recusa.
-  if tr -d '\r' < "$f" | grep -qiE 'drop[[:space:]]+(table|user)|truncate[[:space:]]+table'; then
+  # Contagem com grep -c (lê o arquivo inteiro): grep -q sai no 1º acerto e, num pipe com pipefail, o tr morre por
+  # SIGPIPE e o `if` dá falso — flake medido com o arquivo real da S3 (acerto na linha 132 de milhares).
+  local n_drop n_marca
+  n_drop="$(tr -d '\r' < "$f" | grep -ciE 'drop[[:space:]]+(table|user)|truncate[[:space:]]+table' || true)"
+  if [ "${n_drop:-0}" -gt 0 ]; then
     die "recusado: $f contém DROP TABLE/DROP USER/TRUNCATE. Parece o arquivo da Sprint 3 (CodigoSql), cujo BLOCO 1 derruba as 30 tabelas do schema KURA. Nada foi enviado à VM"
   fi
   if [ "$modo" = instalar ]; then
-    tr -d '\r' < "$f" | grep -qiE 'create or replace package body[[:space:]]+pkg_cobranca' \
-      || die "recusado: $f não parece o instalador de packages (sem o body de PKG_COBRANCA). Nada foi enviado à VM"
+    n_marca="$(tr -d '\r' < "$f" | grep -ciE 'create or replace package body[[:space:]]+pkg_cobranca' || true)"
+    [ "${n_marca:-0}" -gt 0 ] || die "recusado: $f não parece o instalador de packages (sem o body de PKG_COBRANCA). Nada foi enviado à VM"
   else
-    tr -d '\r' < "$f" | grep -q 'TRG_AUDITORIA_COBRANCA' \
-      || die "recusado: $f não parece o removedor de packages (sem TRG_AUDITORIA_COBRANCA). Nada foi enviado à VM"
+    n_marca="$(tr -d '\r' < "$f" | grep -c 'TRG_AUDITORIA_COBRANCA' || true)"
+    [ "${n_marca:-0}" -gt 0 ] || die "recusado: $f não parece o removedor de packages (sem TRG_AUDITORIA_COBRANCA). Nada foi enviado à VM"
   fi
 }
 
@@ -1200,7 +1202,7 @@ executar_db_packages() { # executar_db_packages <instalar|remover>
             --scripts "@$(caminho_nativo "$tmp")" --query 'value[0].message' -o tsv || true)"
   rm -f "$tmp"
   saida="$(printf '%s\n' "$saida" | tr -d '\r')"
-  if printf '%s\n' "$saida" | grep -qx "$sent"; then
+  if grep -qx "$sent" <<<"$saida"; then
     printf '%s\n' "$saida" | grep -vx "$sent" | sed -e '/^Enable succeeded:/d' -e '/^\[stdout\]$/d' -e '/^\[stderr\]$/d' | sed 's/^/    /' || true
     info "$sent ($modo concluído; o log completo está na VM em /opt/kura/logs/)"
     return 0
