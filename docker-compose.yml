@@ -130,6 +130,7 @@ services:
       KURA_MONGO_ROOT_USER: ${KURA_MONGO_ROOT_USER:-kura_root}
       KURA_MONGO_ROOT_PASSWORD: ${KURA_MONGO_ROOT_PASSWORD:?defina KURA_MONGO_ROOT_PASSWORD no .env (openssl rand -hex 24)}
       KURA_MONGO_JAVA_PASSWORD: ${KURA_MONGO_JAVA_PASSWORD:?defina KURA_MONGO_JAVA_PASSWORD no .env (openssl rand -hex 24)}
+      KURA_MONGO_DOTNET_PASSWORD: ${KURA_MONGO_DOTNET_PASSWORD:?defina KURA_MONGO_DOTNET_PASSWORD no .env (openssl rand -hex 24)}
     volumes:
       - ./mongo/init:/scripts:ro
     entrypoint: ["sh", "-c"]
@@ -178,6 +179,12 @@ services:
       # configuration["Storage:BasePath"] → env Storage__BasePath. Caminho gravável pelo
       # usuário não-root 'kura' — ver serviço kura-storage-init acima.
       Storage__BasePath: ${STORAGE_BASE_PATH:-/data/kura/receituarios}
+      # S4-NET-05: Mongo dos laudos. Usuario kura_dotnet (role kura_dotnet_runtime) vive em
+      # kura_docs (authSource). Senha hex (openssl rand -hex 24): dispensa URL-encode.
+      # SEM depends_on no kura-mongo/mongo-init de proposito (S3D-10): Mongo fora nao pode
+      # impedir o kura-api de subir (a API sobe e os laudos ficam indisponiveis).
+      Mongo__ConnectionString: mongodb://kura_dotnet:${KURA_MONGO_DOTNET_PASSWORD:?defina KURA_MONGO_DOTNET_PASSWORD no .env (openssl rand -hex 24)}@kura-mongo:27017/kura_docs?authSource=kura_docs&serverSelectionTimeoutMS=3000
+      Mongo__InitEnabled: "true"
       # FT-06 (KURA_BACKLOG_FOTO_PET.md). Binding confirmado em ServiceCollectionExtensions.cs:
       # configuration["Foto:UrlSecret"] → env Foto__UrlSecret — FAIL-FAST na partida (mesmo
       # padrão TASK-39 das outras chaves acima: sem valor de ≥32 bytes, o kura-api não sobe).
