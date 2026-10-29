@@ -121,13 +121,15 @@ O que foi conferido antes da entrega, e o que só um deploy real prova:
 | Nomes de variáveis, portas e health checks dos 3 serviços | Contra o código dos submódulos nos SHAs fixados (`/health`, `/api/actuator/health`, `DB_URL`, `SPRING_DATA_MONGODB_URI`…) |
 | Fase `web` | Executada com os dois apps reais: `expo export` com as URLs embutidas, `app.json` ajustado para SPA e `preparar_dist` |
 | Pacote da Luna | Gerado e listado (`src`, `requirements.txt`, `pyproject.toml`) |
+| `scripts/db-select.sh` | `bash -n`, `shellcheck` e execução ponta a ponta com `az`, `curl` e `docker` simulados: aceita `select` e `with`, recusa DML, DDL e vários comandos, a senha não aparece na saída, o `sqlplus` recebe `set transaction read only;` e erros `ORA-` devolvem código 1 |
 | Script de bootstrap da VM e compose embutido | Gerados, com `bash -n`, `shellcheck` e conferência estrutural do compose (job de CI) |
 | Versão atual do `deploy.sh` (fases `check` e `seed`, registro de providers, escolha de VM, `maven_pronto`) | `bash -n`, `shellcheck`, comandos `az` novos contra o `--help`, uso e `check` executados em Linux, correção automática de um arquivo em CRLF e os passos do CI contra ele |
 | Passos da pipeline do tutor (agente Windows) | Scripts PowerShell executados no PowerShell 7 com a lógica simulada (JDK, separação do `app.jar`, health check com 503 e depois 200) |
 
 Não foi possível executar neste ambiente, e ficam para o primeiro deploy: tudo que exige uma subscription (criação de
 recursos, referências do Key Vault, boot da VM, subida do Oracle e do Flyway), o `dotnet publish` (sem .NET SDK 10) e o
-`mvnw package` (sem acesso ao Maven Central). Também não foram executados, por falta de um Windows: os ramos do
+`mvnw package` (sem acesso ao Maven Central). O `db-select.sh` também não foi executado contra a VM real (o formato exato da mensagem do `az vm run-command` e o `sqlplus` do
+container só são provados no ambiente). Também não foram executados, por falta de um Windows: os ramos do
 `deploy.sh` específicos do Git Bash (`az.cmd`, `cygpath`, `--ssl-no-revoke`, conversão de caminhos) e o agente Windows da
 pipeline; a lógica é a mesma validada em Linux, mas a primeira execução no Windows é a prova.
 

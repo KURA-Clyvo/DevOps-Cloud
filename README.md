@@ -46,6 +46,7 @@ flowchart LR
 - [Configuração](#configuração)
 - [Segredos (Key Vault)](#segredos-key-vault)
 - [Operação](#operação)
+- [Evidência no banco por SELECT](#evidência-no-banco-por-select)
 - [Seeds e smoke](#seeds-e-smoke)
 - [CI no GitHub Actions](#ci-no-github-actions)
 - [Solução de problemas](#solução-de-problemas)
@@ -58,7 +59,7 @@ flowchart LR
 | `azure/deploy.sh` | Todos os comandos `az`: fases `check`, `infra`, `build`, `apps`, `web`, `urls`, `seed`, `all` e `destroy` |
 | `azure/staticwebapp.config.json` | Fallback de SPA, cache e headers dos 2 Static Web Apps |
 | `mongo/init/` | Role/usuário do Java no MongoDB (enviado à VM pelo `deploy.sh`) |
-| `scripts/` | Seeds de demonstração, `preflight-next.sh` e `smoke-contratos.sh` (ver [Seeds e smoke](#seeds-e-smoke)) |
+| `scripts/` | Seeds de demonstração, `preflight-next.sh`, `smoke-contratos.sh` (ver [Seeds e smoke](#seeds-e-smoke)) e `db-select.sh` (SELECT no Oracle sem expor a senha; ver [Evidência no banco por SELECT](#evidência-no-banco-por-select)) |
 | `docs/ARQUITETURA.md` | Arquitetura, rede, segredos e decisões |
 | `.github/workflows/ci.yml` | CI: valida os scripts e confere se os submódulos estão no `main` mais recente |
 | `.gitmodules` | 5 submódulos: 3 APIs e 2 apps RN. **O SHA gravado é a versão que o `build` compila** |
@@ -260,6 +261,24 @@ az snapshot create -g rg-kura -n snap-db-$(date +%F) \
 
 Não há SSH: o NSG nega toda entrada além de Oracle/MongoDB vindos da sub-rede dos Web Apps.
 
+## Evidência no banco por SELECT
+
+Para comprovar uma operação do CRUD (INSERT, UPDATE ou DELETE feitos pela aplicação) com um SELECT dentro do banco, sem SSH e
+sem a senha aparecer na tela (útil para gravar o vídeo):
+
+```bash
+bash scripts/db-select.sh --tabelas                 # tabelas do schema
+bash scripts/db-select.sh --colunas PET             # colunas de uma tabela
+bash scripts/db-select.sh "select * from tutor"     # um SELECT qualquer
+bash scripts/db-select.sh -f consulta.sql           # SELECT guardado em arquivo
+```
+
+O script aciona a VM com `az vm run-command`; lá dentro ele lê a senha do Key Vault com a identidade gerenciada da VM e
+abre o `sqlplus` no container do Oracle. A transação é **somente leitura**: INSERT, UPDATE e DELETE são recusados pelo próprio
+banco (`ORA-01456`), e o script só aceita um `SELECT` (ou `WITH`) por vez. Cada consulta leva alguns segundos. Se aparecer
+`ORA-` ou `SP2-`, o script termina com erro e mostra a mensagem do Oracle. Usa `PREFIX`, `RG`, `VM_NAME`, `ORACLE_SERVICE`,
+`ORACLE_APP_USER` e `KV_NAME` com os mesmos padrões do `deploy.sh`.
+
 ## Seeds e smoke
 
 Populam e verificam as APIs **por HTTP real**. Com a stack no ar (`apps` concluído), a fase `seed` descobre as URLs, lê a
@@ -290,7 +309,7 @@ funcionam contra o Azure.
 
 | Job | O que confere |
 |---|---|
-| *Validate scripts and embedded compose* | `bash -n` e `shellcheck` do `deploy.sh` e de `scripts/`; JSON do Static Web Apps; sintaxe do script de bootstrap da VM gerado pelo `deploy.sh`; estrutura do `docker-compose.yml` embutido (YAML válido, variáveis todas definidas no `.env`, sem valores padrão de segredo), tudo sem Docker e sem Azure |
+| *Validate scripts and embedded compose* | `bash -n` do `deploy.sh` e de `scripts/`, `shellcheck` do `deploy.sh` e do `db-select.sh`; JSON do Static Web Apps; sintaxe do script de bootstrap da VM gerado pelo `deploy.sh`; estrutura do `docker-compose.yml` embutido (YAML válido, variáveis todas definidas no `.env`, sem valores padrão de segredo), tudo sem Docker e sem Azure |
 | *Check submodule pins against upstream main* | Falha se algum dos 5 submódulos estiver fixado num commit diferente do `main` do repositório de origem |
 
 ## Solução de problemas
