@@ -1018,6 +1018,7 @@ validar_sql_packages() { # validar_sql_packages <arquivo> <instalar|remover> —
 
 montar_script_db_vm() { # montar_script_db_vm <instalar|remover> <nome-do-arquivo> <sha256> <sql-gzip-base64> — script que roda DENTRO da VM
   # O run-command executa com /bin/sh (dash): reexecuta no bash, igual ao bootstrap.
+  # shellcheck disable=SC2016  # literal de propósito: é o texto da 1ª linha do script da VM
   printf '%s\n' '[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"'
   printf 'PKG_MODO=%q\nKV_NAME=%q\nORACLE_SERVICE=%q\nORACLE_APP_USER=%q\nPKG_SQL_NAME=%q\nPKG_SQL_SHA256=%q\nPKG_SQL_B64=%q\n' \
     "$1" "$KV_NAME" "$ORACLE_SERVICE" "$ORACLE_APP_USER" "$2" "$3" "$4"
@@ -1058,8 +1059,8 @@ docker cp "$SQL_LOCAL" "$CONT:/tmp/$PKG_SQL_NAME" >/dev/null
 # scripts/db-select.sh:88-92, conferido em 2026-10-29 no DevOps-Cloud@9f986f8
 # (reproduz com: git show 9f986f8:azure/deploy.sh | sed -n '339,350p'; git show 9f986f8:scripts/db-select.sh | sed -n '88,92p').
 segredo() {
-  local t v i
-  for i in $(seq 1 10); do
+  local t v
+  for _ in $(seq 1 10); do
     if t="$(curl -sf -H 'Metadata:true' 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net' \
             | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')" \
        && v="$(curl -sf -H "Authorization: Bearer $t" "https://${KV_NAME}.vault.azure.net/secrets/$1?api-version=7.4" \
@@ -1173,10 +1174,9 @@ VM_SCRIPT
 }
 
 executar_db_packages() { # executar_db_packages <instalar|remover>
-  local modo=$1 nome sent f sha b64 tmp saida
+  local modo=$1 nome sent f sha b64 tmp saida c
   exigir_ferramentas
-  command -v gzip >/dev/null 2>&1 && command -v base64 >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 \
-    || die "gzip, base64 e sha256sum são necessários (Git Bash e Linux já trazem)"
+  for c in gzip base64 sha256sum; do command -v "$c" >/dev/null 2>&1 || die "'$c' é necessário (Git Bash e Linux já trazem)"; done
   if [ "$modo" = instalar ]; then nome="$DB_PACKAGES_ARQ_INSTALAR"; sent="$DB_PACKAGES_SENT_INSTALAR"
   else nome="$DB_PACKAGES_ARQ_REMOVER"; sent="$DB_PACKAGES_SENT_REMOVER"; fi
   f="$DB_PACKAGES_SQL_DIR/$nome"

@@ -170,8 +170,8 @@ gerar_scripts() {
 }
 
 echo "== T0: pré-condições"
-bash -n "$DEPLOY" && ok "bash -n azure/deploy.sh" || nok "bash -n azure/deploy.sh"
-bash -n "$AQUI/db-packages.test.sh" && ok "bash -n do próprio teste" || nok "bash -n do próprio teste"
+if bash -n "$DEPLOY"; then ok "bash -n azure/deploy.sh"; else nok "bash -n azure/deploy.sh"; fi
+if bash -n "$AQUI/db-packages.test.sh"; then ok "bash -n do próprio teste"; else nok "bash -n do próprio teste"; fi
 afirma "o az do PATH de teste é o falso" test "$(env PATH="$STUBS:$PATH" bash -c 'command -v az')" = "$STUBS/az"
 gerar_scripts
 afirma "script de instalação gerado (gancho DB_PACKAGES_SALVAR_SCRIPT)" test -s "$T/vm-instalar.sh"
@@ -305,7 +305,7 @@ afirma "T12 0 ocorrências na saída da VM" test "$(ocorrencias "$T/vm.out" "$SE
 afirma "T12 0 ocorrências no log gravado" test "$(cat "$T"/opt/logs/*.log | grep -cF -- "$SENHA" || true)" = 0
 vm_run "$AI" FIX_LOG="$FX/senha.log"
 afirma "T12 log-fixture que contém a senha: falha" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0
-afirma "T12 o log foi apagado" test "$(ls "$T"/opt/logs/*.log 2>/dev/null | wc -l | tr -d ' ')" = 0
+afirma "T12 o log foi apagado" test "$(find "$T/opt/logs" -name '*.log' 2>/dev/null | wc -l | tr -d ' ')" = 0
 afirma "T12 a senha não foi impressa" test "$(ocorrencias "$T/vm.out" "$SENHA")" = 0
 afirma "T12 o resumo diz 'log apagado'" grep -q 'log apagado' "$T/vm.out"
 
@@ -318,11 +318,12 @@ afirma "T13 falha ANTES do sqlplus (nenhum sqlplus no argv do docker)" test "$(g
 afirma "T13 a mensagem cita o sha256" grep -q 'sha256' "$T/vm.out"
 
 echo "== T14: o script da VM sob /bin/sh e a reexecução em bash"
+# shellcheck disable=SC2016  # literal de propósito
 afirma "T14 primeira linha = a do bootstrap (reexecuta no bash)" test "$(head -n 1 "$AI")" = '[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"'
 if command -v dash >/dev/null 2>&1; then
   reset; env "${BASE[@]}" dash "$AI" > "$T/vm.out" 2>&1; VM_RC=$?
   afirma "T14 dash script: EXIT=0 e sentinela na última linha (reexecutou no bash)" test "$VM_RC" = 0 -a "$(ultima_linha "$T/vm.out")" = "$SENT_I"
-  dash -n "$AI" && ok "T14 dash -n (sintaxe da 1ª linha em POSIX sh)" || nok "T14 dash -n"
+  if dash -n "$AI"; then ok "T14 dash -n (sintaxe da 1ª linha em POSIX sh)"; else nok "T14 dash -n"; fi
 else
   nok "T14 dash indisponível nesta máquina" "NÃO VERIFICADO sob dash; ver sh abaixo"
 fi
