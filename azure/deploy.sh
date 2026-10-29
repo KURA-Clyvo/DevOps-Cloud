@@ -1130,9 +1130,17 @@ RESUMOS_FALHOU=$((RESUMOS_TOTAL - RESUMOS_OK))
 SENHA_NO_LOG="$(conta -F -- "$senha" "$LOG")"
 
 # 5) sqlplus nº 2: estado dos objetos (user_objects). Fecha em falha: sem a linha-resposta, a contagem é inválida.
+# S3_ANTIGAS: as rotinas standalone da Sprint 3 que o instalador remove — o BLOCO 1 (FN_CALCULAR_SCORE_URGENCIA) e o
+# BLOCO 9 (as outras 3). Prova pelo ESTADO do schema, não pelo log, que elas saíram. Âncora (regra 11): criadas em
+# Mastering-Relational-Database/src/2TDSPF_2026_CodigoSql_Integrantes.sql:1474,1615,1791,1923 (arquivo 37d7169) e
+# removidas em 2TDSPF_2026_Packages_Integrantes.sql:138,1486-1488 (arquivo 6e57ec5), conferido em 2026-10-29; reproduz:
+# grep -n "remove('" src/2TDSPF_2026_Packages_Integrantes.sql
+S3_ANTIGAS="((object_type = 'FUNCTION' and object_name in ('FN_COBRANCA_JSON', 'FN_CALCULAR_SCORE_URGENCIA')) or (object_type = 'PROCEDURE' and object_name in ('PRC_LISTAR_COBRANCAS_JSON', 'PRC_RELATORIO_COBRANCAS')))"
 if [ "$PKG_MODO" = instalar ]; then
   CONSULTA="select 'INVALIDO:' || object_type || ' ' || object_name || ' ' || status from user_objects where status <> 'VALID' order by object_type, object_name;
-select 'PKGVALIDOS:' || count(*) from user_objects where status = 'VALID' and ((object_type in ('PACKAGE', 'PACKAGE BODY') and object_name in ('PKG_KURA_LOG', 'PKG_TRIAGEM', 'PKG_COBRANCA', 'PKG_AUDITORIA')) or (object_type = 'TRIGGER' and object_name = 'TRG_AUDITORIA_COBRANCA'));"
+select 'PKGVALIDOS:' || count(*) from user_objects where status = 'VALID' and ((object_type in ('PACKAGE', 'PACKAGE BODY') and object_name in ('PKG_KURA_LOG', 'PKG_TRIAGEM', 'PKG_COBRANCA', 'PKG_AUDITORIA')) or (object_type = 'TRIGGER' and object_name = 'TRG_AUDITORIA_COBRANCA'));
+select 'S3RESTANTE:' || object_type || ' ' || object_name from user_objects where $S3_ANTIGAS order by object_type, object_name;
+select 'S3RESTANTES:' || count(*) from user_objects where $S3_ANTIGAS;"
 else
   CONSULTA="select 'RESTANTES:' || count(*) from user_objects where object_type in ('PACKAGE', 'PACKAGE BODY', 'TRIGGER') and object_name in ('PKG_KURA_LOG', 'PKG_TRIAGEM', 'PKG_COBRANCA', 'PKG_AUDITORIA', 'TRG_AUDITORIA_COBRANCA');"
 fi
@@ -1143,11 +1151,13 @@ SAIDA_Q="$(printf 'whenever sqlerror exit 1\nwhenever oserror exit 2\nconnect %s
 SAIDA_Q="$(printf '%s\n' "$SAIDA_Q" | tr -d '\r')"
 ORA_Q="$(printf '%s\n' "$SAIDA_Q" | conta -E '(ORA|SP2)-[0-9]+')"
 SENHA_NA_CONSULTA="$(printf '%s\n' "$SAIDA_Q" | conta -F -- "$senha")"
-INVALIDOS=-1; PACKAGES_VALIDOS=-1; RESTANTES=-1
+INVALIDOS=-1; PACKAGES_VALIDOS=-1; RESTANTES=-1; S3_RESTANTES=-1
 if [ "$ec_q" = 0 ] && [ "$ORA_Q" = 0 ]; then
   if [ "$PKG_MODO" = instalar ]; then
     pv="$(printf '%s\n' "$SAIDA_Q" | sed -n 's/^PKGVALIDOS:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
     if [ -n "$pv" ]; then PACKAGES_VALIDOS="$pv"; INVALIDOS="$(printf '%s\n' "$SAIDA_Q" | conta -E '^INVALIDO:')"; fi
+    s3="$(printf '%s\n' "$SAIDA_Q" | sed -n 's/^S3RESTANTES:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
+    if [ -n "$s3" ]; then S3_RESTANTES="$s3"; fi
   else
     rs="$(printf '%s\n' "$SAIDA_Q" | sed -n 's/^RESTANTES:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
     if [ -n "$rs" ]; then RESTANTES="$rs"; fi
@@ -1169,6 +1179,7 @@ if [ "$PKG_MODO" = instalar ]; then
   [ "$RESUMOS_FALHOU" = 0 ]     || MOTIVOS="$MOTIVOS RESUMOS_FALHOU"
   [ "$INVALIDOS" = 0 ]          || MOTIVOS="$MOTIVOS INVALIDOS"
   [ "$PACKAGES_VALIDOS" = 9 ]   || MOTIVOS="$MOTIVOS PACKAGES_VALIDOS"
+  [ "$S3_RESTANTES" = 0 ]       || MOTIVOS="$MOTIVOS S3_RESTANTES"
 else
   [ "$ORA_FORA_DEMO" = 0 ]      || MOTIVOS="$MOTIVOS ORA_NO_LOG"
   [ "$RESTANTES" = 0 ]          || MOTIVOS="$MOTIVOS RESTANTES"
@@ -1184,6 +1195,7 @@ if [ "$PKG_MODO" = instalar ]; then
   echo "SEQUENCIA_DEMOS fase=$SEQ_FASE/7 desordem=$SEQ_DESORDEM"
   echo "RESUMOS_OK=$RESUMOS_OK RESUMOS_FALHOU=$RESUMOS_FALHOU"
   echo "INVALIDOS=$INVALIDOS PACKAGES_VALIDOS=$PACKAGES_VALIDOS"
+  echo "S3_RESTANTES=$S3_RESTANTES"
 else
   echo "SEQUENCIA fase=$SEQ_FASE/7 desordem=$SEQ_DESORDEM"
   echo "RESTANTES=$RESTANTES"
@@ -1200,7 +1212,7 @@ if [ -n "$MOTIVOS" ]; then
   if [ "$SENHA_NO_LOG" = 0 ]; then
     {
       lf | grep -E '(ORA|SP2)-[0-9]+|FALHOU|^RESUMO' | grep -v 'KURA_DB_PACKAGES' | tail -n 15 | cut -c1-200 || true
-      printf '%s\n' "$SAIDA_Q" | grep -E '^INVALIDO:|(ORA|SP2)-[0-9]+' | head -n 10 | cut -c1-200 || true
+      printf '%s\n' "$SAIDA_Q" | grep -E '^INVALIDO:|^S3RESTANTE:|(ORA|SP2)-[0-9]+' | head -n 10 | cut -c1-200 || true
     } | head -c 2500
   fi
   exit 1

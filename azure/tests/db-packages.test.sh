@@ -197,12 +197,15 @@ gerar_log_remover() {
 ( L_ORA_FORA=1 gerar_log ) > "$FX/ora-fora.log"
 ( gerar_log_remover ) > "$FX/rem-ok.log"
 ( L_ORA_FORA=1 gerar_log_remover ) > "$FX/rem-ora.log"
-echo "PKGVALIDOS:9" > "$FX/q-ok.txt"
-printf 'INVALIDO:VIEW VW_VACINAS_VENCENDO INVALID\nPKGVALIDOS:9\n' > "$FX/q-inv1.txt"
-printf 'PKGVALIDOS:8\n' > "$FX/q-pk8.txt"
+# Toda resposta de consulta do instalar traz S3RESTANTES:0 (nenhuma rotina antiga da S3), para que cada caso abaixo
+# falhe SÓ pelo próprio motivo; os casos de rotina antiga presente estão no T20.
+printf 'PKGVALIDOS:9\nS3RESTANTES:0\n' > "$FX/q-ok.txt"
+printf 'INVALIDO:VIEW VW_VACINAS_VENCENDO INVALID\nPKGVALIDOS:9\nS3RESTANTES:0\n' > "$FX/q-inv1.txt"
+printf 'PKGVALIDOS:8\nS3RESTANTES:0\n' > "$FX/q-pk8.txt"
 echo "ORA-01017: invalid username/password; logon denied" > "$FX/q-ora.txt"
 echo "RESTANTES:0" > "$FX/qr-ok.txt"
 printf 'PKGVALIDOS:9
+S3RESTANTES:0
 connected as KURA/%s
 ' "$SENHA" > "$FX/q-senha.txt"
 echo "RESTANTES:1" > "$FX/qr-1.txt"
@@ -512,7 +515,7 @@ echo "== T18: M-3 — SP2-, ORA_Q e ec_q da consulta (sondas P12/P14/P15 da G2)"
 vm_run "$AI" FIX_LOG="$FX/p12.log"
 afirma "T18 P12 SP2- fora da demo num log completo: falha" sent_no
 afirma "T18 P12 o resumo mostra ORA_FORA_DEMO=1" grep -q '^ORA_FORA_DEMO=1$' "$T/vm.out"
-printf 'ORA-04068: existing state of packages has been discarded\nPKGVALIDOS:9\n' > "$FX/q-ora9.txt"
+printf 'ORA-04068: existing state of packages has been discarded\nPKGVALIDOS:9\nS3RESTANTES:0\n' > "$FX/q-ora9.txt"
 vm_run "$AI" FIX_QOUT="$FX/q-ora9.txt"
 afirma "T18 P14 consulta com ORA- mas PKGVALIDOS:9 e EXIT=0: falha (o ORA_Q da consulta)" sent_no
 vm_run "$AI" FIX_EXIT2=1
@@ -523,7 +526,6 @@ afirma "T18 controle: o mesmo log e a mesma consulta sem o defeito: sucesso" sen
 echo "== T19: R-1 da re-G2 — fim do arquivo exigido 1x, na posição certa (instalar e remover)"
 FIM_I="=== FIM DO ARQUIVO $ARQ_INST ==="; FIM_R="=== FIM DO ARQUIVO $ARQ_REM ==="
 sent_no_motivo() { sent_no && grep -q "^FALHOU:.* FIM_DO_ARQUIVO" "$T/vm.out"; }
-rem_ok() { test "$VM_RC" = 0 -a "$(ultima_linha "$T/vm.out")" = "$SENT_R"; }
 rem_no_motivo() { test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_R")" = 0 && grep -q "^FALHOU:.* FIM_DO_ARQUIVO" "$T/vm.out"; }
 # Q8 da re-G2: log cortado logo depois do FIM da demo 03 (sem o BLOCO 8 final nem o fim do arquivo)
 ( gerar_log | awk -v f="$M3_FIM" '{print} $0==f{exit}' ) > "$FX/r1-corte.log"
@@ -587,6 +589,35 @@ if [ -f "$MAST/$ARQ_INST" ] && [ -f "$MAST/$ARQ_REM" ]; then
   afirma "T19 âncora: o .sql do Remover imprime '$FIM_R' 1x" test "$(grep -cxF "PROMPT $FIM_R" "$MAST/$ARQ_REM")" = 1
 else
   echo "PULADO: âncora do fim do arquivo (Mastering-Relational-Database não está ao lado)"
+fi
+
+echo "== T20: rotinas standalone da Sprint 3 têm de ter saído do schema (prova pelo estado, não pelo log)"
+sent_no_s3() { sent_no && grep -q "^FALHOU:.* S3_RESTANTES" "$T/vm.out"; }
+for r in "FUNCTION FN_COBRANCA_JSON" "FUNCTION FN_CALCULAR_SCORE_URGENCIA" "PROCEDURE PRC_LISTAR_COBRANCAS_JSON" "PROCEDURE PRC_RELATORIO_COBRANCAS"; do
+  printf 'PKGVALIDOS:9\nS3RESTANTE:%s\nS3RESTANTES:1\n' "$r" > "$FX/q-s3.txt"
+  vm_run "$AI" FIX_QOUT="$FX/q-s3.txt"
+  afirma "T20 instalar: $r ainda presente: falha com S3_RESTANTES" sent_no_s3
+  afirma "T20 instalar: o resumo mostra S3_RESTANTES=1 e a falha nomeia $r" test "$(grep -c '^S3_RESTANTES=1$' "$T/vm.out")$(grep -cxF "S3RESTANTE:$r" "$T/vm.out")" = 11
+done
+printf 'PKGVALIDOS:9\nS3RESTANTE:FUNCTION FN_CALCULAR_SCORE_URGENCIA\nS3RESTANTE:FUNCTION FN_COBRANCA_JSON\nS3RESTANTE:PROCEDURE PRC_LISTAR_COBRANCAS_JSON\nS3RESTANTE:PROCEDURE PRC_RELATORIO_COBRANCAS\nS3RESTANTES:4\n' > "$FX/q-s3-todas.txt"
+vm_run "$AI" FIX_QOUT="$FX/q-s3-todas.txt"
+afirma "T20 instalar: as 4 ainda presentes (BLOCOS 1 e 9 não rodaram): falha com S3_RESTANTES" sent_no_s3
+printf 'PKGVALIDOS:9\n' > "$FX/q-s3-sem.txt"
+vm_run "$AI" FIX_QOUT="$FX/q-s3-sem.txt"
+afirma "T20 instalar: consulta sem a linha S3RESTANTES: falha fechada (S3_RESTANTES=-1)" test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0 -a "$(grep -c '^S3_RESTANTES=-1$' "$T/vm.out")" = 1
+vm_run "$AI" FIX_QOUT="$FX/q-ok.txt"
+afirma "T20 instalar controle: nenhuma rotina antiga: sucesso e S3_RESTANTES=0" test "$(ultima_linha "$T/vm.out")" = "$SENT_I" -a "$(grep -c '^S3_RESTANTES=0$' "$T/vm.out")" = 1
+afirma "T20 a consulta enviada ao sqlplus pergunta pelas 4 rotinas com o tipo certo" \
+  test "$(grep -c "object_type = 'FUNCTION' and object_name in ('FN_COBRANCA_JSON', 'FN_CALCULAR_SCORE_URGENCIA')" "$T/stdin/stdin2")$(grep -c "object_type = 'PROCEDURE' and object_name in ('PRC_LISTAR_COBRANCAS_JSON', 'PRC_RELATORIO_COBRANCAS')" "$T/stdin/stdin2")" = 22
+if [ -f "$MAST/$ARQ_INST" ] && [ -f "$MAST/2TDSPF_2026_CodigoSql_Integrantes.sql" ]; then
+  # âncora anti-invenção: cada nome+tipo checado é CRIADO pela S3 e REMOVIDO pelo instalador da S4
+  for r in "FUNCTION FN_COBRANCA_JSON" "FUNCTION FN_CALCULAR_SCORE_URGENCIA" "PROCEDURE PRC_LISTAR_COBRANCAS_JSON" "PROCEDURE PRC_RELATORIO_COBRANCAS"; do
+    tp="${r%% *}"; nm="${r#* }"
+    afirma "T20 âncora: a S3 cria $r e o instalador remove ($tp)" \
+      test "$(grep -c "^CREATE OR REPLACE $tp $nm (" "$MAST/2TDSPF_2026_CodigoSql_Integrantes.sql")$(grep -cE "remove\('$tp', +'$nm'\)" "$MAST/$ARQ_INST")" = 11
+  done
+else
+  echo "PULADO: âncora das rotinas da S3 (Mastering-Relational-Database não está ao lado)"
 fi
 
 echo "== extras"
