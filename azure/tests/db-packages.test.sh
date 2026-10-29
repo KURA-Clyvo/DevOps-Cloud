@@ -487,6 +487,12 @@ afirma "T17 entre-demos controle: 1 ORA- e as contagens globais todas certas (2 
 vm_run "$AI" FIX_LOG="$FX/entre.log"
 afirma "T17 ORA- entre as demos (fase 3): falha" sent_no
 afirma "T17 ORA- entre as demos: o resumo mostra ORA_FORA_DEMO=1" grep -q '^ORA_FORA_DEMO=1$' "$T/vm.out"
+# Id errado no INICIO (04 e 05 no lugar de 02 e 03; os FIM continuam 02 e 03): contagens globais e fase certas, id errado
+( gerar_log | sed -e "s/^\(#*  DEMO S4-DB-\)02\(: INICIO\)/\104\2/" -e "s/^\(#*  DEMO S4-DB-\)03\(: INICIO\)/\105\2/" ) > "$FX/id-errado.log"
+afirma "T17 id errado controle: INICIO 04 e 05 presentes, nenhum INICIO 02/03" \
+  test "$(grep -c 'S4-DB-04: INICIO' "$FX/id-errado.log")$(grep -c 'S4-DB-05: INICIO' "$FX/id-errado.log")$(grep -c 'S4-DB-0[23]: INICIO' "$FX/id-errado.log")" = 110
+vm_run "$AI" FIX_LOG="$FX/id-errado.log"
+afirma "T17 INICIO com id diferente de 02/03: falha" sent_no
 # Fora de ordem: bloco da demo 03 inteiro antes do da demo 02 (cada marcador 1x, RESUMO 1x por demo, sem ORA-)
 { echo "=== BLOCO 7: TRG_AUDITORIA_COBRANCA criada ==="; echo "$M3_INI"; echo "RESUMO: 70 OK, 0 FALHOU"; echo "$M3_FIM"
   echo "$M2_INI"; echo "RESUMO: 60 OK, 0 FALHOU"; echo "$M2_FIM"; echo "=== FIM DO ARQUIVO $ARQ_INST ==="; } > "$FX/ordem.log"
