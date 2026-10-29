@@ -699,7 +699,8 @@ configurar_apps() {
   kv_gravar tutor-mongodb-uri \
     "mongodb://kura_java:$(kv_ler mongo-java-password)@${ip}:27017/kura_docs?authSource=kura_docs&serverSelectionTimeoutMS=2000"
   # S4-NET-05: usuario kura_dotnet (role kura_dotnet_runtime: escreve laudos, le documentos_tutor).
-  kv_gravar dotnet-mongodb-uri \n    "mongodb://kura_dotnet:$(kv_ler mongo-dotnet-password)@${ip}:27017/kura_docs?authSource=kura_docs&serverSelectionTimeoutMS=3000"
+  kv_gravar dotnet-mongodb-uri \
+    "mongodb://kura_dotnet:$(kv_ler mongo-dotnet-password)@${ip}:27017/kura_docs?authSource=kura_docs&serverSelectionTimeoutMS=3000"
 
   # .NET — clinica-api
   az webapp config appsettings set -g "$RG" -n "$APP_CLINICA" -o none --settings \
@@ -713,7 +714,8 @@ configurar_apps() {
     "Daily__ApiKey=$(kvref_opcional daily-api-key)" \
     "CORS_ALLOWED_ORIGINS=$cors" "Storage__BasePath=$STORAGE_BASE_PATH" \
     "Foto__UrlSecret=$(kvref foto-url-secret)" "Foto__UrlBase=$clinica_url" \
-    "Convite__UrlBaseAppTutor=$web_tutor" \n    "Mongo__ConnectionString=$(kvref dotnet-mongodb-uri)" "Mongo__InitEnabled=true"
+    "Convite__UrlBaseAppTutor=$web_tutor" \
+    "Mongo__ConnectionString=$(kvref dotnet-mongodb-uri)" "Mongo__InitEnabled=true"
 
   # Java — tutor-api (o Flyway cria o schema Oracle ao subir)
   az webapp config appsettings set -g "$RG" -n "$APP_TUTOR" -o none --settings \
