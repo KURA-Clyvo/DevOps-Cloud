@@ -47,6 +47,7 @@ flowchart LR
 - [Segredos (Key Vault)](#segredos-key-vault)
 - [Operação](#operação)
 - [Evidência no banco por SELECT](#evidência-no-banco-por-select)
+- [Packages do banco (Sprint 4)](#packages-do-banco-sprint-4)
 - [Seeds e smoke](#seeds-e-smoke)
 - [CI no GitHub Actions](#ci-no-github-actions)
 - [Solução de problemas](#solução-de-problemas)
@@ -56,7 +57,7 @@ flowchart LR
 
 | Caminho | Para quê |
 |---|---|
-| `azure/deploy.sh` | Todos os comandos `az`: fases `check`, `infra`, `build`, `apps`, `web`, `urls`, `seed`, `all` e `destroy` |
+| `azure/deploy.sh` | Todos os comandos `az`: fases `check`, `infra`, `build`, `apps`, `web`, `urls`, `seed`, `db-packages`, `db-packages-remover`, `all` e `destroy` |
 | `azure/staticwebapp.config.json` | Fallback de SPA, cache e headers dos 2 Static Web Apps |
 | `mongo/init/` | Role/usuário do Java no MongoDB (enviado à VM pelo `deploy.sh`) |
 | `scripts/` | Seeds de demonstração, `preflight-next.sh`, `smoke-contratos.sh` (ver [Seeds e smoke](#seeds-e-smoke)) e `db-select.sh` (SELECT no Oracle sem expor a senha; ver [Evidência no banco por SELECT](#evidência-no-banco-por-select)) |
@@ -278,6 +279,42 @@ abre o `sqlplus` no container do Oracle. A transação é **somente leitura**: I
 banco (`ORA-01456`), e o script só aceita um `SELECT` (ou `WITH`) por vez. Cada consulta leva alguns segundos. Se aparecer
 `ORA-` ou `SP2-`, o script termina com erro e mostra a mensagem do Oracle. Usa `PREFIX`, `RG`, `VM_NAME`, `ORACLE_SERVICE`,
 `ORACLE_APP_USER` e `KV_NAME` com os mesmos padrões do `deploy.sh`.
+
+## Packages do banco (Sprint 4)
+
+Instala (ou remove) os packages PL/SQL do schema `KURA` no Oracle da VM, por **uma** chamada `az vm run-command`:
+
+```bash
+azure/deploy.sh db-packages                       # instala PKG_KURA_LOG, PKG_TRIAGEM, PKG_COBRANCA, PKG_AUDITORIA e a trigger
+CONFIRMA=sim azure/deploy.sh db-packages-remover  # saída de emergência: remove a trigger e os 4 packages
+```
+
+- **Pré-requisito:** o repo `Mastering-Relational-Database` clonado ao lado deste (não é submódulo). O script lê
+  `../Mastering-Relational-Database/src/2TDSPF_2026_Packages_Integrantes.sql` (e `..._Remover.sql`); outra pasta:
+  `DB_PACKAGES_SQL_DIR=<pasta src>`. Antes de enviar, imprime o `sha256` do arquivo e o commit dele.
+- **O que a fase faz:** o `.sql` vai embutido (gzip + base64) no script da VM, que confere o `sha256`, copia para o container
+  `kura_oracle_db`, lê a senha do schema no Key Vault pela identidade da VM e roda o `sqlplus` com a senha **só por stdin**.
+  O arquivo da Sprint 3 (`2TDSPF_2026_CodigoSql_Integrantes.sql`, cujo BLOCO 1 derruba as 30 tabelas) **nunca** é enviado: a fase
+  recusa, antes de qualquer chamada, qualquer arquivo com `DROP TABLE`, `DROP USER` ou `TRUNCATE TABLE`.
+- **O que a sentinela prova:** o `run-command` devolve só os últimos 4.096 bytes e seu código de saída não é confiável, então a
+  decisão é uma linha exata (`KURA_DB_PACKAGES_OK` ou `KURA_DB_PACKAGES_REMOVIDO_OK`) que o **próprio script da VM** imprime por
+  último, **depois** de ler o log inteiro. Instalar: `sqlplus` com `EXIT=0`, nenhum `ORA-`/`SP2-` fora das regiões
+  `DEMO S4-DB-0x: INICIO … FIM`, as 2 demonstrações abertas e fechadas, as 2 linhas `RESUMO: n OK, 0 FALHOU`, nenhum objeto
+  inválido no schema, os 9 objetos (4 specs, 4 bodies e a trigger) `VALID` e a senha ausente do log. Remover: `EXIT=0`, nenhum
+  `ORA-`, os 5 objetos ausentes de `user_objects` e a senha ausente do log.
+- **Log na VM:** `/opt/kura/logs/db-packages-AAAAMMDD-HHMMSS.log` (`db-packages-remover-…` no remover), modo `600`. Para ler,
+  um segundo run-command, por exemplo `az vm run-command invoke -g rg-kura -n vm-kura-db --command-id RunShellScript --scripts 'tail -n 80 $(ls -t /opt/kura/logs/db-packages-*.log | head -n 1)'`.
+- **Efeitos colaterais da demonstração:** a instalação roda a demonstração embutida no `.sql`, que grava cerca de 6 linhas
+  sintéticas em `LOG_ERRO` por execução e consome valores de sequence (`COBRANCA` e `AUDITORIA_COBRANCA` ficam como estavam).
+  Ela pressupõe que **nenhuma outra sessão** grave em `COBRANCA` durante a execução: combine uma **janela** antes de rodar
+  num ambiente com uso.
+- **`db-packages-remover` derruba o financeiro:** sem os packages, a API da clínica (.NET) devolve `503` na exportação JSON e no
+  relatório Oracle. Por isso exige `CONFIRMA=sim`. Tabelas, sequences e a trilha de auditoria já gravada não são tocadas.
+- **Chamadas à Azure:** cada fase faz **1** `az vm run-command invoke`, mais as chamadas `az account show` do carregamento do
+  script e da checagem de ferramentas (2 no teste com o `az` falso, sem `NAME_SUFFIX`/`AZURE_SUBSCRIPTION`).
+- **Testes sem Azure e sem Oracle:** `bash azure/tests/db-packages.test.sh` (az, docker, curl e python3 falsos; roda o script
+  da VM localmente contra logs-fixture). O que **não** foi exercitado: execução contra Oracle real (local ou na VM), o limite
+  de tamanho de entrada do `run-command` e o `az` real no Windows com o arquivo gerado.
 
 ## Seeds e smoke
 
