@@ -480,6 +480,13 @@ afirma "T17 P5 o resumo mostra SEQUENCIA_DEMOS com desordem" grep -qE 'SEQUENCIA
 afirma "T17 P8 controle: 2 FIM (ambos da 02), 2 INICIO, 1 ORA-" test "$(grep -c ': FIM ' "$FX/p8.log")$(grep -c ': INICIO ' "$FX/p8.log")$(grep -c 'ORA-' "$FX/p8.log")" = 221
 vm_run "$AI" FIX_LOG="$FX/p8.log"
 afirma "T17 P8 FIM duplicado + demo sem FIM escondendo ORA-: falha" sent_no
+# ORA- ENTRE as duas demos (depois do FIM da 02, antes do INICIO da 03): fora de região, tem de reprovar
+( gerar_log | awk -v f="$M2_FIM" '{print} $0==f{print "ORA-01555: snapshot too old"}' ) > "$FX/entre.log"
+afirma "T17 entre-demos controle: 1 ORA- e as contagens globais todas certas (2 INICIO, 2 FIM)" \
+  test "$(grep -c 'ORA-' "$FX/entre.log")$(grep -c ': INICIO ' "$FX/entre.log")$(grep -c ': FIM ' "$FX/entre.log")" = 122
+vm_run "$AI" FIX_LOG="$FX/entre.log"
+afirma "T17 ORA- entre as demos (fase 3): falha" sent_no
+afirma "T17 ORA- entre as demos: o resumo mostra ORA_FORA_DEMO=1" grep -q '^ORA_FORA_DEMO=1$' "$T/vm.out"
 # Fora de ordem: bloco da demo 03 inteiro antes do da demo 02 (cada marcador 1x, RESUMO 1x por demo, sem ORA-)
 { echo "=== BLOCO 7: TRG_AUDITORIA_COBRANCA criada ==="; echo "$M3_INI"; echo "RESUMO: 70 OK, 0 FALHOU"; echo "$M3_FIM"
   echo "$M2_INI"; echo "RESUMO: 60 OK, 0 FALHOU"; echo "$M2_FIM"; echo "=== FIM DO ARQUIVO $ARQ_INST ==="; } > "$FX/ordem.log"

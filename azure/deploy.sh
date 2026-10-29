@@ -1098,7 +1098,7 @@ conta() { grep -c "$@" || true; }
 # (duplicado, faltando, fora de ordem) conta em `desordem`. ORA-/SP2- só é perdoado nas fases 1, 2, 4 e 5 (dentro de
 # uma região INICIO..FIM); como qualquer região malformada reprova o veredito (fase final != 6 ou desordem != 0), o
 # perdão só vale para região bem formada.
-read -r SEQ_FASE SEQ_DESORDEM ORA_FORA_DEMO <<<"$(lf | awk '
+SEQ_RES="$(lf | awk '
   /^#+[ \t]+DEMO S4-DB-[0-9]+: INICIO[ \t]+#+[ \t]*$/ {
     match($0, /S4-DB-[0-9]+/); id = substr($0, RSTART + 6, RLENGTH - 6)
     if (fase == 0 && id == "02") fase = 1; else if (fase == 3 && id == "03") fase = 4; else desordem++
@@ -1110,6 +1110,8 @@ read -r SEQ_FASE SEQ_DESORDEM ORA_FORA_DEMO <<<"$(lf | awk '
   /^RESUMO: / { if (fase == 1 || fase == 4) fase++; else desordem++; next }
   /(ORA|SP2)-[0-9]+/ { if (fase == 0 || fase == 3 || fase == 6) fora++ }
   END { print fase + 0, desordem + 0, fora + 0 }')"
+# sem here-string (<<<): o script da VM tem de continuar parseável por dash (T14 da suíte)
+SEQ_FASE="${SEQ_RES%% *}"; SEQ_RES="${SEQ_RES#* }"; SEQ_DESORDEM="${SEQ_RES%% *}"; ORA_FORA_DEMO="${SEQ_RES#* }"
 DEMOS_ABERTAS="$(lf | conta -E '^#+[[:space:]]+DEMO S4-DB-[0-9]+: INICIO[[:space:]]+#+[[:space:]]*$')"
 DEMOS_FECHADAS="$(lf | conta -E '^#+[[:space:]]+DEMO S4-DB-[0-9]+: FIM[[:space:]]+#+[[:space:]]*$')"
 RESUMOS_OK="$(lf | conta -E '^RESUMO: [1-9][0-9]* OK, 0 FALHOU[[:space:]]*$')"
