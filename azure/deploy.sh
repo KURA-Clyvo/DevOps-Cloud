@@ -1046,15 +1046,16 @@ SQL_DIR="$KURA_BASE/sql"; LOG_DIR="$KURA_BASE/logs"
 mkdir -p "$SQL_DIR" "$LOG_DIR"; chmod 700 "$SQL_DIR" "$LOG_DIR"
 SQL_LOCAL="$SQL_DIR/$PKG_SQL_NAME"
 LOG="$LOG_DIR/$PREF-$(date +%Y%m%d-%H%M%S).log"
-limpar() { rm -f "$SQL_LOCAL"; docker exec "$CONT" rm -f "/tmp/$PKG_SQL_NAME" >/dev/null 2>&1 || true; }
+limpar() { rm -f "$SQL_LOCAL"; }
 trap limpar EXIT
 
-# 1) SQL: decodifica, confere a integridade (sha256) e copia para o container
+# 1) SQL: decodifica e confere a integridade (sha256). O arquivo fica SÓ no host (modo 600): nada é copiado para o
+# container. O `docker cp` o deixaria root:600 lá dentro, o sqlplus do `docker exec` roda como o usuário oracle
+# (SP2-0310, com EXIT=0) e o `rm` da limpeza também não o apagaria (achado I-1 da G2). O SQL vai pelo stdin.
 printf '%s' "$PKG_SQL_B64" | base64 -d | gzip -dc > "$SQL_LOCAL"
 chmod 600 "$SQL_LOCAL"
 sha_obtido="$(sha256sum "$SQL_LOCAL" | cut -d' ' -f1)"
 [ "$sha_obtido" = "$PKG_SQL_SHA256" ] || falhar "sha256 do SQL decodificado diverge (esperado $PKG_SQL_SHA256, obtido $sha_obtido)"
-docker cp "$SQL_LOCAL" "$CONT:/tmp/$PKG_SQL_NAME" >/dev/null
 
 # 2) Senha do schema: Key Vault, com a identidade gerenciada da VM.
 # Âncora (regra 11): mesmo padrão de montar_script_vm/segredo() em azure/deploy.sh:339-350 e de
@@ -1077,21 +1078,38 @@ segredo() {
 senha="$(segredo oracle-app-password)" || falhar "senha do banco indisponível no Key Vault"
 [ -n "$senha" ] || falhar "senha do banco vazia"
 
-# 3) sqlplus nº 1: o arquivo inteiro. A senha vai SÓ por stdin (printf é builtin: não aparece em argv).
+# 3) sqlplus nº 1: o arquivo inteiro, pelo stdin. A senha e o SQL vão SÓ por stdin (printf e cat não aparecem em argv).
+# O exit final é de segurança: o .sql já termina em EXIT.
 ec_sql=0
-printf 'whenever sqlerror exit 1\nwhenever oserror exit 2\nconnect %s/%s@//localhost:1521/%s\n@/tmp/%s\nexit\n' \
-  "$ORACLE_APP_USER" "$senha" "$ORACLE_SERVICE" "$PKG_SQL_NAME" \
-  | docker exec -i "$CONT" sqlplus -s /nolog > "$LOG" 2>&1 || ec_sql=$?
+{
+  printf 'whenever sqlerror exit 1\nwhenever oserror exit 2\nconnect %s/%s@//localhost:1521/%s\n' \
+    "$ORACLE_APP_USER" "$senha" "$ORACLE_SERVICE"
+  cat "$SQL_LOCAL"
+  printf '\nexit\n'
+} | docker exec -i "$CONT" sqlplus -s /nolog > "$LOG" 2>&1 || ec_sql=$?
 chmod 600 "$LOG"
 
 # 4) Validação DENTRO da VM, sobre o log inteiro (B8-1)
 lf() { tr -d '\r' < "$LOG"; }
 conta() { grep -c "$@" || true; }
-ORA_FORA_DEMO="$(lf | awk '
-  /^#+[ \t]+DEMO S4-DB-[0-9]+: INICIO[ \t]+#+[ \t]*$/ { d = 1; next }
-  /^#+[ \t]+DEMO S4-DB-[0-9]+: FIM[ \t]+#+[ \t]*$/    { d = 0; next }
-  d == 0 && /(ORA|SP2)-[0-9]+/ { n++ }
-  END { print n + 0 }')"
+# Máquina de estados por demo, em ordem: INICIO 02 -> RESUMO -> FIM 02 -> INICIO 03 -> RESUMO -> FIM 03.
+# fase: 0 aguarda INICIO 02 | 1 dentro da 02, sem RESUMO | 2 RESUMO da 02 visto, aguarda FIM 02 | 3 aguarda INICIO 03 |
+# 4 dentro da 03, sem RESUMO | 5 RESUMO da 03 visto, aguarda FIM 03 | 6 concluído. Marcador ou RESUMO fora de lugar
+# (duplicado, faltando, fora de ordem) conta em `desordem`. ORA-/SP2- só é perdoado nas fases 1, 2, 4 e 5 (dentro de
+# uma região INICIO..FIM); como qualquer região malformada reprova o veredito (fase final != 6 ou desordem != 0), o
+# perdão só vale para região bem formada.
+read -r SEQ_FASE SEQ_DESORDEM ORA_FORA_DEMO <<<"$(lf | awk '
+  /^#+[ \t]+DEMO S4-DB-[0-9]+: INICIO[ \t]+#+[ \t]*$/ {
+    match($0, /S4-DB-[0-9]+/); id = substr($0, RSTART + 6, RLENGTH - 6)
+    if (fase == 0 && id == "02") fase = 1; else if (fase == 3 && id == "03") fase = 4; else desordem++
+    next }
+  /^#+[ \t]+DEMO S4-DB-[0-9]+: FIM[ \t]+#+[ \t]*$/ {
+    match($0, /S4-DB-[0-9]+/); id = substr($0, RSTART + 6, RLENGTH - 6)
+    if (fase == 2 && id == "02") fase = 3; else if (fase == 5 && id == "03") fase = 6; else desordem++
+    next }
+  /^RESUMO: / { if (fase == 1 || fase == 4) fase++; else desordem++; next }
+  /(ORA|SP2)-[0-9]+/ { if (fase == 0 || fase == 3 || fase == 6) fora++ }
+  END { print fase + 0, desordem + 0, fora + 0 }')"
 DEMOS_ABERTAS="$(lf | conta -E '^#+[[:space:]]+DEMO S4-DB-[0-9]+: INICIO[[:space:]]+#+[[:space:]]*$')"
 DEMOS_FECHADAS="$(lf | conta -E '^#+[[:space:]]+DEMO S4-DB-[0-9]+: FIM[[:space:]]+#+[[:space:]]*$')"
 RESUMOS_OK="$(lf | conta -E '^RESUMO: [1-9][0-9]* OK, 0 FALHOU[[:space:]]*$')"
@@ -1133,6 +1151,7 @@ if [ "$PKG_MODO" = instalar ]; then
   [ "$ORA_FORA_DEMO" = 0 ]      || MOTIVOS="$MOTIVOS ORA_FORA_DEMO"
   [ "$DEMOS_ABERTAS" = 2 ]      || MOTIVOS="$MOTIVOS DEMOS_ABERTAS"
   [ "$DEMOS_FECHADAS" = 2 ]     || MOTIVOS="$MOTIVOS DEMOS_FECHADAS"
+  { [ "$SEQ_FASE" = 6 ] && [ "$SEQ_DESORDEM" = 0 ]; } || MOTIVOS="$MOTIVOS SEQUENCIA_DEMOS"
   [ "$RESUMOS_OK" = 2 ]         || MOTIVOS="$MOTIVOS RESUMOS_OK"
   [ "$RESUMOS_FALHOU" = 0 ]     || MOTIVOS="$MOTIVOS RESUMOS_FALHOU"
   [ "$INVALIDOS" = 0 ]          || MOTIVOS="$MOTIVOS INVALIDOS"
@@ -1149,6 +1168,7 @@ echo "EXIT_SQLPLUS=$ec_sql"
 echo "ORA_FORA_DEMO=$ORA_FORA_DEMO"
 if [ "$PKG_MODO" = instalar ]; then
   echo "DEMOS_ABERTAS=$DEMOS_ABERTAS DEMOS_FECHADAS=$DEMOS_FECHADAS"
+  echo "SEQUENCIA_DEMOS fase=$SEQ_FASE/6 desordem=$SEQ_DESORDEM"
   echo "RESUMOS_OK=$RESUMOS_OK RESUMOS_FALHOU=$RESUMOS_FALHOU"
   echo "INVALIDOS=$INVALIDOS PACKAGES_VALIDOS=$PACKAGES_VALIDOS"
 else
@@ -1176,7 +1196,7 @@ VM_SCRIPT
 }
 
 executar_db_packages() { # executar_db_packages <instalar|remover>
-  local modo=$1 nome sent f sha b64 tmp saida c
+  local modo=$1 nome sent f sha b64 tmp saida c commit
   exigir_ferramentas
   for c in gzip base64 sha256sum; do command -v "$c" >/dev/null 2>&1 || die "'$c' é necessário (Git Bash e Linux já trazem)"; done
   if [ "$modo" = instalar ]; then nome="$DB_PACKAGES_ARQ_INSTALAR"; sent="$DB_PACKAGES_SENT_INSTALAR"
@@ -1189,7 +1209,9 @@ executar_db_packages() { # executar_db_packages <instalar|remover>
   sha="$(tr -d '\r' < "$f" | sha256sum | cut -d' ' -f1)"
   info "SQL: $f"
   info "sha256 (sem CR): $sha"
-  info "commit do arquivo: $(git -C "$(dirname "$f")" log -1 --format=%h -- "$nome" 2>/dev/null || true)"
+  # caminho_nativo: com MSYS_NO_PATHCONV=1 (ver o topo) o git.exe nativo não entende /c/... e o commit saía vazio.
+  commit="$(git -C "$(caminho_nativo "$(dirname "$f")")" log -1 --format=%h -- "$nome" 2>/dev/null || true)"
+  info "commit do arquivo: ${commit:-(desconhecido)}"
   b64="$(tr -d '\r' < "$f" | gzip -9 | base64 -w0)"
 
   tmp="$(mktemp)"

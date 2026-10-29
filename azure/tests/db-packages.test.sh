@@ -20,6 +20,7 @@ ARQ_INST=2TDSPF_2026_Packages_Integrantes.sql
 ARQ_REM=2TDSPF_2026_Packages_Remover.sql
 SENT_I=KURA_DB_PACKAGES_OK
 SENT_R=KURA_DB_PACKAGES_REMOVIDO_OK
+CONT_FALSO=kura_oracle_db
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
@@ -51,20 +52,78 @@ case "$1 ${2:-}" in
   *) echo "az falso: comando inesperado: $*" >&2; exit 99 ;;
 esac
 STUB
+# chmod falso: REGISTRA o modo pedido (o chmod de NTFS/Git Bash é ignorado e o stat não o mostra) e chama o real.
+# O docker falso lê esse registro para saber o modo que o `docker cp` levaria para dentro do container.
+cat > "$STUBS/chmod" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in [0-7][0-7][0-7]) m=$1; shift; for f in "$@"; do echo "$f $m" >> "$CHMOD_LOG"; done; set -- "$m" "$@" ;; esac
+for real in /usr/bin/chmod /bin/chmod; do [ -x "$real" ] && exec "$real" "$@"; done
+exit 0
+STUB
+# docker falso COM modelo de sistema de arquivos do container ($DOCKER_CTR): cada arquivo tem um .meta "dono modo".
+#  - `docker cp` cria o arquivo com dono root e o modo da origem (comportamento do docker cp);
+#  - `docker exec` roda como o usuário oracle, salvo -u/--user; só root lê/apaga/altera arquivo de root:600;
+#  - `sqlplus` que recebe `@/tmp/x` sem poder ler x emite SP2-0310 e sai com 0 (como o sqlplus real).
 cat > "$STUBS/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "docker $*" >> "$DOCKER_ARGV"
+eh_root() { [ "$1" = root ] || [ "$1" = 0 ]; }
 case "$1" in
   inspect) if [ -n "${FIX_NAO_RODANDO:-}" ]; then echo false; else echo true; fi ;;
-  cp) mkdir -p "$DOCKER_STDIN_DIR"; [ -f "$2" ] && cp "$2" "$DOCKER_STDIN_DIR/copiado.sql"; exit 0 ;;
+  cp)
+    src=$2; dest=${3#*:}
+    [ -f "$src" ] || exit 1
+    mkdir -p "$DOCKER_CTR$(dirname "$dest")"
+    cp "$src" "$DOCKER_CTR$dest"
+    modo="$(grep -F "$src " "$CHMOD_LOG" 2>/dev/null | tail -n 1 | sed 's/.* //')"
+    [ -n "$modo" ] || modo="$(stat -c %a "$src")"
+    echo "root $modo" > "$DOCKER_CTR$dest.meta"
+    exit 0 ;;
   exec)
-    if printf ' %s ' "$@" | grep -q ' sqlplus '; then
-      mkdir -p "$DOCKER_STDIN_DIR"
-      n=$(( $(ls "$DOCKER_STDIN_DIR" 2>/dev/null | grep -c '^stdin') + 1 ))
-      cat > "$DOCKER_STDIN_DIR/stdin$n"
-      if grep -q '^@/tmp/' "$DOCKER_STDIN_DIR/stdin$n"; then cat "$FIX_LOG"; exit "${FIX_EXIT1:-0}"
-      else cat "$FIX_QOUT"; exit "${FIX_EXIT2:-0}"; fi
-    fi
+    shift; usuario=oracle
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -u|--user) usuario=$2; shift 2 ;;
+        -i|-t|-it|-d) shift ;;
+        *) break ;;
+      esac
+    done
+    shift   # nome do container
+    comando=${1:-}
+    case "$comando" in
+      sqlplus)
+        mkdir -p "$DOCKER_STDIN_DIR"
+        n=$(( $(ls "$DOCKER_STDIN_DIR" 2>/dev/null | grep -c '^stdin') + 1 ))
+        cat > "$DOCKER_STDIN_DIR/stdin$n"
+        if grep -q 'user_objects' "$DOCKER_STDIN_DIR/stdin$n"; then cat "$FIX_QOUT"; exit "${FIX_EXIT2:-0}"; fi
+        arq="$(grep -m1 '^@/tmp/' "$DOCKER_STDIN_DIR/stdin$n" | sed 's/^@//' | tr -d '\r')"
+        if [ -n "$arq" ]; then
+          if [ ! -f "$DOCKER_CTR$arq" ]; then echo "SP2-0310: unable to open file \"$arq\""; exit 0; fi
+          dono="$(cut -d' ' -f1 "$DOCKER_CTR$arq.meta")"; modo="$(cut -d' ' -f2 "$DOCKER_CTR$arq.meta")"
+          if ! eh_root "$usuario" && eh_root "$dono" && [ "$((8#$modo & 4))" = 0 ]; then
+            echo "SP2-0310: unable to open file \"$arq\""; exit 0     # sqlplus segue e sai com 0
+          fi
+        fi
+        cat "$FIX_LOG"; exit "${FIX_EXIT1:-0}" ;;
+      rm)
+        alvo=${!#}; f="$DOCKER_CTR$alvo"
+        if [ -e "$f" ]; then
+          dono="$(cut -d' ' -f1 "$f.meta")"
+          if ! eh_root "$usuario" && eh_root "$dono"; then echo "rm: cannot remove '$alvo': Operation not permitted" >&2; exit 1; fi
+          rm -f "$f" "$f.meta"
+        fi
+        exit 0 ;;
+      chown)
+        alvo=${!#}; novo=${2%%:*}; f="$DOCKER_CTR$alvo"
+        eh_root "$usuario" || { echo "chown: Operation not permitted" >&2; exit 1; }
+        [ -e "$f" ] && echo "$novo $(cut -d' ' -f2 "$f.meta")" > "$f.meta"
+        exit 0 ;;
+      chmod)
+        alvo=${!#}; novo=$2; f="$DOCKER_CTR$alvo"
+        eh_root "$usuario" || { echo "chmod: Operation not permitted" >&2; exit 1; }
+        [ -e "$f" ] && echo "$(cut -d' ' -f1 "$f.meta") $novo" > "$f.meta"
+        exit 0 ;;
+    esac
     exit 0 ;;
 esac
 STUB
@@ -160,9 +219,11 @@ echo "# fixtures de SQL: $FONTE_SQL"
 
 # ─── execução ────────────────────────────────────────────────────────────────
 BASE=(PATH="$STUBS:$PATH" KURA_BASE="$T/opt" DOCKER_ARGV="$T/docker.argv" DOCKER_STDIN_DIR="$T/stdin"
+      DOCKER_CTR="$T/ctr" CHMOD_LOG="$T/chmod.log"
       AZ_LOG="$T/az.log" AZ_SCRIPT_COPY="$T/az.script" AZ_MODE=msg AZ_MSG_FILE="$T/az.msg"
       FIX_LOG="$FX/ok.log" FIX_QOUT="$FX/q-ok.txt" PYTHONUTF8=1)
-reset() { rm -rf "$T/opt" "$T/stdin" "$T/docker.argv" "$T/az.log" "$T/az.script" "$T/az.msg"; : > "$T/az.log"; : > "$T/docker.argv"; : > "$T/az.msg"; }
+reset() { rm -rf "$T/opt" "$T/stdin" "$T/ctr" "$T/docker.argv" "$T/az.log" "$T/az.script" "$T/az.msg" "$T/chmod.log"
+          : > "$T/az.log"; : > "$T/docker.argv"; : > "$T/az.msg"; : > "$T/chmod.log"; }
 vm_run()     { local s=$1; shift; reset; env "${BASE[@]}" "$@" bash "$s" > "$T/vm.out" 2>&1; VM_RC=$?; }
 deploy_run() { local fase=$1; shift; reset; ( cd "$T" && env "${BASE[@]}" DB_PACKAGES_SQL_DIR="$SQLDIR" AZ_MODE=exec "$@" bash "$DEPLOY" "$fase" > "$T/dep.out" 2>&1 ); DEP_RC=$?; }
 
@@ -194,7 +255,7 @@ afirma "T1 VM: EXIT=0" test "$VM_RC" = 0
 afirma "T1 VM: sentinela é a última linha" test "$(ultima_linha "$T/vm.out")" = "$SENT_I"
 afirma "T1 VM: sentinela aparece uma única vez" test "$(grep -c "$SENT_I" "$T/vm.out")" = 1
 afirma "T1 VM: saída < 3.500 bytes (o run-command devolve 4.096)" test "$(wc -c < "$T/vm.out")" -lt 3500
-afirma "T1 VM: o SQL decodificado chegou ao container (docker cp)" test -s "$T/stdin/copiado.sql"
+afirma "T1 VM: o sqlplus nº 1 foi alimentado (stdin1 existe e traz o connect)" grep -q '^connect ' "$T/stdin/stdin1"
 touch "$T/probe"; chmod 600 "$T/probe"
 if [ "$(stat -c %a "$T/probe")" = 600 ]; then
   afirma "T1 VM: log do sqlplus gravado com modo 600" test "$(stat -c %a "$T"/opt/logs/db-packages-*.log)" = 600
@@ -355,6 +416,94 @@ fi
 reset; env "${BASE[@]}" sh "$AI" > "$T/vm.out" 2>&1; VM_RC=$?
 afirma "T14 sh script: EXIT=0 e sentinela na última linha" test "$VM_RC" = 0 -a "$(ultima_linha "$T/vm.out")" = "$SENT_I"
 
+echo "== T15: I-1 — dono e modo do arquivo dentro do container (modelo explícito no docker falso)"
+# Controle positivo do MODELO (independe do deploy.sh): docker cp de um arquivo 600 o deixa root:600; o sqlplus como oracle
+# não o lê (SP2-0310, EXIT=0); o rm como oracle falha; só root (-u 0) consegue chown/rm. Sem isto o teste abaixo seria circular.
+reset
+printf 'select 1 from dual;\n' > "$T/modelo.sql"; chmod 600 "$T/modelo.sql"
+env "${BASE[@]}" docker cp "$T/modelo.sql" "$CONT_FALSO:/tmp/modelo.sql" > /dev/null 2>&1
+afirma "T15 modelo: docker cp deixa o arquivo com dono root e modo 600" test "$(cat "$T/ctr/tmp/modelo.sql.meta")" = "root 600"
+printf 'connect u/p@x\n@/tmp/modelo.sql\nexit\n' | env "${BASE[@]}" docker exec -i "$CONT_FALSO" sqlplus -s /nolog > "$T/modelo.out" 2>&1
+MODELO_RC=$?
+afirma "T15 modelo: sqlplus como oracle em root:600 emite SP2-0310 com EXIT=0" test "$MODELO_RC" = 0 -a "$(grep -c 'SP2-0310' "$T/modelo.out")" = 1
+env "${BASE[@]}" docker exec "$CONT_FALSO" rm -f /tmp/modelo.sql > /dev/null 2>&1
+afirma "T15 modelo: rm como oracle de arquivo root não apaga (EXIT≠0, arquivo continua)" test -e "$T/ctr/tmp/modelo.sql"
+env "${BASE[@]}" docker exec -u 0 "$CONT_FALSO" chown oracle: /tmp/modelo.sql > /dev/null 2>&1
+printf 'connect u/p@x\n@/tmp/modelo.sql\nexit\n' | env "${BASE[@]}" FIX_LOG="$FX/ok.log" docker exec -i "$CONT_FALSO" sqlplus -s /nolog > "$T/modelo.out" 2>&1
+afirma "T15 modelo: depois de chown oracle (como root) o sqlplus lê o arquivo (sem SP2-0310)" test "$(grep -c 'SP2-0310' "$T/modelo.out")" = 0
+# Teste do deploy: o caminho feliz nunca pode depender de arquivo no container
+vm_run "$AI"
+afirma "T15 VM: EXIT=0 e sentinela (o sqlplus real do modelo não deu SP2-0310)" test "$VM_RC" = 0 -a "$(ultima_linha "$T/vm.out")" = "$SENT_I"
+afirma "T15 VM: nenhum 'docker cp' foi chamado (o arquivo não vai para o container)" test "$(grep -c '^docker cp' "$T/docker.argv")" = 0
+afirma "T15 VM: nenhum arquivo ficou no container" test "$(find "$T/ctr" -type f 2>/dev/null | wc -l | tr -d ' ')" = 0
+afirma "T15 VM: stdin do sqlplus nº 1 não usa '@/tmp/' (nada para ler no container)" test "$(grep -c '^@' "$T/stdin/stdin1")" = 0
+SQL_SEM_CR="$T/sql-sem-cr.sql"; tr -d '\r' < "$SQLDIR/$ARQ_INST" > "$SQL_SEM_CR"
+afirma "T15 VM: o SQL chega íntegro pelo stdin (3 linhas de cabeçalho + o .sql sem CR, byte a byte)" \
+  cmp -s <(tail -n +4 "$T/stdin/stdin1" | head -n "$(wc -l < "$SQL_SEM_CR")") "$SQL_SEM_CR"
+afirma "T15 VM: a senha chega pelo stdin (controle positivo) e NÃO está no argv do docker" \
+  test "$(grep -cF -- "$SENHA" "$T/stdin/stdin1")" -ge 1 -a "$(ocorrencias "$T/docker.argv" "$SENHA")" = 0
+afirma "T15 VM: o .sql do host continua apagado no fim e o container não recebeu 'rm' (nada a limpar)" \
+  test ! -e "$T/opt/sql/$ARQ_INST" -a "$(grep -c ' rm ' "$T/docker.argv")" = 0
+# Mesmo caminho pelo remover
+vm_run "$AR" FIX_LOG="$FX/rem-ok.log" FIX_QOUT="$FX/qr-ok.txt"
+afirma "T15 remover VM: sentinela, sem docker cp e sem arquivo no container" test "$(ultima_linha "$T/vm.out")" = "$SENT_R" -a "$(grep -c '^docker cp' "$T/docker.argv")" = 0 -a "$(find "$T/ctr" -type f 2>/dev/null | wc -l | tr -d ' ')" = 0
+
+echo "== T16: M-1 — linha 'commit do arquivo'"
+GITSQL="$T/sql-git"; mkdir -p "$GITSQL"; cp "$SQLDIR/$ARQ_INST" "$SQLDIR/$ARQ_REM" "$GITSQL/"
+( cd "$GITSQL" && git init -q . && git add . && git -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -q -m "fixture" ) > /dev/null 2>&1
+HASH_GIT="$(git -C "$(cd "$GITSQL" && pwd)" log -1 --format=%h -- "$ARQ_INST" 2>/dev/null || true)"
+afirma "T16 controle: o repositório git temporário tem o commit (hash não vazio)" test -n "$HASH_GIT"
+deploy_run db-packages DB_PACKAGES_SQL_DIR="$GITSQL"
+afirma "T16 checkout git: a linha mostra o hash do commit ($HASH_GIT)" grep -q "commit do arquivo: $HASH_GIT\$" "$T/dep.out"
+deploy_run db-packages
+afirma "T16 diretório sem git: a linha mostra (desconhecido), nunca vazio" grep -q 'commit do arquivo: (desconhecido)$' "$T/dep.out"
+
+echo "== T17: M-2 — veredito por demo, em ordem (P1/P2/P5/P8 da G2 e fora de ordem)"
+sent_ok() { test "$VM_RC" = 0 -a "$(ultima_linha "$T/vm.out")" = "$SENT_I"; }
+sent_no() { test "$VM_RC" != 0 -a "$(ocorrencias "$T/vm.out" "$SENT_I")" = 0; }
+# P1/P2: saída real do .sql com PULADO/PULADOS continua aceita
+( gerar_log | sed 's/^RESUMO: 70 OK, 0 FALHOU$/PULADO: E.3j (sem cobranca neste schema)\nPULADO: E.3k (sem cobranca neste schema)\nPULADOS: 2\nRESUMO: 68 OK, 0 FALHOU/' ) > "$FX/p1.log"
+afirma "T17 P1 controle: a fixture tem PULADOS: 2 e RESUMO: 68 OK" test "$(grep -c '^PULADOS: 2$' "$FX/p1.log")$(grep -c '^RESUMO: 68 OK, 0 FALHOU$' "$FX/p1.log")" = 11
+vm_run "$AI" FIX_LOG="$FX/p1.log"
+afirma "T17 P1 PULADO + PULADOS: 2 + RESUMO 68 OK: sucesso" sent_ok
+( gerar_log | sed 's/^RESUMO: 70 OK, 0 FALHOU$/PULADO: E.3j (x)\nPULADOS: 1\nRESUMO: 70 OK, 0 FALHOU/' ) > "$FX/p2.log"
+vm_run "$AI" FIX_LOG="$FX/p2.log"
+afirma "T17 P2 PULADO + PULADOS: 1 + RESUMO 70 OK: sucesso" sent_ok
+# P5: RESUMO da demo 02 duplicado e demo 03 sem RESUMO (2 RESUMO no log inteiro, mas não 1 por demo)
+( gerar_log | awk '{print} /^RESUMO: 60 OK/{print}' | grep -v "RESUMO: 70" ) > "$FX/p5.log"
+afirma "T17 P5 controle: o log tem 2 RESUMO, os dois da demo 02" test "$(grep -c '^RESUMO: 60 OK' "$FX/p5.log")$(grep -c '^RESUMO: 70' "$FX/p5.log")" = 20
+vm_run "$AI" FIX_LOG="$FX/p5.log"
+afirma "T17 P5 RESUMO duplicado na demo 02 e ausente na 03: falha" sent_no
+afirma "T17 P5 o resumo mostra SEQUENCIA_DEMOS com desordem" grep -qE 'SEQUENCIA_DEMOS fase=[0-9]/6 desordem=[1-9]' "$T/vm.out"
+# P8: FIM da 02 duplicado, demo 03 sem FIM e um ORA- depois (fora do que deveria ser demo)
+( gerar_log | awk -v f="$M2_FIM" '{print} $0==f{print}' | grep -vxF "$M3_FIM" | sed "s/^=== FIM DO ARQUIVO/ORA-00942: table or view does not exist\n=== FIM DO ARQUIVO/" ) > "$FX/p8.log"
+afirma "T17 P8 controle: 2 FIM (ambos da 02), 2 INICIO, 1 ORA-" test "$(grep -c ': FIM ' "$FX/p8.log")$(grep -c ': INICIO ' "$FX/p8.log")$(grep -c 'ORA-' "$FX/p8.log")" = 221
+vm_run "$AI" FIX_LOG="$FX/p8.log"
+afirma "T17 P8 FIM duplicado + demo sem FIM escondendo ORA-: falha" sent_no
+# Fora de ordem: bloco da demo 03 inteiro antes do da demo 02 (cada marcador 1x, RESUMO 1x por demo, sem ORA-)
+{ echo "=== BLOCO 7: TRG_AUDITORIA_COBRANCA criada ==="; echo "$M3_INI"; echo "RESUMO: 70 OK, 0 FALHOU"; echo "$M3_FIM"
+  echo "$M2_INI"; echo "RESUMO: 60 OK, 0 FALHOU"; echo "$M2_FIM"; echo "=== FIM DO ARQUIVO $ARQ_INST ==="; } > "$FX/ordem.log"
+afirma "T17 fora de ordem controle: 2 INICIO, 2 FIM, 2 RESUMO 0 FALHOU (as contagens globais antigas passariam)" \
+  test "$(grep -c ': INICIO ' "$FX/ordem.log")$(grep -c ': FIM ' "$FX/ordem.log")$(grep -c '^RESUMO: [1-9][0-9]* OK, 0 FALHOU$' "$FX/ordem.log")" = 222
+vm_run "$AI" FIX_LOG="$FX/ordem.log"
+afirma "T17 demo 03 antes da 02: falha" sent_no
+# ORA- dentro de região bem formada continua perdoado (T3 também cobre); controle da máquina de estados
+vm_run "$AI" FIX_LOG="$FX/ora-demo.log"
+afirma "T17 ORA- dentro das duas regiões bem formadas: sucesso" sent_ok
+
+echo "== T18: M-3 — SP2-, ORA_Q e ec_q da consulta (sondas P12/P14/P15 da G2)"
+( gerar_log | sed 's/^=== FIM DO ARQUIVO/SP2-0734: unknown command\n=== FIM DO ARQUIVO/' ) > "$FX/p12.log"
+vm_run "$AI" FIX_LOG="$FX/p12.log"
+afirma "T18 P12 SP2- fora da demo num log completo: falha" sent_no
+afirma "T18 P12 o resumo mostra ORA_FORA_DEMO=1" grep -q '^ORA_FORA_DEMO=1$' "$T/vm.out"
+printf 'ORA-04068: existing state of packages has been discarded\nPKGVALIDOS:9\n' > "$FX/q-ora9.txt"
+vm_run "$AI" FIX_QOUT="$FX/q-ora9.txt"
+afirma "T18 P14 consulta com ORA- mas PKGVALIDOS:9 e EXIT=0: falha (o ORA_Q da consulta)" sent_no
+vm_run "$AI" FIX_EXIT2=1
+afirma "T18 P15 consulta com EXIT=1 e PKGVALIDOS:9, sem ORA-: falha (o ec_q da consulta)" sent_no
+vm_run "$AI"
+afirma "T18 controle: o mesmo log e a mesma consulta sem o defeito: sucesso" sent_ok
+
 echo "== extras"
 vm_run "$AI" FIX_NAO_RODANDO=1
 afirma "container parado: falha com mensagem, sem sqlplus" test "$VM_RC" != 0 -a "$(grep -c 'sqlplus' "$T/docker.argv")" = 0
@@ -368,6 +517,9 @@ if [ -f "$MAST/$ARQ_INST" ]; then
 else
   echo "PULADO: âncora dos marcadores (Mastering-Relational-Database não está ao lado)"
 fi
+
+# Para a revisão/ShellCheck dos scripts da VM gerados (nada é executado): SALVAR_SCRIPTS_EM=<pasta> bash azure/tests/db-packages.test.sh
+if [ -n "${SALVAR_SCRIPTS_EM:-}" ]; then mkdir -p "$SALVAR_SCRIPTS_EM"; cp "$AI" "$AR" "$SALVAR_SCRIPTS_EM/"; fi
 
 echo
 echo "RESUMO: $OKN OK, $FALN FALHOU"
