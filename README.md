@@ -292,8 +292,10 @@ CONFIRMA=sim azure/deploy.sh db-packages-remover  # saída de emergência: remov
 - **Pré-requisito:** o repo `Mastering-Relational-Database` clonado ao lado deste (não é submódulo). O script lê
   `../Mastering-Relational-Database/src/2TDSPF_2026_Packages_Integrantes.sql` (e `..._Remover.sql`); outra pasta:
   `DB_PACKAGES_SQL_DIR=<pasta src>`. Antes de enviar, imprime o `sha256` do arquivo e o commit dele.
-- **O que a fase faz:** o `.sql` vai embutido (gzip + base64) no script da VM, que confere o `sha256`, copia para o container
-  `kura_oracle_db`, lê a senha do schema no Key Vault pela identidade da VM e roda o `sqlplus` com a senha **só por stdin**.
+- **O que a fase faz:** o `.sql` vai embutido (gzip + base64) no script da VM, que confere o `sha256`, lê a senha do
+  schema no Key Vault pela identidade da VM e roda o `sqlplus` no container `kura_oracle_db` com a senha e o próprio SQL **só por
+  stdin** (nenhum arquivo é copiado para o container: um `docker cp` o deixaria `root:600`, ilegível para o `sqlplus` do usuário
+  `oracle`). O `.sql` fica na VM só em `/opt/kura/sql` (modo `600`) e é apagado no fim.
   O arquivo da Sprint 3 (`2TDSPF_2026_CodigoSql_Integrantes.sql`, cujo BLOCO 1 derruba as 30 tabelas) **nunca** é enviado: a fase
   recusa, antes de qualquer chamada, qualquer arquivo com `DROP TABLE`, `DROP USER` ou `TRUNCATE TABLE`.
 - **O que a sentinela prova:** o `run-command` devolve só os últimos 4.096 bytes e seu código de saída não é confiável, então a
@@ -304,8 +306,11 @@ CONFIRMA=sim azure/deploy.sh db-packages-remover  # saída de emergência: remov
   `ORA-`, os 5 objetos ausentes de `user_objects` e a senha ausente do log.
 - **Log na VM:** `/opt/kura/logs/db-packages-AAAAMMDD-HHMMSS.log` (`db-packages-remover-…` no remover), modo `600`. Para ler,
   um segundo run-command, por exemplo `az vm run-command invoke -g rg-kura -n vm-kura-db --command-id RunShellScript --scripts 'tail -n 80 $(ls -t /opt/kura/logs/db-packages-*.log | head -n 1)'`.
-- **Efeitos colaterais da demonstração:** a instalação roda a demonstração embutida no `.sql`, que grava cerca de 6 linhas
-  sintéticas em `LOG_ERRO` por execução e consome valores de sequence (`COBRANCA` e `AUDITORIA_COBRANCA` ficam como estavam).
+- **Efeitos colaterais da demonstração:** a instalação roda a demonstração embutida no `.sql`, que grava cerca de 14 linhas
+  sintéticas em `LOG_ERRO` por execução (6 da demo 02 e 8 da demo 03; menos se alguma verificação sair `PULADO`; medido em
+  `Mastering-Relational-Database/src/2TDSPF_2026_Packages_Integrantes.sql`, comentário da demo 02 na linha 1506 e a conferência
+  `E.3j` da demo 03 na linha 2171, commit `6e57ec5`, conferido em 2026-10-29; reproduz com
+  `git -C ../Mastering-Relational-Database show 6e57ec5:src/2TDSPF_2026_Packages_Integrantes.sql | sed -n '1506p;2171p'`) e consome valores de sequence (`COBRANCA` e `AUDITORIA_COBRANCA` ficam como estavam).
   Ela pressupõe que **nenhuma outra sessão** grave em `COBRANCA` durante a execução: combine uma **janela** antes de rodar
   num ambiente com uso.
 - **`db-packages-remover` derruba o financeiro:** sem os packages, a API da clínica (.NET) devolve `503` na exportação JSON e no

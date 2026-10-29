@@ -95,7 +95,7 @@ case "$1" in
         mkdir -p "$DOCKER_STDIN_DIR"
         n=$(( $(ls "$DOCKER_STDIN_DIR" 2>/dev/null | grep -c '^stdin') + 1 ))
         cat > "$DOCKER_STDIN_DIR/stdin$n"
-        if grep -q 'user_objects' "$DOCKER_STDIN_DIR/stdin$n"; then cat "$FIX_QOUT"; exit "${FIX_EXIT2:-0}"; fi
+        if grep -q '^set heading off feedback off pagesize 0 linesize 300' "$DOCKER_STDIN_DIR/stdin$n"; then cat "$FIX_QOUT"; exit "${FIX_EXIT2:-0}"; fi
         arq="$(grep -m1 '^@/tmp/' "$DOCKER_STDIN_DIR/stdin$n" | sed 's/^@//' | tr -d '\r')"
         if [ -n "$arq" ]; then
           if [ ! -f "$DOCKER_CTR$arq" ]; then echo "SP2-0310: unable to open file \"$arq\""; exit 0; fi
@@ -420,7 +420,7 @@ echo "== T15: I-1 — dono e modo do arquivo dentro do container (modelo explíc
 # Controle positivo do MODELO (independe do deploy.sh): docker cp de um arquivo 600 o deixa root:600; o sqlplus como oracle
 # não o lê (SP2-0310, EXIT=0); o rm como oracle falha; só root (-u 0) consegue chown/rm. Sem isto o teste abaixo seria circular.
 reset
-printf 'select 1 from dual;\n' > "$T/modelo.sql"; chmod 600 "$T/modelo.sql"
+printf 'select 1 from dual;\n' > "$T/modelo.sql"; env "${BASE[@]}" chmod 600 "$T/modelo.sql"
 env "${BASE[@]}" docker cp "$T/modelo.sql" "$CONT_FALSO:/tmp/modelo.sql" > /dev/null 2>&1
 afirma "T15 modelo: docker cp deixa o arquivo com dono root e modo 600" test "$(cat "$T/ctr/tmp/modelo.sql.meta")" = "root 600"
 printf 'connect u/p@x\n@/tmp/modelo.sql\nexit\n' | env "${BASE[@]}" docker exec -i "$CONT_FALSO" sqlplus -s /nolog > "$T/modelo.out" 2>&1
