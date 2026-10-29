@@ -238,7 +238,7 @@ Gerados na primeira execução e nunca impressos. Para fornecer um valor, export
 | `dotnet-oracle-connection-string` | clinica-api | composto pelo script |
 | `dotnet-jwt-key`, `java-jwt-secret`, `foto-url-secret` | .NET, Java | gerado |
 | `iot-api-key`, `luna-api-key`, `luna-inbound-api-key` | .NET ↔ Luna, dispositivos | gerado |
-| `mongo-root-password`, `mongo-java-password`, `tutor-mongodb-uri` | VM, tutor | gerado / composto |
+| `mongo-root-password`, `mongo-java-password`, `mongo-dotnet-password`, `tutor-mongodb-uri`, `dotnet-mongodb-uri` | VM, tutor, clínica | gerado / composto |
 | `twilio-sid`, `twilio-token`, `openai-api-key`, `daily-api-key` | Luna, .NET | **você fornece** (opcionais) |
 
 Trocar uma senha de banco **depois** da primeira subida exige alterar também o usuário dentro do banco: o container só
