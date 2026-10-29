@@ -13,11 +13,15 @@ if (!senha) {
 // Acoes por colecao do Java. catalogo_loja SEM "remove": o seed e upsert e produto sai por
 // ativo:false. Demais colecoes mantem "remove" (reavaliar no v2 da Loja).
 const ACOES_BASE = ["find", "insert", "update", "createCollection", "collMod", "createIndex"];
+// dropIndex (S4-JAVA-04, E61): o runner do Java agora dropa e recria, PELO NOME, indice com
+// definicao divergente. Sem a acao o drop vira ERROR no boot. So nas colecoes cujo runner
+// cuida de indices (catalogo_loja, documentos_tutor); carrinho/pedidos_loja e laudos (dono:
+// .NET) NAO ganham.
 const COLECOES_DO_JAVA = {
-  catalogo_loja: ACOES_BASE,
+  catalogo_loja: ACOES_BASE.concat(["dropIndex"]),
   carrinho: ACOES_BASE.concat(["remove"]),
   pedidos_loja: ACOES_BASE.concat(["remove"]),
-  documentos_tutor: ACOES_BASE.concat(["remove"])
+  documentos_tutor: ACOES_BASE.concat(["remove", "dropIndex"])
 };
 
 const privilegios = [];
