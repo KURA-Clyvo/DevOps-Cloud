@@ -20,6 +20,8 @@ if [ -z "${KURA_LF_OK:-}" ] && grep -q $'\r' "${BASH_SOURCE[0]}" 2>/dev/null; th
 #   all      check, infra, build, apps e web em sequência (deploy inicial completo)
 #   seed     (opcional, depois do deploy) popula dados de demonstração com scripts/seed-demo*.sh
 #   destroy  apaga o grupo de recursos e purga o Key Vault (exige CONFIRMA=sim)
+#   db-packages          (opcional, depois do infra) instala os packages PL/SQL no schema do Oracle da VM (Sprint 4, frente Database)
+#   db-packages-remover  remove a trigger e os packages (saída de emergência; a API financeira da .NET passa a devolver 503; exige CONFIRMA=sim)
 #
 # Pré-requisitos: az logado (az login), Python 3, curl.
 #   fase build: dotnet SDK 10 e JDK 21 (o zip é opcional: sem ele o script usa o Python)
@@ -981,6 +983,243 @@ fase_destroy() {
   info "grupo $RG removido e cofre $KV_NAME purgado"
 }
 
+# ═════════════════════════════════════════════════════════════════════════════
+# FASES db-packages / db-packages-remover (Sprint 4, frente Database — S4-DB-07)
+#
+# Instala (ou remove) os packages PL/SQL do schema KURA na VM do banco, por um único
+# `az vm run-command`. O .sql vem do repo Mastering-Relational-Database (não é submódulo daqui).
+# A decisão de sucesso NÃO usa o código de saída do run-command (não é confiável, ver criar_vm) e
+# NÃO lê o log: o run-command devolve só os últimos 4.096 bytes (G0 B.8, achado B8-1), então um
+# ORA- no começo de um log longo nunca chegaria até aqui. Quem lê o log inteiro é o script que
+# roda DENTRO da VM; ele só imprime a sentinela, na última linha, se todas as condições passaram.
+# ═════════════════════════════════════════════════════════════════════════════
+DB_PACKAGES_SQL_DIR="${DB_PACKAGES_SQL_DIR:-$RAIZ/../Mastering-Relational-Database/src}"
+DB_PACKAGES_ARQ_INSTALAR="2TDSPF_2026_Packages_Integrantes.sql"
+DB_PACKAGES_ARQ_REMOVER="2TDSPF_2026_Packages_Remover.sql"
+DB_PACKAGES_SENT_INSTALAR="KURA_DB_PACKAGES_OK"
+DB_PACKAGES_SENT_REMOVER="KURA_DB_PACKAGES_REMOVIDO_OK"
+
+validar_sql_packages() { # validar_sql_packages <arquivo> <instalar|remover> — recusa o .sql errado ANTES de qualquer chamada à Azure
+  local f=$1 modo=$2
+  [ -s "$f" ] || die "arquivo vazio ou ilegível: $f"
+  # O arquivo da Sprint 3 (2TDSPF_2026_CodigoSql_Integrantes.sql) tem, no BLOCO 1, DROP TABLE das 30 tabelas do
+  # KURA. Os arquivos de packages não têm nenhum DROP TABLE/DROP USER/TRUNCATE: qualquer ocorrência é motivo de recusa.
+  if tr -d '\r' < "$f" | grep -qiE 'drop[[:space:]]+(table|user)|truncate[[:space:]]+table'; then
+    die "recusado: $f contém DROP TABLE/DROP USER/TRUNCATE. Parece o arquivo da Sprint 3 (CodigoSql), cujo BLOCO 1 derruba as 30 tabelas do schema KURA. Nada foi enviado à VM"
+  fi
+  if [ "$modo" = instalar ]; then
+    tr -d '\r' < "$f" | grep -qiE 'create or replace package body[[:space:]]+pkg_cobranca' \
+      || die "recusado: $f não parece o instalador de packages (sem o body de PKG_COBRANCA). Nada foi enviado à VM"
+  else
+    tr -d '\r' < "$f" | grep -q 'TRG_AUDITORIA_COBRANCA' \
+      || die "recusado: $f não parece o removedor de packages (sem TRG_AUDITORIA_COBRANCA). Nada foi enviado à VM"
+  fi
+}
+
+montar_script_db_vm() { # montar_script_db_vm <instalar|remover> <nome-do-arquivo> <sha256> <sql-gzip-base64> — script que roda DENTRO da VM
+  # O run-command executa com /bin/sh (dash): reexecuta no bash, igual ao bootstrap.
+  printf '%s\n' '[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"'
+  printf 'PKG_MODO=%q\nKV_NAME=%q\nORACLE_SERVICE=%q\nORACLE_APP_USER=%q\nPKG_SQL_NAME=%q\nPKG_SQL_SHA256=%q\nPKG_SQL_B64=%q\n' \
+    "$1" "$KV_NAME" "$ORACLE_SERVICE" "$ORACLE_APP_USER" "$2" "$3" "$4"
+  cat <<'VM_SCRIPT'
+set -euo pipefail
+umask 077
+# KURA_BASE é redirecionável só para os testes (azure/tests/db-packages.test.sh); na VM é sempre /opt/kura.
+KURA_BASE="${KURA_BASE:-/opt/kura}"
+CONT=kura_oracle_db
+
+falhar() { echo "ERRO: $*" >&2; exit 1; }
+case "$PKG_MODO" in
+  instalar) SENT=KURA_DB_PACKAGES_OK; PREF=db-packages ;;
+  remover)  SENT=KURA_DB_PACKAGES_REMOVIDO_OK; PREF=db-packages-remover ;;
+  *) falhar "modo desconhecido: $PKG_MODO" ;;
+esac
+for c in base64 gzip sha256sum awk grep sed curl python3 docker; do
+  command -v "$c" >/dev/null 2>&1 || falhar "ferramenta ausente na VM: $c"
+done
+[ "$(docker inspect -f '{{.State.Running}}' "$CONT" 2>/dev/null || true)" = true ] || falhar "o container $CONT não está rodando"
+
+SQL_DIR="$KURA_BASE/sql"; LOG_DIR="$KURA_BASE/logs"
+install -d -m 700 "$SQL_DIR" "$LOG_DIR"
+SQL_LOCAL="$SQL_DIR/$PKG_SQL_NAME"
+LOG="$LOG_DIR/$PREF-$(date +%Y%m%d-%H%M%S).log"
+limpar() { rm -f "$SQL_LOCAL"; docker exec "$CONT" rm -f "/tmp/$PKG_SQL_NAME" >/dev/null 2>&1 || true; }
+trap limpar EXIT
+
+# 1) SQL: decodifica, confere a integridade (sha256) e copia para o container
+printf '%s' "$PKG_SQL_B64" | base64 -d | gzip -dc > "$SQL_LOCAL"
+chmod 600 "$SQL_LOCAL"
+sha_obtido="$(sha256sum "$SQL_LOCAL" | cut -d' ' -f1)"
+[ "$sha_obtido" = "$PKG_SQL_SHA256" ] || falhar "sha256 do SQL decodificado diverge (esperado $PKG_SQL_SHA256, obtido $sha_obtido)"
+docker cp "$SQL_LOCAL" "$CONT:/tmp/$PKG_SQL_NAME" >/dev/null
+
+# 2) Senha do schema: Key Vault, com a identidade gerenciada da VM.
+# Âncora (regra 11): mesmo padrão de montar_script_vm/segredo() em azure/deploy.sh:339-350 e de
+# scripts/db-select.sh:88-92, conferido em 2026-10-29 no DevOps-Cloud@9f986f8
+# (reproduz com: git show 9f986f8:azure/deploy.sh | sed -n '339,350p'; git show 9f986f8:scripts/db-select.sh | sed -n '88,92p').
+segredo() {
+  local t v i
+  for i in $(seq 1 10); do
+    if t="$(curl -sf -H 'Metadata:true' 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net' \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')" \
+       && v="$(curl -sf -H "Authorization: Bearer $t" "https://${KV_NAME}.vault.azure.net/secrets/$1?api-version=7.4" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')" \
+       && [ -n "$v" ]; then
+      printf '%s' "$v"; return 0
+    fi
+    sleep 3
+  done
+  return 1
+}
+senha="$(segredo oracle-app-password)" || falhar "senha do banco indisponível no Key Vault"
+[ -n "$senha" ] || falhar "senha do banco vazia"
+
+# 3) sqlplus nº 1: o arquivo inteiro. A senha vai SÓ por stdin (printf é builtin: não aparece em argv).
+ec_sql=0
+printf 'whenever sqlerror exit 1\nwhenever oserror exit 2\nconnect %s/%s@//localhost:1521/%s\n@/tmp/%s\nexit\n' \
+  "$ORACLE_APP_USER" "$senha" "$ORACLE_SERVICE" "$PKG_SQL_NAME" \
+  | docker exec -i "$CONT" sqlplus -s /nolog > "$LOG" 2>&1 || ec_sql=$?
+chmod 600 "$LOG"
+
+# 4) Validação DENTRO da VM, sobre o log inteiro (B8-1)
+lf() { tr -d '\r' < "$LOG"; }
+conta() { grep -c "$@" || true; }
+ORA_FORA_DEMO="$(lf | awk '
+  /^#+[ \t]+DEMO S4-DB-[0-9]+: INICIO[ \t]+#+[ \t]*$/ { d = 1; next }
+  /^#+[ \t]+DEMO S4-DB-[0-9]+: FIM[ \t]+#+[ \t]*$/    { d = 0; next }
+  d == 0 && /(ORA|SP2)-[0-9]+/ { n++ }
+  END { print n + 0 }')"
+DEMOS_ABERTAS="$(lf | conta -E '^#+[[:space:]]+DEMO S4-DB-[0-9]+: INICIO[[:space:]]+#+[[:space:]]*$')"
+DEMOS_FECHADAS="$(lf | conta -E '^#+[[:space:]]+DEMO S4-DB-[0-9]+: FIM[[:space:]]+#+[[:space:]]*$')"
+RESUMOS_OK="$(lf | conta -E '^RESUMO: [1-9][0-9]* OK, 0 FALHOU[[:space:]]*$')"
+RESUMOS_TOTAL="$(lf | conta -E '^RESUMO: ')"
+RESUMOS_FALHOU=$((RESUMOS_TOTAL - RESUMOS_OK))
+SENHA_NO_LOG="$(conta -F -- "$senha" "$LOG")"
+
+# 5) sqlplus nº 2: estado dos objetos (user_objects). Fecha em falha: sem a linha-resposta, a contagem é inválida.
+if [ "$PKG_MODO" = instalar ]; then
+  CONSULTA="select 'INVALIDO:' || object_type || ' ' || object_name || ' ' || status from user_objects where status <> 'VALID' order by object_type, object_name;
+select 'PKGVALIDOS:' || count(*) from user_objects where status = 'VALID' and ((object_type in ('PACKAGE', 'PACKAGE BODY') and object_name in ('PKG_KURA_LOG', 'PKG_TRIAGEM', 'PKG_COBRANCA', 'PKG_AUDITORIA')) or (object_type = 'TRIGGER' and object_name = 'TRG_AUDITORIA_COBRANCA'));"
+else
+  CONSULTA="select 'RESTANTES:' || count(*) from user_objects where object_type in ('PACKAGE', 'PACKAGE BODY', 'TRIGGER') and object_name in ('PKG_KURA_LOG', 'PKG_TRIAGEM', 'PKG_COBRANCA', 'PKG_AUDITORIA', 'TRG_AUDITORIA_COBRANCA');"
+fi
+ec_q=0
+SAIDA_Q="$(printf 'whenever sqlerror exit 1\nwhenever oserror exit 2\nconnect %s/%s@//localhost:1521/%s\nset heading off feedback off pagesize 0 linesize 300 trimspool on\n%s\nexit\n' \
+  "$ORACLE_APP_USER" "$senha" "$ORACLE_SERVICE" "$CONSULTA" \
+  | docker exec -i "$CONT" sqlplus -s /nolog 2>&1)" || ec_q=$?
+SAIDA_Q="$(printf '%s\n' "$SAIDA_Q" | tr -d '\r')"
+ORA_Q="$(printf '%s\n' "$SAIDA_Q" | conta -E '(ORA|SP2)-[0-9]+')"
+SENHA_NA_CONSULTA="$(printf '%s\n' "$SAIDA_Q" | conta -F -- "$senha")"
+INVALIDOS=-1; PACKAGES_VALIDOS=-1; RESTANTES=-1
+if [ "$ec_q" = 0 ] && [ "$ORA_Q" = 0 ]; then
+  if [ "$PKG_MODO" = instalar ]; then
+    pv="$(printf '%s\n' "$SAIDA_Q" | sed -n 's/^PKGVALIDOS:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
+    if [ -n "$pv" ]; then PACKAGES_VALIDOS="$pv"; INVALIDOS="$(printf '%s\n' "$SAIDA_Q" | conta -E '^INVALIDO:')"; fi
+  else
+    rs="$(printf '%s\n' "$SAIDA_Q" | sed -n 's/^RESTANTES:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
+    if [ -n "$rs" ]; then RESTANTES="$rs"; fi
+  fi
+fi
+
+# 6) Veredito: cada condição é uma linha; qualquer uma que falhe acrescenta o nome em MOTIVOS.
+MOTIVOS=""
+[ "$ec_sql" = 0 ]        || MOTIVOS="$MOTIVOS EXIT_SQLPLUS"
+[ "$SENHA_NO_LOG" = 0 ]  || MOTIVOS="$MOTIVOS SENHA_NO_LOG"
+[ "$SENHA_NA_CONSULTA" = 0 ] || MOTIVOS="$MOTIVOS SENHA_NA_CONSULTA"
+if [ "$PKG_MODO" = instalar ]; then
+  [ "$ORA_FORA_DEMO" = 0 ]      || MOTIVOS="$MOTIVOS ORA_FORA_DEMO"
+  [ "$DEMOS_ABERTAS" = 2 ]      || MOTIVOS="$MOTIVOS DEMOS_ABERTAS"
+  [ "$DEMOS_FECHADAS" = 2 ]     || MOTIVOS="$MOTIVOS DEMOS_FECHADAS"
+  [ "$RESUMOS_OK" = 2 ]         || MOTIVOS="$MOTIVOS RESUMOS_OK"
+  [ "$RESUMOS_FALHOU" = 0 ]     || MOTIVOS="$MOTIVOS RESUMOS_FALHOU"
+  [ "$INVALIDOS" = 0 ]          || MOTIVOS="$MOTIVOS INVALIDOS"
+  [ "$PACKAGES_VALIDOS" = 9 ]   || MOTIVOS="$MOTIVOS PACKAGES_VALIDOS"
+else
+  [ "$ORA_FORA_DEMO" = 0 ]      || MOTIVOS="$MOTIVOS ORA_NO_LOG"
+  [ "$RESTANTES" = 0 ]          || MOTIVOS="$MOTIVOS RESTANTES"
+fi
+
+# 7) Resumo curto (o run-command devolve só os últimos 4.096 bytes). A senha nunca fica no log:
+# se vazou, o log é apagado e nada dele é impresso.
+echo "db-packages modo=$PKG_MODO"
+echo "EXIT_SQLPLUS=$ec_sql"
+echo "ORA_FORA_DEMO=$ORA_FORA_DEMO"
+if [ "$PKG_MODO" = instalar ]; then
+  echo "DEMOS_ABERTAS=$DEMOS_ABERTAS DEMOS_FECHADAS=$DEMOS_FECHADAS"
+  echo "RESUMOS_OK=$RESUMOS_OK RESUMOS_FALHOU=$RESUMOS_FALHOU"
+  echo "INVALIDOS=$INVALIDOS PACKAGES_VALIDOS=$PACKAGES_VALIDOS"
+else
+  echo "RESTANTES=$RESTANTES"
+fi
+echo "SENHA_NO_LOG=$SENHA_NO_LOG"
+if [ "$SENHA_NO_LOG" != 0 ]; then
+  rm -f "$LOG"
+  echo "log apagado (continha a senha do schema)"
+else
+  echo "LOG=$LOG"
+fi
+if [ -n "$MOTIVOS" ]; then
+  echo "FALHOU:$MOTIVOS"
+  if [ "$SENHA_NO_LOG" = 0 ]; then
+    {
+      lf | grep -E '(ORA|SP2)-[0-9]+|FALHOU|^RESUMO' | grep -v 'KURA_DB_PACKAGES' | tail -n 15 | cut -c1-200 || true
+      printf '%s\n' "$SAIDA_Q" | grep -E '^INVALIDO:|(ORA|SP2)-[0-9]+' | head -n 10 | cut -c1-200 || true
+    } | head -c 2500
+  fi
+  exit 1
+fi
+echo "$SENT"
+VM_SCRIPT
+}
+
+executar_db_packages() { # executar_db_packages <instalar|remover>
+  local modo=$1 nome sent f sha b64 tmp saida
+  exigir_ferramentas
+  command -v gzip >/dev/null 2>&1 && command -v base64 >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 \
+    || die "gzip, base64 e sha256sum são necessários (Git Bash e Linux já trazem)"
+  if [ "$modo" = instalar ]; then nome="$DB_PACKAGES_ARQ_INSTALAR"; sent="$DB_PACKAGES_SENT_INSTALAR"
+  else nome="$DB_PACKAGES_ARQ_REMOVER"; sent="$DB_PACKAGES_SENT_REMOVER"; fi
+  f="$DB_PACKAGES_SQL_DIR/$nome"
+  [ -f "$f" ] || die "não achei $f. O Mastering-Relational-Database não é submódulo daqui: clone-o ao lado deste repo
+(git clone https://github.com/KURA-Clyvo/Mastering-Relational-Database ../Mastering-Relational-Database) ou aponte DB_PACKAGES_SQL_DIR=<pasta src>"
+  validar_sql_packages "$f" "$modo"
+
+  sha="$(tr -d '\r' < "$f" | sha256sum | cut -d' ' -f1)"
+  info "SQL: $f"
+  info "sha256 (sem CR): $sha"
+  info "commit do arquivo: $(git -C "$(dirname "$f")" log -1 --format=%h -- "$nome" 2>/dev/null || true)"
+  b64="$(tr -d '\r' < "$f" | gzip -9 | base64 -w0)"
+
+  tmp="$(mktemp)"
+  montar_script_db_vm "$modo" "$nome" "$sha" "$b64" | tr -d '\r' > "$tmp"
+  if [ -n "${DB_PACKAGES_SALVAR_SCRIPT:-}" ]; then cp "$tmp" "$DB_PACKAGES_SALVAR_SCRIPT"; fi
+  info "script enviado à VM: $(wc -c < "$tmp" | tr -d ' ') bytes (o limite de entrada do run-command é NÃO VERIFICADO)"
+
+  # 1 chamada à Azure. O código de saída do run-command não é confiável: o sucesso é a sentinela, linha exata.
+  saida="$(az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+            --scripts "@$(caminho_nativo "$tmp")" --query 'value[0].message' -o tsv || true)"
+  rm -f "$tmp"
+  saida="$(printf '%s\n' "$saida" | tr -d '\r')"
+  if printf '%s\n' "$saida" | grep -qx "$sent"; then
+    printf '%s\n' "$saida" | grep -vx "$sent" | sed -e '/^Enable succeeded:/d' -e '/^\[stdout\]$/d' -e '/^\[stderr\]$/d' | sed 's/^/    /' || true
+    info "$sent ($modo concluído; o log completo está na VM em /opt/kura/logs/)"
+    return 0
+  fi
+  printf '%s\n' "$saida" | tail -n 40 >&2
+  die "db-packages ($modo) não concluiu: sentinela $sent ausente na saída da VM"
+}
+
+fase_db_packages() {
+  log "Instalando os packages PL/SQL (db-packages)"
+  executar_db_packages instalar
+}
+
+fase_db_packages_remover() {
+  [ "${CONFIRMA:-}" = sim ] || die "isto REMOVE a trigger e os 4 packages do schema $ORACLE_APP_USER: sem eles a API financeira da .NET (exportação JSON e relatório Oracle) devolve 503. Repita com CONFIRMA=sim"
+  log "Removendo os packages PL/SQL (db-packages-remover)"
+  executar_db_packages remover
+}
+
 case "${1:-}" in
   infra)   fase_infra ;;
   build)   fase_build ;;
@@ -991,5 +1230,7 @@ case "${1:-}" in
   seed)    fase_seed ;;
   all)     fase_check || die "pré-requisitos pendentes (veja acima)"; fase_infra; fase_build; fase_apps; fase_web ;;
   destroy) fase_destroy ;;
+  db-packages) fase_db_packages ;;
+  db-packages-remover) fase_db_packages_remover ;;
   *)       awk 'NR > 1 && /^set -/ { exit } NR > 1 && /^#/ { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; exit 2 ;;
 esac
