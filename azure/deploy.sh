@@ -727,7 +727,8 @@ configurar_apps() {
     "CORS_ALLOWED_ORIGINS=$cors" \
     "FOTO_URL_SECRET=$(kvref foto-url-secret)" "FOTO_URL_BASE=$clinica_url" \
     "SPRING_DATA_MONGODB_URI=$(kvref tutor-mongodb-uri)" \
-    "KURA_LOJA_MONGO_INIT_ENABLED=true" "KURA_LOJA_SEED_EXEMPLO_ENABLED=$LOJA_SEED_EXEMPLO"
+    "KURA_LOJA_MONGO_INIT_ENABLED=true" "KURA_LOJA_SEED_EXEMPLO_ENABLED=$LOJA_SEED_EXEMPLO" \
+    "KURA_DOCUMENTOS_MONGO_INIT_ENABLED=true" "LAUDO_URL_BASE=$clinica_url"
 
   # Python — luna-ai (instância única: o APScheduler roda dentro do processo)
   az webapp config appsettings set -g "$RG" -n "$APP_LUNA" -o none --settings \

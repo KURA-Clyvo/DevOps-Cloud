@@ -12,3 +12,6 @@ node_modules/
 # REC-05: token/link de convite em texto puro, gerado por scripts/seed-demo.sh
 # a cada execução — nunca versionar.
 seed-demo-convites.local.txt
+
+# Manifestos ACI antigos (Sprint 3) gerados localmente; podem conter segredo em texto puro
+azure/.generated/
