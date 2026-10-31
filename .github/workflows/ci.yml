@@ -50,6 +50,30 @@ jobs:
           shellcheck -s bash -S warning "$RUNNER_TEMP/vm-bootstrap.sh"
           grep -q KURA_BOOTSTRAP_OK "$RUNNER_TEMP/vm-bootstrap.sh"
 
+      # As fases build, apps, settings e web aceitam a lista de aplicações. Os argumentos são validados
+      # antes de qualquer chamada ao Azure, então dá para provar a seleção sem login e sem recursos.
+      - name: Application selection (arguments, no Azure)
+        run: |
+          set -uo pipefail
+          falhou=0
+          for c in "apps foo" "build tutor x" "settings x" "web luna" "all x"; do
+            # shellcheck disable=SC2086
+            if saida="$(bash azure/deploy.sh $c 2>&1)"; then
+              echo "::error::'$c' deveria ser recusado"; falhou=1; continue
+            fi
+            if ! grep -qE "aplicação desconhecida|não aceita aplicações" <<<"$saida"; then
+              echo "::error::'$c' falhou por outro motivo: $saida"; falhou=1
+            fi
+          done
+          sed '/^case "${1:-}" in/,$d' azure/deploy.sh > "$RUNNER_TEMP/deploy-lib-sel.sh"
+          bash -c 'source "$1" 2>/dev/null; set +e; trap - ERR
+            resolver_alvos "clinica tutor luna"; [ "${ALVOS[*]}" = "clinica tutor luna" ] || exit 11
+            resolver_alvos "clinica tutor luna" luna tutor tutor; [ "${ALVOS[*]}" = "luna tutor" ] || exit 12
+            alvo tutor || exit 13
+            if alvo clinica; then exit 14; fi
+            exit 0' _ "$RUNNER_TEMP/deploy-lib-sel.sh" || { echo "::error::lógica de seleção quebrada"; falhou=1; }
+          exit $falhou
+
       # O docker-compose.yml que roda na VM está embutido no deploy.sh. Sem Docker, o que dá para
       # provar é estrutural: o YAML é válido, toda variável referenciada existe no .env gerado
       # (um `${VAR}` sem valor só quebraria na VM), nenhum segredo tem valor padrão embutido
