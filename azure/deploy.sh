@@ -8,18 +8,24 @@ if [ -z "${KURA_LF_OK:-}" ] && grep -q $'\r' "${BASH_SOURCE[0]}" 2>/dev/null; th
 #   Key Vault (RBAC) ...... segredos, lidos pelos Web Apps via Key Vault references
 #   Static Web Apps ....... build web dos apps React Native (clínica e tutor)
 #
-# Uso:  azure/deploy.sh <fase>
+# Uso:  azure/deploy.sh <fase> [aplicação...]
 #
 #   infra    RG, rede (VNet/NSG), Key Vault, VM do banco, plano e Web Apps, Static Web Apps
-#   build    compila as 3 APIs a partir dos submódulos em $ARTIFACTS_DIR
+#   build    compila as APIs a partir dos submódulos em $ARTIFACTS_DIR
 #            (clinica.zip · tutor.jar · luna.zip)
-#   apps     app settings + deploy das 3 APIs, a partir de $ARTIFACTS_DIR
-#   web      compila os 2 apps web com as URLs reais das APIs ($WEB_DIR) e publica nos Static Web Apps
+#   apps     app settings + deploy das APIs, a partir de $ARTIFACTS_DIR
+#   settings só os app settings das APIs (reinicia o app; não faz deploy): ex.: mudou o CORS
+#   web      compila os apps web com as URLs reais das APIs ($WEB_DIR) e publica nos Static Web Apps
 #   urls     imprime CHAVE=VALOR com as URLs públicas
 #   check    confere pré-requisitos (ferramentas, login, submódulos, runtimes) sem criar nada
 #   all      check, infra, build, apps e web em sequência (deploy inicial completo)
 #   seed     (opcional, depois do deploy) popula dados de demonstração com scripts/seed-demo*.sh
 #   destroy  apaga o grupo de recursos e purga o Key Vault (exige CONFIRMA=sim)
+#
+# Aplicações (build, apps, settings e web): sem argumentos, todas; ou escolha quais.
+#   build / apps / settings:  clinica  tutor  luna        web:  clinica  tutor
+#   ex.: azure/deploy.sh build tutor && azure/deploy.sh apps tutor     (só o tutor)
+#        azure/deploy.sh web clinica                                    (só o web da clínica)
 #
 # Pré-requisitos: az logado (az login), Python 3, curl.
 #   fase build: dotnet SDK 10 e JDK 21 (o zip é opcional: sem ele o script usa o Python)
@@ -145,6 +151,9 @@ LEMBRETE_CONFIRMACAO_HORA="${LEMBRETE_CONFIRMACAO_HORA:-9}"
 LUNA_SCHEDULER_ENABLED="${LUNA_SCHEDULER_ENABLED:-false}"
 LUNA_SCHEDULER_HORA="${LUNA_SCHEDULER_HORA:-8}"
 LOJA_SEED_EXEMPLO="${LOJA_SEED_EXEMPLO:-true}"      # catálogo de exemplo da Loja (D-LOJA-10)
+# Domínio próprio. O CORS compara a origem exata (esquema + host): cada subdomínio precisa constar na lista
+# (ex.: KURA_DOMAIN_ORIGINS=https://kuramedvet.app,https://www.kuramedvet.app).
+KURA_DOMAIN_ORIGINS="${KURA_DOMAIN_ORIGINS:-https://kuramedvet.app}"
 EXTRA_CORS_ORIGINS="${EXTRA_CORS_ORIGINS:-}"        # ex.: http://localhost:19006 (desenvolvimento)
 
 ARTIFACTS_DIR="${ARTIFACTS_DIR:-$RAIZ/artifacts}"
@@ -155,6 +164,25 @@ SWA_CLI_VERSION="${SWA_CLI_VERSION:-2.0.10}"        # fixada (publicada há mais
 log()  { printf '\n==> %s\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf 'ERRO: %s\n' "$*" >&2; exit 1; }
+
+# Seleção de aplicações das fases build, apps, settings e web: sem argumentos, todas.
+ALVOS=()
+alvo() { # alvo <aplicação>: a aplicação está selecionada?
+  local x
+  for x in ${ALVOS[@]+"${ALVOS[@]}"}; do [ "$x" = "$1" ] && return 0; done
+  return 1
+}
+resolver_alvos() { # resolver_alvos "<válidas>" [aplicação...] → ALVOS
+  local validas=$1 a v ok; shift
+  ALVOS=()
+  if [ $# -eq 0 ]; then read -r -a ALVOS <<<"$validas"; return 0; fi
+  for a in "$@"; do
+    ok=0
+    for v in $validas; do [ "$a" = "$v" ] && ok=1; done
+    [ "$ok" = 1 ] || die "aplicação desconhecida: '$a' (válidas nesta fase: $validas)"
+    alvo "$a" || ALVOS+=("$a")
+  done
+}
 
 tentar() { # tentar <tentativas> <espera-s> <comando...>
   local n=$1 s=$2 i; shift 2
@@ -651,33 +679,48 @@ PY
 }
 
 fase_build() {
-  exigir_comandos build dotnet java
+  resolver_alvos "clinica tutor luna" "$@"
   local jdk out
-  dotnet --list-sdks | grep -q '^10\.' || die "dotnet SDK 10 não encontrado ('dotnet --list-sdks')"
-  jdk="$(java -version 2>&1 | sed -n '1s/.*version "\([0-9][0-9]*\).*/\1/p')"
-  [ "${jdk:-0}" -ge 21 ] || die "JDK 21 ou superior necessário (encontrado: ${jdk:-desconhecido})"
-  exigir_submodulos dotnet-backend/src/Kura.Api/Kura.Api.csproj java-backend/mvnw luna-ia/luna/requirements.txt
+  if alvo clinica; then
+    exigir_comandos build dotnet
+    dotnet --list-sdks | grep -q '^10\.' || die "dotnet SDK 10 não encontrado ('dotnet --list-sdks')"
+    exigir_submodulos dotnet-backend/src/Kura.Api/Kura.Api.csproj
+  fi
+  if alvo tutor; then
+    exigir_comandos build java
+    jdk="$(java -version 2>&1 | sed -n '1s/.*version "\([0-9][0-9]*\).*/\1/p')"
+    [ "${jdk:-0}" -ge 21 ] || die "JDK 21 ou superior necessário (encontrado: ${jdk:-desconhecido})"
+    exigir_submodulos java-backend/mvnw
+  fi
+  if alvo luna; then exigir_submodulos luna-ia/luna/requirements.txt; fi
 
   mkdir -p "$ARTIFACTS_DIR"; out="$(cd "$ARTIFACTS_DIR" && pwd)"
-  rm -f "$out/clinica.zip" "$out/tutor.jar" "$out/luna.zip"
 
-  log "Build: clinica-api (.NET 10)"
-  rm -rf "$out/.clinica"
-  dotnet publish "$(caminho_nativo "$RAIZ/dotnet-backend/src/Kura.Api/Kura.Api.csproj")" -c Release \
-    -o "$(caminho_nativo "$out/.clinica")" --nologo -v q
-  ( cd "$out/.clinica" && zipar "$out/clinica.zip" . )
-  rm -rf "$out/.clinica"
+  if alvo clinica; then
+    log "Build: clinica-api (.NET 10)"
+    rm -f "$out/clinica.zip"; rm -rf "$out/.clinica"
+    dotnet publish "$(caminho_nativo "$RAIZ/dotnet-backend/src/Kura.Api/Kura.Api.csproj")" -c Release \
+      -o "$(caminho_nativo "$out/.clinica")" --nologo -v q
+    ( cd "$out/.clinica" && zipar "$out/clinica.zip" . )
+    rm -rf "$out/.clinica"
+  fi
 
-  # Os testes rodam no CI do repositório da API; aqui só empacota.
-  log "Build: tutor-api (Java 21)"
-  maven_pronto
-  ( cd "$RAIZ/java-backend" && "${MVN[@]}" -B -ntp -DskipTests package )
-  cp "$RAIZ"/java-backend/target/kura-backend-tutor-*.jar "$out/tutor.jar"
+  if alvo tutor; then
+    # Os testes rodam no CI do repositório da API; aqui só empacota.
+    log "Build: tutor-api (Java 21)"
+    rm -f "$out/tutor.jar"
+    maven_pronto
+    ( cd "$RAIZ/java-backend" && "${MVN[@]}" -B -ntp -DskipTests package )
+    cp "$RAIZ"/java-backend/target/kura-backend-tutor-*.jar "$out/tutor.jar"
+  fi
 
-  # O Oryx do App Service instala o requirements.txt durante o deploy (SCM_DO_BUILD_DURING_DEPLOYMENT).
-  log "Build: luna-ai (Python 3.12)"
-  ( cd "$RAIZ/luna-ia/luna" && zipar "$out/luna.zip" src requirements.txt pyproject.toml \
-      -x '*/__pycache__/*' '*.pyc' )
+  if alvo luna; then
+    # O Oryx do App Service instala o requirements.txt durante o deploy (SCM_DO_BUILD_DURING_DEPLOYMENT).
+    log "Build: luna-ai (Python 3.12)"
+    rm -f "$out/luna.zip"
+    ( cd "$RAIZ/luna-ia/luna" && zipar "$out/luna.zip" src requirements.txt pyproject.toml \
+        -x '*/__pycache__/*' '*.pyc' )
+  fi
 
   info "artefatos em $out:"; ls -l "$out" | sed 's/^/    /'
 }
@@ -691,7 +734,7 @@ configurar_apps() {
   clinica_url="https://$(host_app "$APP_CLINICA")"
   luna_url="https://$(host_app "$APP_LUNA")"
   web_tutor="https://$(host_swa "$SWA_TUTOR")"
-  cors="$web_tutor,https://$(host_swa "$SWA_CLINICA")${EXTRA_CORS_ORIGINS:+,$EXTRA_CORS_ORIGINS}"
+  cors="$web_tutor,https://$(host_swa "$SWA_CLINICA")${KURA_DOMAIN_ORIGINS:+,$KURA_DOMAIN_ORIGINS}${EXTRA_CORS_ORIGINS:+,$EXTRA_CORS_ORIGINS}"
 
   # Segredos compostos (referência de Key Vault precisa ser o valor inteiro)
   kv_gravar dotnet-oracle-connection-string \
@@ -703,50 +746,56 @@ configurar_apps() {
     "mongodb://kura_dotnet:$(kv_ler mongo-dotnet-password)@${ip}:27017/kura_docs?authSource=kura_docs&serverSelectionTimeoutMS=3000"
 
   # .NET — clinica-api
-  az webapp config appsettings set -g "$RG" -n "$APP_CLINICA" -o none --settings \
-    "WEBSITES_PORT=8080" "ASPNETCORE_URLS=http://+:8080" \
-    "ASPNETCORE_ENVIRONMENT=$ASPNETCORE_ENVIRONMENT" \
-    "ConnectionStrings__DefaultConnection=$(kvref dotnet-oracle-connection-string)" \
-    "Jwt__Key=$(kvref dotnet-jwt-key)" "Jwt__Issuer=kura-api" "Jwt__Audience=kura-client" \
-    "IoT__ApiKey=$(kvref iot-api-key)" \
-    "Luna__ApiKey=$(kvref luna-api-key)" "Luna__InboundApiKey=$(kvref luna-inbound-api-key)" \
-    "Luna__BaseUrl=$luna_url" \
-    "Daily__ApiKey=$(kvref_opcional daily-api-key)" \
-    "CORS_ALLOWED_ORIGINS=$cors" "Storage__BasePath=$STORAGE_BASE_PATH" \
-    "Foto__UrlSecret=$(kvref foto-url-secret)" "Foto__UrlBase=$clinica_url" \
-    "Convite__UrlBaseAppTutor=$web_tutor" \
-    "Mongo__ConnectionString=$(kvref dotnet-mongodb-uri)" "Mongo__InitEnabled=true"
+  if alvo clinica; then
+    az webapp config appsettings set -g "$RG" -n "$APP_CLINICA" -o none --settings \
+      "WEBSITES_PORT=8080" "ASPNETCORE_URLS=http://+:8080" \
+      "ASPNETCORE_ENVIRONMENT=$ASPNETCORE_ENVIRONMENT" \
+      "ConnectionStrings__DefaultConnection=$(kvref dotnet-oracle-connection-string)" \
+      "Jwt__Key=$(kvref dotnet-jwt-key)" "Jwt__Issuer=kura-api" "Jwt__Audience=kura-client" \
+      "IoT__ApiKey=$(kvref iot-api-key)" \
+      "Luna__ApiKey=$(kvref luna-api-key)" "Luna__InboundApiKey=$(kvref luna-inbound-api-key)" \
+      "Luna__BaseUrl=$luna_url" \
+      "Daily__ApiKey=$(kvref_opcional daily-api-key)" \
+      "CORS_ALLOWED_ORIGINS=$cors" "Storage__BasePath=$STORAGE_BASE_PATH" \
+      "Foto__UrlSecret=$(kvref foto-url-secret)" "Foto__UrlBase=$clinica_url" \
+      "Convite__UrlBaseAppTutor=$web_tutor" \
+      "Mongo__ConnectionString=$(kvref dotnet-mongodb-uri)" "Mongo__InitEnabled=true"
+  fi
 
   # Java — tutor-api (o Flyway cria o schema Oracle ao subir)
-  az webapp config appsettings set -g "$RG" -n "$APP_TUTOR" -o none --settings \
-    "WEBSITES_PORT=8081" "SERVER_PORT=8081" "SPRING_PROFILES_ACTIVE=prod" "TZ=America/Sao_Paulo" \
-    "DB_URL=jdbc:oracle:thin:@//${ip}:1521/${ORACLE_SERVICE}" "DB_USERNAME=$ORACLE_APP_USER" \
-    "DB_PASSWORD=$(kvref oracle-app-password)" \
-    "SPRING_DATASOURCE_HIKARI_KEEPALIVE_TIME=120000" "SPRING_DATASOURCE_HIKARI_MAX_LIFETIME=180000" \
-    "JWT_SECRET=$(kvref java-jwt-secret)" "JWT_ACCESS_EXPIRATION_MINUTES=$JWT_ACCESS_EXPIRATION_MINUTES" \
-    "CORS_ALLOWED_ORIGINS=$cors" \
-    "FOTO_URL_SECRET=$(kvref foto-url-secret)" "FOTO_URL_BASE=$clinica_url" \
-    "SPRING_DATA_MONGODB_URI=$(kvref tutor-mongodb-uri)" \
-    "KURA_LOJA_MONGO_INIT_ENABLED=true" "KURA_LOJA_SEED_EXEMPLO_ENABLED=$LOJA_SEED_EXEMPLO" \
-    "KURA_DOCUMENTOS_MONGO_INIT_ENABLED=true" "LAUDO_URL_BASE=$clinica_url"
+  if alvo tutor; then
+    az webapp config appsettings set -g "$RG" -n "$APP_TUTOR" -o none --settings \
+      "WEBSITES_PORT=8081" "SERVER_PORT=8081" "SPRING_PROFILES_ACTIVE=prod" "TZ=America/Sao_Paulo" \
+      "DB_URL=jdbc:oracle:thin:@//${ip}:1521/${ORACLE_SERVICE}" "DB_USERNAME=$ORACLE_APP_USER" \
+      "DB_PASSWORD=$(kvref oracle-app-password)" \
+      "SPRING_DATASOURCE_HIKARI_KEEPALIVE_TIME=120000" "SPRING_DATASOURCE_HIKARI_MAX_LIFETIME=180000" \
+      "JWT_SECRET=$(kvref java-jwt-secret)" "JWT_ACCESS_EXPIRATION_MINUTES=$JWT_ACCESS_EXPIRATION_MINUTES" \
+      "CORS_ALLOWED_ORIGINS=$cors" \
+      "FOTO_URL_SECRET=$(kvref foto-url-secret)" "FOTO_URL_BASE=$clinica_url" \
+      "SPRING_DATA_MONGODB_URI=$(kvref tutor-mongodb-uri)" \
+      "KURA_LOJA_MONGO_INIT_ENABLED=true" "KURA_LOJA_SEED_EXEMPLO_ENABLED=$LOJA_SEED_EXEMPLO" \
+      "KURA_DOCUMENTOS_MONGO_INIT_ENABLED=true" "LAUDO_URL_BASE=$clinica_url"
+  fi
 
   # Python — luna-ai (instância única: o APScheduler roda dentro do processo)
-  az webapp config appsettings set -g "$RG" -n "$APP_LUNA" -o none --settings \
-    "WEBSITES_PORT=8000" "LUNA_HTTP_PORT=8000" "SCM_DO_BUILD_DURING_DEPLOYMENT=true" \
-    "ORACLE_DSN=${ip}:1521/${ORACLE_SERVICE}" "ORACLE_USER=$ORACLE_APP_USER" \
-    "ORACLE_PASSWORD=$(kvref oracle-app-password)" \
-    "KURA_API_BASE_URL=$clinica_url" "KURA_API_KEY=$(kvref luna-api-key)" "KURA_API_TIMEOUT=10" \
-    "LUNA_INBOUND_API_KEY=$(kvref luna-inbound-api-key)" "CORS_ALLOWED_ORIGINS=$cors" \
-    "TWILIO_SID=$(kvref_opcional twilio-sid)" "TWILIO_TOKEN=$(kvref_opcional twilio-token)" \
-    "TWILIO_FROM_NUMBER=$TWILIO_FROM_NUMBER" "WEBHOOK_PUBLIC_URL=$luna_url/webhook/twilio/whatsapp" \
-    "OPENAI_API_KEY=$(kvref_opcional openai-api-key)" \
-    "YOLO_WEIGHTS_PATH=src/ai/models/yolov8n.pt" "BREED_CLASSIFIER_WEIGHTS_PATH=src/ai/models/breed_classifier.pth" \
-    "LEMBRETE_CONFIRMACAO_HABILITADO=$LEMBRETE_CONFIRMACAO_HABILITADO" \
-    "LEMBRETE_CONFIRMACAO_HORA=$LEMBRETE_CONFIRMACAO_HORA" \
-    "LUNA_SCHEDULER_ENABLED=$LUNA_SCHEDULER_ENABLED" "LUNA_SCHEDULER_HORA=$LUNA_SCHEDULER_HORA" \
-    "LOG_LEVEL=INFO"
-  az webapp config set -g "$RG" -n "$APP_LUNA" -o none \
-    --startup-file "python -m uvicorn src.web.app:app --host 0.0.0.0 --port 8000"
+  if alvo luna; then
+    az webapp config appsettings set -g "$RG" -n "$APP_LUNA" -o none --settings \
+      "WEBSITES_PORT=8000" "LUNA_HTTP_PORT=8000" "SCM_DO_BUILD_DURING_DEPLOYMENT=true" \
+      "ORACLE_DSN=${ip}:1521/${ORACLE_SERVICE}" "ORACLE_USER=$ORACLE_APP_USER" \
+      "ORACLE_PASSWORD=$(kvref oracle-app-password)" \
+      "KURA_API_BASE_URL=$clinica_url" "KURA_API_KEY=$(kvref luna-api-key)" "KURA_API_TIMEOUT=10" \
+      "LUNA_INBOUND_API_KEY=$(kvref luna-inbound-api-key)" "CORS_ALLOWED_ORIGINS=$cors" \
+      "TWILIO_SID=$(kvref_opcional twilio-sid)" "TWILIO_TOKEN=$(kvref_opcional twilio-token)" \
+      "TWILIO_FROM_NUMBER=$TWILIO_FROM_NUMBER" "WEBHOOK_PUBLIC_URL=$luna_url/webhook/twilio/whatsapp" \
+      "OPENAI_API_KEY=$(kvref_opcional openai-api-key)" \
+      "YOLO_WEIGHTS_PATH=src/ai/models/yolov8n.pt" "BREED_CLASSIFIER_WEIGHTS_PATH=src/ai/models/breed_classifier.pth" \
+      "LEMBRETE_CONFIRMACAO_HABILITADO=$LEMBRETE_CONFIRMACAO_HABILITADO" \
+      "LEMBRETE_CONFIRMACAO_HORA=$LEMBRETE_CONFIRMACAO_HORA" \
+      "LUNA_SCHEDULER_ENABLED=$LUNA_SCHEDULER_ENABLED" "LUNA_SCHEDULER_HORA=$LUNA_SCHEDULER_HORA" \
+      "LOG_LEVEL=INFO"
+    az webapp config set -g "$RG" -n "$APP_LUNA" -o none \
+      --startup-file "python -m uvicorn src.web.app:app --host 0.0.0.0 --port 8000"
+  fi
 }
 
 implantar() { # implantar <app> <zip|jar> <arquivo>
@@ -775,23 +824,47 @@ implantar() { # implantar <app> <zip|jar> <arquivo>
   die "o deploy de $app não concluiu a tempo"
 }
 
-fase_apps() {
+artefato_de() { # artefato_de <aplicação> → caminho do artefato gerado pela fase build
+  case "$1" in
+    clinica) printf '%s' "$ARTIFACTS_DIR/clinica.zip" ;;
+    tutor)   printf '%s' "$ARTIFACTS_DIR/tutor.jar" ;;
+    luna)    printf '%s' "$ARTIFACTS_DIR/luna.zip" ;;
+  esac
+}
+
+fase_settings() { # só os app settings (reinicia o app; sem deploy de código)
+  resolver_alvos "clinica tutor luna" "$@"
   exigir_ferramentas
-  log "Configurando app settings (Key Vault references)"; configurar_apps
+  log "Configurando app settings (Key Vault references): ${ALVOS[*]}"; configurar_apps
+}
+
+fase_apps() {
+  resolver_alvos "clinica tutor luna" "$@"
+  local a
+  for a in "${ALVOS[@]}"; do  # falha antes de alterar qualquer coisa no Azure
+    [ -f "$(artefato_de "$a")" ] || die "artefato não encontrado: $(artefato_de "$a") (gere-o antes: azure/deploy.sh build $a)"
+  done
+  exigir_ferramentas
+  log "Configurando app settings (Key Vault references): ${ALVOS[*]}"; configurar_apps
 
   # O tutor vai primeiro: o Flyway cria o schema que o .NET e a Luna consomem.
-  log "Deploy: tutor-api (Java) — Flyway aplica as migrations"
-  implantar "$APP_TUTOR" jar "$ARTIFACTS_DIR/tutor.jar"
-  aguardar_saude "https://$(host_app "$APP_TUTOR")/api/actuator/health" 60 15 \
-    || { diagnostico "$APP_TUTOR"; die "tutor-api não ficou saudável"; }
+  if alvo tutor; then
+    log "Deploy: tutor-api (Java) — Flyway aplica as migrations"
+    implantar "$APP_TUTOR" jar "$ARTIFACTS_DIR/tutor.jar"
+    aguardar_saude "https://$(host_app "$APP_TUTOR")/api/actuator/health" 60 15 \
+      || { diagnostico "$APP_TUTOR"; die "tutor-api não ficou saudável"; }
+  fi
 
-  log "Deploy: clinica-api (.NET) e luna-ai (Python)"
-  implantar "$APP_CLINICA" zip "$ARTIFACTS_DIR/clinica.zip"
-  implantar "$APP_LUNA"    zip "$ARTIFACTS_DIR/luna.zip"
-  aguardar_saude "https://$(host_app "$APP_CLINICA")/health" 40 15 \
-    || { diagnostico "$APP_CLINICA"; die "clinica-api não ficou saudável"; }
-  aguardar_saude "https://$(host_app "$APP_LUNA")/health" 40 15 \
-    || { diagnostico "$APP_LUNA"; die "luna-ai não ficou saudável"; }
+  if alvo clinica; then log "Deploy: clinica-api (.NET)"; implantar "$APP_CLINICA" zip "$ARTIFACTS_DIR/clinica.zip"; fi
+  if alvo luna; then log "Deploy: luna-ai (Python)"; implantar "$APP_LUNA" zip "$ARTIFACTS_DIR/luna.zip"; fi
+  if alvo clinica; then
+    aguardar_saude "https://$(host_app "$APP_CLINICA")/health" 40 15 \
+      || { diagnostico "$APP_CLINICA"; die "clinica-api não ficou saudável"; }
+  fi
+  if alvo luna; then
+    aguardar_saude "https://$(host_app "$APP_LUNA")/health" 40 15 \
+      || { diagnostico "$APP_LUNA"; die "luna-ai não ficou saudável"; }
+  fi
   fase_urls
 }
 
@@ -873,6 +946,7 @@ publicar_swa() { # publicar_swa <static-web-app> <pasta-do-build>
 }
 
 fase_web() {
+  resolver_alvos "clinica tutor" "$@"
   exigir_ferramentas
   exigir_comandos web node npm npx
   [ "$(node -p 'process.versions.node.split(".")[0]' | tr -d '\r')" -ge 20 ] || die "Node.js 20 ou superior necessário (recomendado: 22 LTS)"
@@ -882,10 +956,10 @@ fase_web() {
   luna="https://$(host_app "$APP_LUNA")"
   mkdir -p "$WEB_DIR"; WEB_DIR="$(cd "$WEB_DIR" && pwd)"
 
-  log "Build web da clínica";  construir_web mobile-clinica-rn clinica "$clinica" "$luna"
-  log "Build web do tutor";    construir_web mobile-tutor-rn   tutor   "$tutor"   "$luna"
-  log "Publicando web da clínica"; publicar_swa "$SWA_CLINICA" "$WEB_DIR/clinica"
-  log "Publicando web do tutor";   publicar_swa "$SWA_TUTOR"   "$WEB_DIR/tutor"
+  if alvo clinica; then log "Build web da clínica";  construir_web mobile-clinica-rn clinica "$clinica" "$luna"; fi
+  if alvo tutor; then log "Build web do tutor";    construir_web mobile-tutor-rn   tutor   "$tutor"   "$luna"; fi
+  if alvo clinica; then log "Publicando web da clínica"; publicar_swa "$SWA_CLINICA" "$WEB_DIR/clinica"; fi
+  if alvo tutor; then log "Publicando web do tutor";   publicar_swa "$SWA_TUTOR"   "$WEB_DIR/tutor"; fi
   fase_urls
 }
 
@@ -984,13 +1058,15 @@ fase_destroy() {
 
 case "${1:-}" in
   infra)   fase_infra ;;
-  build)   fase_build ;;
-  apps)    fase_apps ;;
-  web)     fase_web ;;
+  build)   shift; fase_build "$@" ;;
+  apps)    shift; fase_apps "$@" ;;
+  settings) shift; fase_settings "$@" ;;
+  web)     shift; fase_web "$@" ;;
   urls)    exigir_ferramentas; fase_urls ;;
   check)   fase_check || exit 1 ;;
   seed)    fase_seed ;;
-  all)     fase_check || die "pré-requisitos pendentes (veja acima)"; fase_infra; fase_build; fase_apps; fase_web ;;
+  all)     [ $# -eq 1 ] || die "'all' não aceita aplicações (use build/apps/web com a aplicação desejada)"
+           fase_check || die "pré-requisitos pendentes (veja acima)"; fase_infra; fase_build; fase_apps; fase_web ;;
   destroy) fase_destroy ;;
   *)       awk 'NR > 1 && /^set -/ { exit } NR > 1 && /^#/ { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; exit 2 ;;
 esac
