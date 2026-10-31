@@ -56,7 +56,7 @@ flowchart LR
 
 | Caminho | Para quê |
 |---|---|
-| `azure/deploy.sh` | Todos os comandos `az`: fases `check`, `infra`, `build`, `apps`, `web`, `urls`, `seed`, `all` e `destroy` |
+| `azure/deploy.sh` | Todos os comandos `az`: fases `check`, `infra`, `build`, `apps`, `settings`, `web`, `urls`, `seed`, `all` e `destroy` |
 | `azure/staticwebapp.config.json` | Fallback de SPA, cache e headers dos 2 Static Web Apps |
 | `mongo/init/` | Role/usuário do Java no MongoDB (enviado à VM pelo `deploy.sh`) |
 | `scripts/` | Seeds de demonstração, `preflight-next.sh`, `smoke-contratos.sh` (ver [Seeds e smoke](#seeds-e-smoke)) e `db-select.sh` (SELECT no Oracle sem expor a senha; ver [Evidência no banco por SELECT](#evidência-no-banco-por-select)) |
@@ -195,10 +195,29 @@ O `build` compila o commit que cada submódulo tem fixado. Para publicar uma ver
 
 ```bash
 git submodule update --remote java-backend         # ou dotnet-backend, luna-ia, mobile-*-rn
-bash azure/deploy.sh build && bash azure/deploy.sh apps      # APIs
-bash azure/deploy.sh web                                     # apps web
+bash azure/deploy.sh build && bash azure/deploy.sh apps      # as 3 APIs
+bash azure/deploy.sh web                                     # os 2 apps web
 git add java-backend && git commit -m "chore: atualiza java-backend"   # registra o que foi implantado
 ```
+
+### Reimplantar só algumas aplicações
+
+As fases `build`, `apps`, `settings` e `web` aceitam a lista de aplicações; sem argumentos, valem para todas.
+
+| Fase | Aplicações aceitas | Exemplo |
+|---|---|---|
+| `build` | `clinica`, `tutor`, `luna` | `bash azure/deploy.sh build tutor` |
+| `apps` | `clinica`, `tutor`, `luna` | `bash azure/deploy.sh apps tutor luna` |
+| `settings` | `clinica`, `tutor`, `luna` | `bash azure/deploy.sh settings clinica` |
+| `web` | `clinica`, `tutor` | `bash azure/deploy.sh web tutor` |
+
+- Só o tutor: `bash azure/deploy.sh build tutor && bash azure/deploy.sh apps tutor`. Os artefatos das outras APIs em
+  `artifacts/` não são tocados, e o `apps` só configura, implanta e confere a saúde das aplicações escolhidas. O `apps` confere
+  os artefatos antes de mexer no Azure e para com a mensagem do que falta.
+- Só os app settings (por exemplo, depois de mudar o CORS), sem rebuild e sem deploy de código:
+  `bash azure/deploy.sh settings` (ou com a aplicação). Os apps reiniciam.
+- Aplicação inexistente na fase (por exemplo, `web luna`) é recusada antes de qualquer chamada ao Azure, e `all` não aceita
+  argumentos.
 
 Rollback: volte o submódulo ao commit anterior (`git -C java-backend checkout <sha>`) e repita as fases. A pipeline de
 CI/CD do Azure DevOps do `tutor-api` fica no repositório do Java, não aqui.
@@ -218,6 +237,7 @@ Tudo é sobrescrevível por variável de ambiente (valores padrão entre parênt
 | `ORACLE_IMAGE` (`gvenzl/oracle-xe:21-slim`), `ORACLE_SERVICE` (`XEPDB1`), `ORACLE_APP_USER` (`KURA`) | Banco. O 26ai Free (`gvenzl/oracle-free:slim` + `FREEPDB1`) ainda não foi validado com o Flyway do tutor |
 | `PLAN_SKU` (`B2`) | Plano do App Service |
 | `RUNTIME_DOTNET` (`DOTNETCORE:10.0`), `RUNTIME_JAVA` (`JAVA:21-java21`), `RUNTIME_PYTHON` (`PYTHON:3.12`) | Runtimes (o script confere com `az webapp list-runtimes`) |
+| `KURA_DOMAIN_ORIGINS` (`https://kuramedvet.app`) | Origens do domínio próprio no CORS das 3 APIs, separadas por vírgula. O CORS compara a origem exata (esquema + host), então `www` e subdomínios precisam constar: `https://kuramedvet.app,https://www.kuramedvet.app`. Depois de mudar, rode `bash azure/deploy.sh settings` |
 | `EXTRA_CORS_ORIGINS` | Origens extras no CORS (ex.: `http://localhost:19006`) |
 | `LOJA_SEED_EXEMPLO` (`true`) | Catálogo de exemplo da Loja |
 | `LUNA_SCHEDULER_ENABLED` (`false`), `LEMBRETE_CONFIRMACAO_HABILITADO` (`false`) | Agendadores da Luna |
@@ -309,7 +329,7 @@ funcionam contra o Azure.
 
 | Job | O que confere |
 |---|---|
-| *Validate scripts and embedded compose* | `bash -n` do `deploy.sh` e de `scripts/`, `shellcheck` do `deploy.sh` e do `db-select.sh`; JSON do Static Web Apps; sintaxe do script de bootstrap da VM gerado pelo `deploy.sh`; estrutura do `docker-compose.yml` embutido (YAML válido, variáveis todas definidas no `.env`, sem valores padrão de segredo), tudo sem Docker e sem Azure |
+| *Validate scripts and embedded compose* | `bash -n` do `deploy.sh` e de `scripts/`, `shellcheck` do `deploy.sh` e do `db-select.sh`; JSON do Static Web Apps; argumentos de seleção de aplicações recusados antes de qualquer chamada ao Azure; sintaxe do script de bootstrap da VM gerado pelo `deploy.sh`; estrutura do `docker-compose.yml` embutido (YAML válido, variáveis todas definidas no `.env`, sem valores padrão de segredo), tudo sem Docker e sem Azure |
 | *Check submodule pins against upstream main* | Falha se algum dos 5 submódulos estiver fixado num commit diferente do `main` do repositório de origem |
 
 ## Solução de problemas
