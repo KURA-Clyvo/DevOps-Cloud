@@ -1,0 +1,353 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2500" height="1880" viewBox="0 0 2500 1880" font-family="Liberation Sans, Arial, Helvetica, sans-serif" xmlns:c2pa="http://c2pa.org/manifest"><metadata><c2pa:manifest>AAAWgmp1bWIAAAAeanVtZGMycGEAEQAQgAAAqgA4m3EDYzJwYQAAABZcanVtYgAAAEdqdW1kYzJtYQARABCAAACqADibcQN1cm46YzJwYTpjZjVhYWM4OC03NTNjLTRiMTktOWYxZS1jOTBhZTFlYTRjMTcAAAADl2p1bWIAAAApanVtZGMyYXMAEQAQgAAAqgA4m3EDYzJwYS5hc3NlcnRpb25zAAAAALxqdW1iAAAARGp1bWRjYm9yABEAEIAAAKoAOJtxE2MycGEuaW5ncmVkaWVudC52MwAAAAAYYzJzaPXqP10H9c6TXtAxVj143bMAAABwY2JvcqNpZGM6Zm9ybWF0bWltYWdlL3N2Zyt4bWxqaW5zdGFuY2VJRHgseG1wOmlpZDoyNDNmZjhjYS1kNmFkLTQxOWMtOTA3Yy0yMjgyY2JlMjBhNGVscmVsYXRpb25zaGlwaHBhcmVudE9mAAAB4mp1bWIAAABBanVtZGNib3IAEQAQgAAAqgA4m3ETYzJwYS5hY3Rpb25zLnYyAAAAABhjMnNo7an3GrmX/r513djWTPlTawAAAZljYm9yomdhY3Rpb25zgqJmYWN0aW9ua2MycGEub3BlbmVkanBhcmFtZXRlcnOha2luZ3JlZGllbnRzgaJjdXJseC1zZWxmI2p1bWJmPWMycGEuYXNzZXJ0aW9ucy9jMnBhLmluZ3JlZGllbnQudjNkaGFzaFggOf1vglnoL4+M5eIkLsNQkgEOHkX5gs3PtiHbZDBWdhGkZmFjdGlvbngdY29tLmFudGhyb3BpYy5jbGF1ZGUucHJvdmlkZWRqcGFyYW1ldGVyc6F4H2NvbS5hbnRocm9waWMub3JpZ2luLWNvbmZpZGVuY2VndW5rbm93bmtkZXNjcmlwdGlvbnhmQ2xhdWRlIHByb3ZpZGVkIHRoaXMgZmlsZSBhdCB0aGUgcmVxdWVzdCBvZiBhIHVzZXIgYW5kIG1heSBoYXZlIGNyZWF0ZWQgb3IgbW9kaWZpZWQgdGhlIGZpbGUgY29udGVudHMubXNvZnR3YXJlQWdlbnShZG5hbWVmQ2xhdWRlcmFsbEFjdGlvbnNJbmNsdWRlZPUAAADIanVtYgAAAEBqdW1kY2JvcgARABCAAACqADibcRNjMnBhLmhhc2guZGF0YQAAAAAYYzJzaHq8hPDl2hXHAXfP9WDjAPwAAACAY2JvcqVjYWxnZnNoYTI1NmNwYWRNAAAAAAAAAAAAAAAAAGRoYXNoWCBvUJlpzIzUFnixpbrp4AxjjMEbBoTpi0El5oh8oNnSo2RuYW1lbmp1bWJmIG1hbmlmZXN0amV4Y2x1c2lvbnOBomVzdGFydBjWZmxlbmd0aBkeBAAAAj5qdW1iAAAAJ2p1bWRjMmNsABEAEIAAAKoAOJtxA2MycGEuY2xhaW0udjIAAAACD2Nib3KlY2FsZ2ZzaGEyNTZpc2lnbmF0dXJleE1zZWxmI2p1bWJmPS9jMnBhL3VybjpjMnBhOmNmNWFhYzg4LTc1M2MtNGIxOS05ZjFlLWM5MGFlMWVhNGMxNy9jMnBhLnNpZ25hdHVyZWppbnN0YW5jZUlEeCx4bXA6aWlkOmNhMTI1ODFkLThjMTYtNGEzZi04OGE2LWQxMTZiY2MwNzFhZnJjcmVhdGVkX2Fzc2VydGlvbnODomN1cmx4LXNlbGYjanVtYmY9YzJwYS5hc3NlcnRpb25zL2MycGEuaW5ncmVkaWVudC52M2RoYXNoWCA5/W+CWegvj4zl4iQuw1CSAQ4eRfmCzc+2IdtkMFZ2EaJjdXJseCpzZWxmI2p1bWJmPWMycGEuYXNzZXJ0aW9ucy9jMnBhLmFjdGlvbnMudjJkaGFzaFggGQ/X3vWT7L8B5UytxOudYI9W10xBCts2U/CMLbZ99wyiY3VybHgpc2VsZiNqdW1iZj1jMnBhLmFzc2VydGlvbnMvYzJwYS5oYXNoLmRhdGFkaGFzaFgg7GclRsE1nsjUie4W1GP3gg4sCbIpHHyHtf9B+au4uAF0Y2xhaW1fZ2VuZXJhdG9yX2luZm+jZG5hbWVvQW50aHJvcGljIEZpbGVzZ3ZlcnNpb25lMS4wLjBrc3BlY1ZlcnNpb25lMi40LjAAABA4anVtYgAAAChqdW1kYzJjcwARABCAAACqADibcQNjMnBhLnNpZ25hdHVyZQAAABAIY2JvctKEWQISogEmGCFZAgowggIGMIIBjaADAgECAhRA5aAK7sI50L64g/oGQgU9Z1UTADAKBggqhkjOPQQDAzBJMRcwFQYDVQQKEw5BbnRocm9waWMsIFBCQzEuMCwGA1UEAxMlQW50aHJvcGljIENvbnRlbnQgQ3JlZGVudGlhbHMgUm9vdCBDQTAeFw0yNjA4MDcxODQzNTZaFw0yODA4MDYxOTQzNTZaMEQxFzAVBgNVBAoTDkFudGhyb3BpYywgUEJDMSkwJwYDVQQDEyBBbnRocm9waWMgQ2xhdWRlIENvbnRlbnQgU2lnbmluZzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABJh6CmvLUBgFFNU0vUKlOVtE6djd17L5SuwX0LemFisBM3dkd/3cyjxFA3Qo5S46fX0/ihY0VZ7mfb9KF703t5OjWDBWMA4GA1UdDwEB/wQEAwIHgDAVBgNVHSUEDjAMBgorBgEEAYPoXgIBMAwGA1UdEwEB/wQCMAAwHwYDVR0jBBgwFoAUzlHiBIFOZFsj+OPEz5o+nMHXXMIwCgYIKoZIzj0EAwMDZwAwZAIwMXMdFJ4BetLLVY7ORuE9noqbbAZOZn/aArXyTwFAZfKrPzxF2vPoJNf1+UCdg1XGAjBwX1zd9WGqYkqmL5SFqw1QySjr1zJfpJM9+1rdDwSPLMOPOjKuiXjoU/pUUeG9RwmhY3BhZFkNngAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPZYQB+prkTVqQaIuIZNOM8XpcA77Tr57FpIzsk2e+hvY4b769V3T2n5RLxyQBvDoBkOEcbwhk8KeWf2gT9HnIwrG7w=</c2pa:manifest></metadata>
+<defs><marker id="m-cicd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#d9480f"/></marker><marker id="m-prov" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#7048e8"/></marker><marker id="m-mute" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#495057"/></marker><marker id="m-run" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#1971c2"/></marker><marker id="m-secret" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#e08a00"/></marker></defs>
+<rect width="2500" height="1880" fill="#ffffff"/>
+<text x="40" y="52" font-size="34" fill="#212529" text-anchor="start" font-weight="700">KURA — Arquitetura da solução e fluxo CI/CD</text>
+<text x="40" y="82" font-size="17" fill="#495057" text-anchor="start">Sprint 4 · DevOps Tools &amp; Cloud Computing · aplicação no pipeline: kura-tutor-api (Java 21 · Spring Boot) no Azure App Service</text>
+<rect x="40" y="100" width="620" height="470" rx="16" fill="#f8f9fa" stroke="#adb5bd" stroke-width="2.5"/>
+<text x="60" y="134" font-size="21" font-weight="700" fill="#495057">PC do desenvolvedor (Windows)</text>
+<rect x="730" y="100" width="340" height="470" rx="16" fill="#f6f8fa" stroke="#57606a" stroke-width="2.5"/>
+<text x="750" y="134" font-size="21" font-weight="700" fill="#24292f">GitHub</text>
+<rect x="1140" y="100" width="1320" height="470" rx="16" fill="#eaf3fd" stroke="#1971c2" stroke-width="2.5"/>
+<text x="1160" y="134" font-size="21" font-weight="700" fill="#1864ab">Azure DevOps · projeto «Sprint 4 – Azure DevOps»</text>
+<circle cx="110" cy="179" r="17" fill="#364fc7"/>
+<path d="M80 227 Q80 199 110 199 Q140 199 140 227 Z" fill="#364fc7"/>
+<text x="110" y="257" font-size="17" font-weight="700" fill="#212529" text-anchor="middle">Desenvolvedor</text>
+<text x="110" y="277" font-size="14" fill="#495057" text-anchor="middle">escreve e testa</text>
+<rect x="230" y="150" width="200" height="100" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M230 160 a10 10 0 0 1 10 -10 h0 v100 h0 a10 10 0 0 1 -10 -10 z" fill="#868e96" opacity="0"/>
+<rect x="230" y="150" width="9" height="100" rx="4" fill="#868e96"/>
+<circle cx="258" cy="167" r="3.5" fill="#868e96"/><circle cx="258" cy="183" r="3.5" fill="#868e96"/><circle cx="272" cy="173" r="3.5" fill="#868e96"/><path d="M258 170 v10 M258 178 q0 -5 11 -5" fill="none" stroke="#868e96" stroke-width="2.2"/>
+<text x="286" y="183" font-size="19" font-weight="700" fill="#212529">IDE + Git</text>
+<text x="254" y="210" font-size="15" fill="#495057">commit e push</text>
+<text x="254" y="232" font-size="15" fill="#495057">na branch main</text>
+<path d="M150 200 L230 200" fill="none" stroke="#495057" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-mute)"/>
+<rect x="60" y="290" width="580" height="250" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M60 300 a10 10 0 0 1 10 -10 h0 v250 h0 a10 10 0 0 1 -10 -10 z" fill="#1864ab" opacity="0"/>
+<rect x="60" y="290" width="9" height="250" rx="4" fill="#1864ab"/>
+<path d="M84 306 l8 0 l5 9 l-5 9 l-8 0 l5 -9 z" fill="#1864ab"/><path d="M95 306 l8 0 l5 9 l-5 9 l-8 0 l5 -9 z" fill="#1864ab" opacity=".6"/>
+<text x="116" y="323" font-size="19" font-weight="700" fill="#212529">Agente self-hosted</text>
+<text x="84" y="350" font-size="15" fill="#495057">executa os jobs do CI e do CD nesta máquina</text>
+<rect x="553.8" y="302" width="72.19999999999999" height="26" rx="13" fill="#1864ab"/>
+<text x="589.9" y="320" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">Windows</text>
+<rect x="80" y="372" width="270" height="44" rx="8" fill="#f1f3f5" stroke="#ced4da" stroke-width="1.5"/>
+<text x="215.0" y="399.5" font-size="15" fill="#212529" text-anchor="middle">JDK 21 · mvnw.cmd (Maven)</text>
+<rect x="370" y="372" width="250" height="44" rx="8" fill="#f1f3f5" stroke="#ced4da" stroke-width="1.5"/>
+<text x="495.0" y="399.5" font-size="15" fill="#212529" text-anchor="middle">JUnit · H2 · mongod embarcado</text>
+<rect x="80" y="424" width="270" height="44" rx="8" fill="#f1f3f5" stroke="#ced4da" stroke-width="1.5"/>
+<text x="215.0" y="451.5" font-size="15" fill="#212529" text-anchor="middle">Azure CLI (AzureCLI@2)</text>
+<rect x="370" y="424" width="250" height="44" rx="8" fill="#f1f3f5" stroke="#ced4da" stroke-width="1.5"/>
+<text x="495.0" y="451.5" font-size="15" fill="#212529" text-anchor="middle">PowerShell e cmd (steps)</text>
+<rect x="80" y="476" width="540" height="44" rx="8" fill="#f3f0ff" stroke="#7048e8" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="350.0" y="503.5" font-size="15" fill="#5f3dc4" text-anchor="middle">azure/deploy.sh + Azure CLI: provisiona a infraestrutura</text>
+<rect x="750" y="150" width="300" height="120" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M750 160 a10 10 0 0 1 10 -10 h0 v120 h0 a10 10 0 0 1 -10 -10 z" fill="#24292f" opacity="0"/>
+<rect x="750" y="150" width="9" height="120" rx="4" fill="#24292f"/>
+<circle cx="778" cy="167" r="3.5" fill="#24292f"/><circle cx="778" cy="183" r="3.5" fill="#24292f"/><circle cx="792" cy="173" r="3.5" fill="#24292f"/><path d="M778 170 v10 M778 178 q0 -5 11 -5" fill="none" stroke="#24292f" stroke-width="2.2"/>
+<text x="806" y="183" font-size="19" font-weight="700" fill="#212529">backend-tutor-java</text>
+<text x="774" y="210" font-size="15" fill="#495057">KURA-Clyvo · branch main</text>
+<text x="774" y="232" font-size="15" fill="#495057">código-fonte do tutor-api</text>
+<rect x="750" y="300" width="300" height="110" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M750 310 a10 10 0 0 1 10 -10 h0 v110 h0 a10 10 0 0 1 -10 -10 z" fill="#1864ab" opacity="0"/>
+<rect x="750" y="300" width="9" height="110" rx="4" fill="#1864ab"/>
+<path d="M774 316 l8 0 l5 9 l-5 9 l-8 0 l5 -9 z" fill="#1864ab"/><path d="M785 316 l8 0 l5 9 l-5 9 l-8 0 l5 -9 z" fill="#1864ab" opacity=".6"/>
+<text x="806" y="333" font-size="19" font-weight="700" fill="#212529">App Azure Pipelines</text>
+<text x="774" y="360" font-size="15" fill="#495057">webhook do gatilho do CI</text>
+<text x="774" y="382" font-size="15" fill="#495057">conecta GitHub e Azure DevOps</text>
+<rect x="750" y="440" width="300" height="100" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M750 450 a10 10 0 0 1 10 -10 h0 v100 h0 a10 10 0 0 1 -10 -10 z" fill="#24292f" opacity="0"/>
+<rect x="750" y="440" width="9" height="100" rx="4" fill="#24292f"/>
+<text x="774" y="473" font-size="19" font-weight="700" fill="#212529">GitHub Actions</text>
+<text x="774" y="500" font-size="15" fill="#495057">valida pull requests e push</text>
+<text x="774" y="522" font-size="15" fill="#495057">(testes automáticos)</text>
+<path d="M900 270 L900 300" fill="none" stroke="#495057" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-mute)"/>
+<rect x="1170" y="160" width="480" height="235" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M1170 170 a10 10 0 0 1 10 -10 h0 v235 h0 a10 10 0 0 1 -10 -10 z" fill="#1864ab" opacity="0"/>
+<rect x="1170" y="160" width="9" height="235" rx="4" fill="#1864ab"/>
+<path d="M1194 176 l8 0 l5 9 l-5 9 l-8 0 l5 -9 z" fill="#1864ab"/><path d="M1205 176 l8 0 l5 9 l-5 9 l-8 0 l5 -9 z" fill="#1864ab" opacity=".6"/>
+<text x="1226" y="193" font-size="19" font-weight="700" fill="#212529">CI · estágio Build</text>
+<text x="1194" y="220" font-size="15" fill="#495057">azure-pipelines.yml · roda no agente</text>
+<rect x="1192" y="235" width="436" height="34" rx="8" fill="#f1f3f5" stroke="#ced4da" stroke-width="1.5"/>
+<text x="1410.0" y="257.5" font-size="15" fill="#212529" text-anchor="middle">Verificar JDK 21 no agente</text>
+<rect x="1192" y="275" width="436" height="34" rx="8" fill="#f1f3f5" stroke="#ced4da" stroke-width="1.5"/>
+<text x="1410.0" y="297.5" font-size="15" fill="#212529" text-anchor="middle">mvnw verify · testes (perfil dev)</text>
+<rect x="1192" y="315" width="436" height="34" rx="8" fill="#f1f3f5" stroke="#ced4da" stroke-width="1.5"/>
+<text x="1410.0" y="337.5" font-size="15" fill="#212529" text-anchor="middle">Publicar resultados dos testes</text>
+<rect x="1192" y="355" width="436" height="34" rx="8" fill="#f1f3f5" stroke="#ced4da" stroke-width="1.5"/>
+<text x="1410.0" y="377.5" font-size="15" fill="#212529" text-anchor="middle">Publicar artefato (app.jar)</text>
+<rect x="1700" y="160" width="530" height="235" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M1700 170 a10 10 0 0 1 10 -10 h0 v235 h0 a10 10 0 0 1 -10 -10 z" fill="#1864ab" opacity="0"/>
+<rect x="1700" y="160" width="9" height="235" rx="4" fill="#1864ab"/>
+<path d="M1724 176 l8 0 l5 9 l-5 9 l-8 0 l5 -9 z" fill="#1864ab"/><path d="M1735 176 l8 0 l5 9 l-5 9 l-8 0 l5 -9 z" fill="#1864ab" opacity=".6"/>
+<text x="1756" y="193" font-size="19" font-weight="700" fill="#212529">CD · estágio Deploy</text>
+<text x="1724" y="220" font-size="15" fill="#495057">roda após o CI, na branch main</text>
+<rect x="1722" y="235" width="486" height="34" rx="8" fill="#f1f3f5" stroke="#ced4da" stroke-width="1.5"/>
+<text x="1965.0" y="257.5" font-size="15" fill="#212529" text-anchor="middle">Baixar o artefato (tutor-jar)</text>
+<rect x="1722" y="275" width="486" height="34" rx="8" fill="#f1f3f5" stroke="#ced4da" stroke-width="1.5"/>
+<text x="1965.0" y="297.5" font-size="15" fill="#212529" text-anchor="middle">AzureWebApp@1 · deploy no Web App</text>
+<rect x="1722" y="315" width="486" height="34" rx="8" fill="#f1f3f5" stroke="#ced4da" stroke-width="1.5"/>
+<text x="1965.0" y="337.5" font-size="15" fill="#212529" text-anchor="middle">AzureCLI@2 · health check (/api/actuator/health)</text>
+<rect x="1170" y="420" width="250" height="120" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M1170 430 a10 10 0 0 1 10 -10 h0 v120 h0 a10 10 0 0 1 -10 -10 z" fill="#1864ab" opacity="0"/>
+<rect x="1170" y="420" width="9" height="120" rx="4" fill="#1864ab"/>
+<text x="1194" y="453" font-size="19" font-weight="700" fill="#212529">Pipeline Artifacts</text>
+<text x="1194" y="480" font-size="15" fill="#495057">tutor-jar → app.jar</text>
+<rect x="1440" y="420" width="240" height="120" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M1440 430 a10 10 0 0 1 10 -10 h0 v120 h0 a10 10 0 0 1 -10 -10 z" fill="#1864ab" opacity="0"/>
+<rect x="1440" y="420" width="9" height="120" rx="4" fill="#1864ab"/>
+<text x="1464" y="453" font-size="19" font-weight="700" fill="#212529">Resultados de testes</text>
+<text x="1464" y="480" font-size="15" fill="#495057">aba Tests (JUnit)</text>
+<rect x="1800" y="420" width="200" height="120" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M1800 430 a10 10 0 0 1 10 -10 h0 v120 h0 a10 10 0 0 1 -10 -10 z" fill="#1864ab" opacity="0"/>
+<rect x="1800" y="420" width="9" height="120" rx="4" fill="#1864ab"/>
+<text x="1824" y="453" font-size="19" font-weight="700" fill="#212529">Environment</text>
+<text x="1824" y="480" font-size="15" fill="#495057">kura-producao</text>
+<rect x="2020" y="420" width="220" height="120" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M2020 430 a10 10 0 0 1 10 -10 h0 v120 h0 a10 10 0 0 1 -10 -10 z" fill="#0c8599" opacity="0"/>
+<rect x="2020" y="420" width="9" height="120" rx="4" fill="#0c8599"/>
+<path d="M2055 433 l11 4 v8 c0 8 -6 11 -11 14 c-5 -3 -11 -6 -11 -14 v-8 z" fill="#0c8599"/><path d="M2050 445 l4 4 l7 -8" fill="none" stroke="#fff" stroke-width="2.4"/>
+<text x="2076" y="453" font-size="19" font-weight="700" fill="#212529">Service connection</text>
+<text x="2044" y="480" font-size="15" fill="#495057">kura-azure</text>
+<text x="2044" y="502" font-size="15" fill="#495057">federação de identidade</text>
+<circle cx="2350" cy="209" r="17" fill="#862e9c"/>
+<path d="M2320 257 Q2320 229 2350 229 Q2380 229 2380 257 Z" fill="#862e9c"/>
+<text x="2350" y="287" font-size="17" font-weight="700" fill="#212529" text-anchor="middle">Professor (avaliador)</text>
+<text x="2350" y="307" font-size="14" fill="#495057" text-anchor="middle">acesso Basic +</text>
+<text x="2350" y="326" font-size="14" fill="#495057" text-anchor="middle">admin do projeto</text>
+<text x="40" y="752" font-size="19" fill="#212529" text-anchor="start" font-weight="700">Usuários e dispositivos</text>
+<circle cx="145" cy="854" r="17" fill="#364fc7"/>
+<path d="M115 902 Q115 874 145 874 Q175 874 175 902 Z" fill="#364fc7"/>
+<text x="145" y="932" font-size="17" font-weight="700" fill="#212529" text-anchor="middle">Tutor</text>
+<text x="145" y="952" font-size="14" fill="#495057" text-anchor="middle">usuário final</text>
+<text x="145" y="971" font-size="14" fill="#495057" text-anchor="middle">app Tutor</text>
+<circle cx="145" cy="1034" r="17" fill="#364fc7"/>
+<path d="M115 1082 Q115 1054 145 1054 Q175 1054 175 1082 Z" fill="#364fc7"/>
+<text x="145" y="1112" font-size="17" font-weight="700" fill="#212529" text-anchor="middle">Veterinário / Gestor</text>
+<text x="145" y="1132" font-size="14" fill="#495057" text-anchor="middle">usuário final</text>
+<text x="145" y="1151" font-size="14" fill="#495057" text-anchor="middle">app Clínica</text>
+<rect x="117" y="1228" width="56" height="40" rx="6" fill="#495057"/>
+<rect x="127" y="1238" width="36" height="20" rx="3" fill="#fff" opacity=".9"/>
+<rect x="123" y="1268" width="5" height="9" fill="#495057"/><rect x="123" y="1219" width="5" height="9" fill="#495057"/>
+<rect x="137" y="1268" width="5" height="9" fill="#495057"/><rect x="137" y="1219" width="5" height="9" fill="#495057"/>
+<rect x="151" y="1268" width="5" height="9" fill="#495057"/><rect x="151" y="1219" width="5" height="9" fill="#495057"/>
+<rect x="165" y="1268" width="5" height="9" fill="#495057"/><rect x="165" y="1219" width="5" height="9" fill="#495057"/>
+<text x="145" y="1302" font-size="17" font-weight="700" fill="#212529" text-anchor="middle">Dispositivos IoT</text>
+<text x="145" y="1322" font-size="14" fill="#495057" text-anchor="middle">sensores ESP32</text>
+<rect x="290" y="720" width="1870" height="880" rx="16" fill="#eef7ff" stroke="#0078d4" stroke-width="2.5"/>
+<text x="310" y="754" font-size="21" font-weight="700" fill="#0063b1">Microsoft Azure · Resource Group rg-kura · East US 2</text>
+<text x="330" y="792" font-size="15" fill="#0063b1" text-anchor="start" font-weight="700">Azure Static Web Apps (Free)</text>
+<rect x="330" y="800" width="260" height="130" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M330 810 a10 10 0 0 1 10 -10 h0 v130 h0 a10 10 0 0 1 -10 -10 z" fill="#0063b1" opacity="0"/>
+<rect x="330" y="800" width="9" height="130" rx="4" fill="#0063b1"/>
+<circle cx="365" cy="825" r="12" fill="none" stroke="#0063b1" stroke-width="2.5"/><ellipse cx="365" cy="825" rx="5" ry="12" fill="none" stroke="#0063b1" stroke-width="2"/><line x1="353" y1="825" x2="377" y2="825" stroke="#0063b1" stroke-width="2"/>
+<text x="386" y="833" font-size="19" font-weight="700" fill="#212529">kura-tutor-web</text>
+<text x="354" y="860" font-size="15" fill="#495057">App Tutor · React Native/Expo</text>
+<text x="354" y="882" font-size="15" fill="#495057">exportado para web (SPA)</text>
+<rect x="330" y="980" width="260" height="130" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M330 990 a10 10 0 0 1 10 -10 h0 v130 h0 a10 10 0 0 1 -10 -10 z" fill="#0063b1" opacity="0"/>
+<rect x="330" y="980" width="9" height="130" rx="4" fill="#0063b1"/>
+<circle cx="365" cy="1005" r="12" fill="none" stroke="#0063b1" stroke-width="2.5"/><ellipse cx="365" cy="1005" rx="5" ry="12" fill="none" stroke="#0063b1" stroke-width="2"/><line x1="353" y1="1005" x2="377" y2="1005" stroke="#0063b1" stroke-width="2"/>
+<text x="386" y="1013" font-size="19" font-weight="700" fill="#212529">kura-clinica-web</text>
+<text x="354" y="1040" font-size="15" fill="#495057">App Clínica · React Native/Expo</text>
+<text x="354" y="1062" font-size="15" fill="#495057">exportado para web (SPA)</text>
+<rect x="680" y="770" width="590" height="610" rx="16" fill="#ffffff" stroke="#74c0fc" stroke-width="2.5"/>
+<text x="700" y="804" font-size="21" font-weight="700" fill="#0063b1">App Service Plan B2 · Linux</text>
+<rect x="700" y="830" width="550" height="160" rx="10" fill="#ffffff" stroke="#d9480f" stroke-width="4"/>
+<path d="M700 840 a10 10 0 0 1 10 -10 h0 v160 h0 a10 10 0 0 1 -10 -10 z" fill="#e8590c" opacity="0"/>
+<rect x="700" y="830" width="9" height="160" rx="4" fill="#e8590c"/>
+<rect x="723" y="845" width="24" height="20" rx="4" fill="#e8590c"/><text x="735" y="860" font-size="12" font-weight="700" fill="#fff" text-anchor="middle" font-family="Liberation Sans, Arial, Helvetica, sans-serif">&lt;/&gt;</text>
+<text x="756" y="863" font-size="19" font-weight="700" fill="#212529">kura-tutor-api</text>
+<text x="724" y="890" font-size="15" fill="#495057">Spring Boot 3 · Spring Security (JWT) · Flyway</text>
+<text x="724" y="912" font-size="15" fill="#495057">porta 8081 · /api · health: /api/actuator/health</text>
+<rect x="1163.8" y="842" width="72.19999999999999" height="26" rx="13" fill="#e8590c"/>
+<text x="1199.9" y="860" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">Java 21</text>
+<rect x="1000" y="956" width="236" height="24" rx="12" fill="#d9480f"/>
+<polygon points="1018.0,961.0 1019.8,965.6 1024.7,965.8 1020.9,968.9 1022.1,973.7 1018.0,971.0 1013.9,973.7 1015.1,968.9 1011.3,965.8 1016.2,965.6" fill="#fff"/>
+<text x="1130" y="973" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">aplicação do pipeline CI/CD</text>
+<rect x="700" y="1010" width="550" height="160" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M700 1020 a10 10 0 0 1 10 -10 h0 v160 h0 a10 10 0 0 1 -10 -10 z" fill="#5f3dc4" opacity="0"/>
+<rect x="700" y="1010" width="9" height="160" rx="4" fill="#5f3dc4"/>
+<rect x="723" y="1025" width="24" height="20" rx="4" fill="#5f3dc4"/><text x="735" y="1040" font-size="12" font-weight="700" fill="#fff" text-anchor="middle" font-family="Liberation Sans, Arial, Helvetica, sans-serif">&lt;/&gt;</text>
+<text x="756" y="1043" font-size="19" font-weight="700" fill="#212529">kura-clinica-api</text>
+<text x="724" y="1070" font-size="15" fill="#495057">Clean Architecture · JWT · MongoDB</text>
+<text x="724" y="1092" font-size="15" fill="#495057">porta 8080 · /health · recebe os sensores IoT</text>
+<rect x="1163.8" y="1022" width="72.19999999999999" height="26" rx="13" fill="#5f3dc4"/>
+<text x="1199.9" y="1040" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">.NET 10</text>
+<rect x="700" y="1220" width="550" height="140" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M700 1230 a10 10 0 0 1 10 -10 h0 v140 h0 a10 10 0 0 1 -10 -10 z" fill="#2b8a3e" opacity="0"/>
+<rect x="700" y="1220" width="9" height="140" rx="4" fill="#2b8a3e"/>
+<rect x="723" y="1235" width="24" height="20" rx="4" fill="#2b8a3e"/><text x="735" y="1250" font-size="12" font-weight="700" fill="#fff" text-anchor="middle" font-family="Liberation Sans, Arial, Helvetica, sans-serif">&lt;/&gt;</text>
+<text x="756" y="1253" font-size="19" font-weight="700" fill="#212529">kura-luna-ai</text>
+<text x="724" y="1280" font-size="15" fill="#495057">FastAPI · agendador (APScheduler)</text>
+<text x="724" y="1302" font-size="15" fill="#495057">porta 8000 · /health · integra WhatsApp e IA</text>
+<rect x="1129.4" y="1232" width="106.6" height="26" rx="13" fill="#2b8a3e"/>
+<text x="1182.7" y="1250" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">Python 3.12</text>
+<rect x="1400" y="770" width="520" height="450" rx="16" fill="#ffffff" stroke="#74c0fc" stroke-width="2.5"/>
+<text x="1420" y="804" font-size="21" font-weight="700" fill="#0063b1">VNet vnet-kura · 10.20.0.0/16</text>
+<text x="1420" y="826" font-size="14" fill="#495057">snet-data 10.20.2.0/24 · NSG: só snet-app → 1521 e 27017</text>
+<rect x="1420" y="850" width="480" height="350" rx="16" fill="#f8f9fa" stroke="#adb5bd" stroke-width="2.5"/>
+<text x="1440" y="884" font-size="21" font-weight="700" fill="#495057">VM Ubuntu 24.04 · Docker</text>
+<rect x="1440" y="900" width="440" height="130" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M1440 910 a10 10 0 0 1 10 -10 h0 v130 h0 a10 10 0 0 1 -10 -10 z" fill="#c92a2a" opacity="0"/>
+<rect x="1440" y="900" width="9" height="130" rx="4" fill="#c92a2a"/>
+<ellipse cx="1475" cy="917" rx="12" ry="5" fill="#c92a2a"/><path d="M1463 917 v16 a12 5 0 0 0 24 0 v-16" fill="#c92a2a" opacity=".85"/><path d="M1463 925 a12 5 0 0 0 24 0" fill="none" stroke="#fff" stroke-width="1.5"/>
+<text x="1496" y="933" font-size="19" font-weight="700" fill="#212529">Oracle (container)</text>
+<text x="1464" y="960" font-size="15" fill="#495057">schema KURA · migrations Flyway</text>
+<text x="1464" y="982" font-size="15" fill="#495057">volume nomeado no disco da VM</text>
+<rect x="1802.4" y="912" width="63.599999999999994" height="26" rx="13" fill="#c92a2a"/>
+<text x="1834.2" y="930" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">XE 21c</text>
+<rect x="1440" y="1050" width="440" height="130" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M1440 1060 a10 10 0 0 1 10 -10 h0 v130 h0 a10 10 0 0 1 -10 -10 z" fill="#2f9e44" opacity="0"/>
+<rect x="1440" y="1050" width="9" height="130" rx="4" fill="#2f9e44"/>
+<ellipse cx="1475" cy="1067" rx="12" ry="5" fill="#2f9e44"/><path d="M1463 1067 v16 a12 5 0 0 0 24 0 v-16" fill="#2f9e44" opacity=".85"/><path d="M1463 1075 a12 5 0 0 0 24 0" fill="none" stroke="#fff" stroke-width="1.5"/>
+<text x="1496" y="1083" font-size="19" font-weight="700" fill="#212529">MongoDB (container)</text>
+<text x="1464" y="1110" font-size="15" fill="#495057">Loja e documentos (kura_docs)</text>
+<text x="1464" y="1132" font-size="15" fill="#495057">volume nomeado no disco da VM</text>
+<rect x="1776.6" y="1062" width="89.39999999999999" height="26" rx="13" fill="#2f9e44"/>
+<text x="1821.3" y="1080" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">MongoDB 7</text>
+<rect x="1945" y="800" width="205" height="170" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M1945 810 a10 10 0 0 1 10 -10 h0 v170 h0 a10 10 0 0 1 -10 -10 z" fill="#0c8599" opacity="0"/>
+<rect x="1945" y="800" width="9" height="170" rx="4" fill="#0c8599"/>
+<path d="M1980 813 l11 4 v8 c0 8 -6 11 -11 14 c-5 -3 -11 -6 -11 -14 v-8 z" fill="#0c8599"/><path d="M1975 825 l4 4 l7 -8" fill="none" stroke="#fff" stroke-width="2.4"/>
+<text x="2001" y="833" font-size="19" font-weight="700" fill="#212529">Entra ID</text>
+<text x="1969" y="860" font-size="15" fill="#495057">federação OIDC da</text>
+<text x="1969" y="882" font-size="15" fill="#495057">service connection e</text>
+<text x="1969" y="904" font-size="15" fill="#495057">identidades gerenciadas</text>
+<rect x="700" y="1420" width="1200" height="150" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M700 1430 a10 10 0 0 1 10 -10 h0 v150 h0 a10 10 0 0 1 -10 -10 z" fill="#f08c00" opacity="0"/>
+<rect x="700" y="1420" width="9" height="150" rx="4" fill="#f08c00"/>
+<rect x="724" y="1443" width="22" height="15" rx="3" fill="#f08c00"/><path d="M729 1443 v-4 a6 6 0 0 1 12 0 v4" fill="none" stroke="#f08c00" stroke-width="3"/><circle cx="735" cy="1450" r="2.5" fill="#fff"/>
+<text x="756" y="1453" font-size="19" font-weight="700" fill="#212529">Azure Key Vault (RBAC)</text>
+<text x="724" y="1480" font-size="15" fill="#495057">senhas, chaves JWT e chaves de API ficam fora do código e do pipeline</text>
+<text x="724" y="1502" font-size="15" fill="#495057">apps e VM leem os segredos com identidade gerenciada (Key Vault references)</text>
+<rect x="2190" y="720" width="290" height="760" rx="16" fill="#fffaf0" stroke="#e8a317" stroke-width="2.5"/>
+<text x="2210" y="754" font-size="21" font-weight="700" fill="#9c6500">Serviços externos</text>
+<rect x="2205" y="800" width="260" height="110" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M2205 810 a10 10 0 0 1 10 -10 h0 v110 h0 a10 10 0 0 1 -10 -10 z" fill="#868e96" opacity="0"/>
+<rect x="2205" y="800" width="9" height="110" rx="4" fill="#868e96"/>
+<text x="2229" y="833" font-size="19" font-weight="700" fill="#212529">Daily</text>
+<text x="2229" y="860" font-size="15" fill="#495057">API de vídeo</text>
+<rect x="2205" y="1190" width="260" height="110" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M2205 1200 a10 10 0 0 1 10 -10 h0 v110 h0 a10 10 0 0 1 -10 -10 z" fill="#868e96" opacity="0"/>
+<rect x="2205" y="1190" width="9" height="110" rx="4" fill="#868e96"/>
+<text x="2229" y="1223" font-size="19" font-weight="700" fill="#212529">Twilio</text>
+<text x="2229" y="1250" font-size="15" fill="#495057">WhatsApp (webhook e envio)</text>
+<rect x="2205" y="1330" width="260" height="110" rx="10" fill="#ffffff" stroke="#ced4da" stroke-width="1.5"/>
+<path d="M2205 1340 a10 10 0 0 1 10 -10 h0 v110 h0 a10 10 0 0 1 -10 -10 z" fill="#868e96" opacity="0"/>
+<rect x="2205" y="1330" width="9" height="110" rx="4" fill="#868e96"/>
+<text x="2229" y="1363" font-size="19" font-weight="700" fill="#212529">OpenAI</text>
+<text x="2229" y="1390" font-size="15" fill="#495057">modelos de linguagem (IA)</text>
+<path d="M240 866 L330 866" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-run)"/>
+<text x="285" y="850" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="middle">HTTPS</text>
+<text x="285" y="850" font-size="13" fill="#1971c2" text-anchor="middle">HTTPS</text>
+<path d="M240 1046 L330 1046" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-run)"/>
+<text x="285" y="1030" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="middle">HTTPS</text>
+<text x="285" y="1030" font-size="13" fill="#1971c2" text-anchor="middle">HTTPS</text>
+<path d="M240 1250 L640 1250 L640 1090 L700 1090" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-run)"/>
+<text x="440" y="1238" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="middle">HTTPS · X-Api-Key</text>
+<text x="440" y="1238" font-size="13" fill="#1971c2" text-anchor="middle">HTTPS · X-Api-Key</text>
+<path d="M590 866 L645 866 L645 910 L700 910" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-run)"/>
+<path d="M590 1046 L700 1046" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-run)"/>
+<text x="1275" y="951" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="start">Oracle · 1521</text>
+<text x="1275" y="951" font-size="13" fill="#1971c2" text-anchor="start">Oracle · 1521</text>
+<path d="M1270 965 L1440 965" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-run)"/>
+<text x="1275" y="1101" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="start">MongoDB · 27017</text>
+<text x="1275" y="1101" font-size="13" fill="#1971c2" text-anchor="start">MongoDB · 27017</text>
+<path d="M1270 1115 L1440 1115" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-run)"/>
+<path d="M1250 1245 L2205 1245" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-start="url(#m-run)" marker-end="url(#m-run)"/>
+<text x="1960" y="1233" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="middle">webhook assinado ↔ envio de mensagens</text>
+<text x="1960" y="1233" font-size="13" fill="#1971c2" text-anchor="middle">webhook assinado ↔ envio de mensagens</text>
+<path d="M1250 1325 L2050 1325 L2050 1385 L2205 1385" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-run)"/>
+<text x="1900" y="1313" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="middle">HTTPS (API de IA)</text>
+<text x="1900" y="1313" font-size="13" fill="#1971c2" text-anchor="middle">HTTPS (API de IA)</text>
+<path d="M1250 1080 L1385 1080 L1385 750 L2175 750 L2175 855 L2205 855" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-run)"/>
+<text x="1750" y="740" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="middle">HTTPS · API de vídeo</text>
+<text x="1750" y="740" font-size="13" fill="#1971c2" text-anchor="middle">HTTPS · API de vídeo</text>
+<path d="M975 1170 L975 1220" fill="none" stroke="#1971c2" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" marker-start="url(#m-run)" marker-end="url(#m-run)"/>
+<text x="985" y="1200" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="start">X-Api-Key (nos dois sentidos)</text>
+<text x="985" y="1200" font-size="13" fill="#1971c2" text-anchor="start">X-Api-Key (nos dois sentidos)</text>
+<path d="M975 1380 L975 1420" fill="none" stroke="#e08a00" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="9 6" marker-end="url(#m-secret)"/>
+<text x="985" y="1408" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="start">Key Vault references (apps)</text>
+<text x="985" y="1408" font-size="13" fill="#b36b00" text-anchor="start">Key Vault references (apps)</text>
+<path d="M1660 1220 L1660 1420" fill="none" stroke="#e08a00" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="9 6" marker-end="url(#m-secret)"/>
+<text x="1670" y="1408" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="start">identidade gerenciada da VM</text>
+<text x="1670" y="1408" font-size="13" fill="#b36b00" text-anchor="start">identidade gerenciada da VM</text>
+<path d="M120 540 L120 690 L330 690 L330 720" fill="none" stroke="#7048e8" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="9 6" marker-end="url(#m-prov)"/>
+<text x="135" y="678" font-size="14" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="start" font-weight="700">P · provisionamento inicial (deploy.sh)</text>
+<text x="135" y="678" font-size="14" fill="#7048e8" text-anchor="start" font-weight="700">P · provisionamento inicial (deploy.sh)</text>
+<path d="M430 200 L750 205" fill="none" stroke="#d9480f" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-cicd)"/>
+<circle cx="590" cy="203" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="590" y="209" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+<path d="M1050 355 L1105 355 L1105 300 L1170 300" fill="none" stroke="#d9480f" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-cicd)"/>
+<circle cx="1105" cy="328" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="1105" y="334" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+<path d="M1160 570 L1160 592 L500 592 L500 540" fill="none" stroke="#d9480f" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-cicd)"/>
+<circle cx="830" cy="592" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="830" y="598" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<path d="M300 540 L300 616 L1300 616 L1300 540" fill="none" stroke="#d9480f" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-cicd)"/>
+<path d="M1300 616 L1570 616 L1570 540" fill="none" stroke="#d9480f" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-cicd)"/>
+<circle cx="700" cy="616" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="700" y="622" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+<path d="M1650 280 L1700 280" fill="none" stroke="#d9480f" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-cicd)"/>
+<circle cx="1675" cy="280" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="1675" y="286" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">5</text>
+<path d="M2130 540 L2130 700 L2047 700 L2047 800" fill="none" stroke="#d9480f" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-cicd)"/>
+<circle cx="2130" cy="630" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="2130" y="636" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">6</text>
+<path d="M1735 395 L1735 660 L1030 660 L1030 830" fill="none" stroke="#d9480f" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-cicd)"/>
+<circle cx="1400" cy="660" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="1400" y="666" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">7</text>
+<path d="M1250 910 L1440 910" fill="none" stroke="#d9480f" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-cicd)"/>
+<text x="1345" y="896" font-size="13" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" text-anchor="middle" font-weight="700">Flyway</text>
+<text x="1345" y="896" font-size="13" fill="#d9480f" text-anchor="middle" font-weight="700">Flyway</text>
+<circle cx="1345" cy="925" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="1345" y="931" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">8</text>
+<path d="M1775 395 L1775 690 L1150 690 L1150 830" fill="none" stroke="#d9480f" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#m-cicd)"/>
+<circle cx="1500" cy="690" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="1500" y="696" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">9</text>
+<rect x="40" y="1630" width="1200" height="220" rx="14" fill="#fff" stroke="#adb5bd" stroke-width="2"/>
+<text x="60" y="1662" font-size="20" font-weight="700" fill="#212529">Fluxo CI/CD — ordem de execução</text>
+<circle cx="70" cy="1688" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="70" y="1694" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+<text x="96" y="1694" font-size="15" fill="#212529" text-anchor="start">Desenvolvedor faz commit e push na branch main (GitHub)</text>
+<circle cx="70" cy="1719" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="70" y="1725" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+<text x="96" y="1725" font-size="15" fill="#212529" text-anchor="start">GitHub notifica o Azure Pipelines (webhook) e o CI inicia</text>
+<circle cx="70" cy="1750" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="70" y="1756" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<text x="96" y="1756" font-size="15" fill="#212529" text-anchor="start">Azure Pipelines enfileira o job no agente self-hosted</text>
+<circle cx="70" cy="1781" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="70" y="1787" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+<text x="96" y="1787" font-size="15" fill="#212529" text-anchor="start">Agente roda mvnw verify (build + testes) e publica resultados e app.jar</text>
+<circle cx="70" cy="1812" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="70" y="1818" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">5</text>
+<text x="96" y="1818" font-size="15" fill="#212529" text-anchor="start">CI verde: o CD inicia (dependsOn) com o artefato publicado</text>
+<circle cx="660" cy="1688" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="660" y="1694" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">6</text>
+<text x="686" y="1694" font-size="15" fill="#212529" text-anchor="start">CD autentica no Azure pela service connection (federação OIDC, Entra ID)</text>
+<circle cx="660" cy="1719" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="660" y="1725" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">7</text>
+<text x="686" y="1725" font-size="15" fill="#212529" text-anchor="start">AzureWebApp@1 implanta o app.jar no Web App kura-tutor-api</text>
+<circle cx="660" cy="1750" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="660" y="1756" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">8</text>
+<text x="686" y="1756" font-size="15" fill="#212529" text-anchor="start">App reinicia: Flyway migra o Oracle · segredos via Key Vault references</text>
+<circle cx="660" cy="1781" r="16" fill="#d9480f" stroke="#fff" stroke-width="3"/>
+<text x="660" y="1787" font-size="17" font-weight="700" fill="#fff" text-anchor="middle">9</text>
+<text x="686" y="1787" font-size="15" fill="#212529" text-anchor="start">Health check de /api/actuator/health confirma o deploy</text>
+<rect x="1260" y="1630" width="1220" height="220" rx="14" fill="#fff" stroke="#adb5bd" stroke-width="2"/>
+<text x="1280" y="1662" font-size="20" font-weight="700" fill="#212529">Onde cada ferramenta atua</text>
+<text x="1282" y="1694" font-size="15" fill="#212529" text-anchor="start">GitHub — código-fonte, pull requests e gatilho do CI</text>
+<text x="1282" y="1722" font-size="15" fill="#212529" text-anchor="start">Azure Pipelines — orquestra o CI e o CD (YAML)</text>
+<text x="1282" y="1750" font-size="15" fill="#212529" text-anchor="start">Agente self-hosted — executa build, testes e deploy</text>
+<text x="1282" y="1778" font-size="15" fill="#212529" text-anchor="start">Maven + JUnit — compilam e testam a aplicação</text>
+<text x="1282" y="1806" font-size="15" fill="#212529" text-anchor="start">Pipeline Artifacts — guardam o app.jar de cada execução</text>
+<text x="1850" y="1694" font-size="15" fill="#212529" text-anchor="start">Service connection + Entra ID — acesso ao Azure sem senha</text>
+<text x="1850" y="1722" font-size="15" fill="#212529" text-anchor="start">Flyway — versiona o schema do Oracle</text>
+<text x="1850" y="1750" font-size="15" fill="#212529" text-anchor="start">Azure CLI / deploy.sh — provisionam e operam a nuvem</text>
+<text x="1850" y="1778" font-size="15" fill="#212529" text-anchor="start">Key Vault — segredos fora do código e do pipeline</text>
+<path d="M1850 1832 L1890 1832" fill="none" stroke="#d9480f" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="1898" y="1837" font-size="13" fill="#212529" text-anchor="start">fluxo CI/CD (numerado)</text>
+<path d="M2080 1832 L2120 1832" fill="none" stroke="#1971c2" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="2128" y="1837" font-size="13" fill="#212529" text-anchor="start">tráfego em execução</text>
+<path d="M2280 1832 L2320 1832" fill="none" stroke="#e08a00" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="9 6"/>
+<text x="2328" y="1837" font-size="13" fill="#212529" text-anchor="start">segredos</text>
+</svg>
